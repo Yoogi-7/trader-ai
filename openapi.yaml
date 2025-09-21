@@ -1,0 +1,51 @@
+openapi: 3.0.3
+info:
+  title: Trader AI API
+  version: "1.0"
+paths:
+  /backfill/start:
+    post:
+      summary: Start backfill
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BackfillStart'
+      responses: { '200': { description: ok } }
+  /backfill/status:
+    get:
+      summary: Backfill status
+      responses: { '200': { description: ok } }
+  /train/run:
+    post:
+      summary: Start training
+      responses: { '200': { description: ok } }
+  /train/status:
+    get:
+      summary: Training status
+      responses: { '200': { description: ok } }
+  /backtest/run:
+    post:
+      summary: Start backtest
+      responses: { '200': { description: ok } }
+  /backtest/results:
+    get:
+      summary: Backtest results
+      responses: { '200': { description: ok } }
+  /signals/generate:
+    post:
+      summary: Generate signals
+      responses: { '200': { description: ok } }
+  /signals/history:
+    get:
+      summary: Signals history
+      responses: { '200': { description: ok } }
+components:
+  schemas:
+    BackfillStart:
+      type: object
+      properties:
+        pairs: { type: array, items: { type: string } }
+        tf: { type: string }
+        since_ms: { type: integer }

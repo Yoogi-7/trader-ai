@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop, feat/** ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  api-tests:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Start services
+        run: |
+          docker compose up -d --build db redis redpanda
+          # Wait for DB
+          for i in {1..60}; do
+            docker compose exec -T db pg_isready -U trader -d trader_ai && break
+            sleep 2
+          done
+
+      - name: Run migrations
+        run: docker compose run --rm api alembic upgrade head
+
+      - name: Run tests (API)
+        run: docker compose run --rm api pytest -q
