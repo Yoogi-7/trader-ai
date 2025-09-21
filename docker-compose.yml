@@ -1,50 +1,77 @@
-version: "3.9"
-
 services:
   db:
     image: timescale/timescaledb-ha:pg15-latest
+    container_name: traderai-db-1
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-trader_ai}
-      POSTGRES_USER: ${POSTGRES_USER:-trader}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trader_pw}
-    ports: ["5432:5432"]
-    volumes: [ "pgdata:/var/lib/postgresql/data" ]
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader
+      POSTGRES_DB: trader_ai
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/home/postgres/pgdata/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      test: ["CMD-SHELL", "pg_isready -U trader -d trader_ai"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
 
   redis:
     image: redis:7-alpine
+    container_name: traderai-redis-1
     ports: ["6379:6379"]
 
   redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v24.1.14
+    image: redpandadata/redpanda:v23.3.10
+    container_name: traderai-redpanda-1
     command:
-      - redpanda start --smp 1 --memory 512M --reserve-memory 0M --overprovisioned
-        --node-id 0 --check=false --kafka-addr 0.0.0.0:9092
-        --advertise-kafka-addr redpanda:9092
-    ports: ["9092:9092"]
+      - redpanda start --overprovisioned --smp 1 --memory 1G --reserve-memory 0M --node-id 0 --check=false
+    ports:
+      - "9092:9092"
 
   api:
-    build: { context: ".", dockerfile: infra/api.Dockerfile }
-    env_file: [ .env.example ]
-    depends_on: [ db, redis, redpanda ]
-    ports: ["8000:8000"]
-    command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --log-level ${API_LOG_LEVEL:-info}
+    image: traderai-api
+    build:
+      context: .
+      dockerfile: api.Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg2://trader:trader@db:5432/trader_ai
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    command: uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
 
   ml:
-    build: { context: ".", dockerfile: infra/ml.Dockerfile }
-    env_file: [ .env.example ]
-    depends_on: [ db, redis, redpanda ]
-    command: python -m apps.ml.worker
+    image: traderai-ml
+    build:
+      context: .
+      dockerfile: ml.Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg2://trader:trader@db:5432/trader_ai
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
 
   web:
-    build: { context: ".", dockerfile: infra/web.Dockerfile }
-    env_file: [ .env.example ]
-    depends_on: [ api ]
-    ports: ["3000:3000"]
+    image: traderai-web
+    build:
+      context: .
+      dockerfile: web.Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_started
 
 volumes:
   pgdata:

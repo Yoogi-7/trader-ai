@@ -8,26 +8,51 @@ branch_labels = None
 depends_on = None
 
 def upgrade():
-    op.create_table('ohlcv',
-        sa.Column('id', sa.Integer(), primary_key=True),
-        sa.Column('symbol', sa.String(), nullable=False),
-        sa.Column('tf', sa.String(), nullable=False),
-        sa.Column('ts', sa.BigInteger(), nullable=False),
-        sa.Column('o', sa.Float()), sa.Column('h', sa.Float()), sa.Column('l', sa.Float()), sa.Column('c', sa.Float()), sa.Column('v', sa.Float()),
-        sa.Column('source_hash', sa.String()),
-    )
-    op.create_unique_constraint("u_ohlcv_idx","ohlcv",["symbol","tf","ts"])
+    conn = op.get_bind()
+    # Timescale musi istnieć przed tworzeniem hypertables
+    conn.execute(sa.text("CREATE EXTENSION IF NOT EXISTS timescaledb;"))
 
-    op.create_table('features',
-        sa.Column('id', sa.Integer(), primary_key=True),
-        sa.Column('symbol', sa.String(), nullable=False),
-        sa.Column('tf', sa.String(), nullable=False),
-        sa.Column('ts', sa.BigInteger(), nullable=False),
-        sa.Column('f_vector', postgresql.JSON(astext_type=sa.Text())),
-        sa.Column('version', sa.String(), default="v1"),
-    )
-    op.create_unique_constraint("u_features_idx","features",["symbol","tf","ts","version"])
+    # =========================
+    # OHLCV (hypertable na 'tstz')
+    # =========================
+    conn.execute(sa.text("""
+        CREATE TABLE IF NOT EXISTS ohlcv (
+            symbol      TEXT NOT NULL,
+            tf          TEXT NOT NULL,
+            tstz        TIMESTAMPTZ NOT NULL,
+            ts          BIGINT NOT NULL,
+            o           DOUBLE PRECISION,
+            h           DOUBLE PRECISION,
+            l           DOUBLE PRECISION,
+            c           DOUBLE PRECISION,
+            v           DOUBLE PRECISION,
+            source_hash TEXT
+        );
+    """))
+    conn.execute(sa.text("SELECT create_hypertable('ohlcv', 'tstz', if_not_exists => TRUE);"))
+    conn.execute(sa.text("ALTER TABLE ohlcv ADD CONSTRAINT pk_ohlcv PRIMARY KEY(symbol, tf, tstz);"))
+    conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_ohlcv_symbol_tf_tstz ON ohlcv(symbol, tf, tstz DESC);"))
 
+    # =========================
+    # FEATURES (hypertable na 'tstz')
+    # =========================
+    conn.execute(sa.text("""
+        CREATE TABLE IF NOT EXISTS features (
+            symbol   TEXT NOT NULL,
+            tf       TEXT NOT NULL,
+            tstz     TIMESTAMPTZ NOT NULL,
+            ts       BIGINT NOT NULL,
+            f_vector JSONB NOT NULL,
+            version  TEXT NOT NULL DEFAULT 'v1'
+        );
+    """))
+    conn.execute(sa.text("SELECT create_hypertable('features', 'tstz', if_not_exists => TRUE);"))
+    conn.execute(sa.text("ALTER TABLE features ADD CONSTRAINT pk_features PRIMARY KEY(symbol, tf, tstz, version);"))
+    conn.execute(sa.text("CREATE INDEX IF NOT EXISTS idx_features_symbol_tf_tstz ON features(symbol, tf, tstz DESC);"))
+
+    # =========================
+    # backfill_progress
+    # =========================
     op.create_table('backfill_progress',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('symbol', sa.String()),
@@ -41,6 +66,9 @@ def upgrade():
     )
     op.create_unique_constraint("u_backfill_idx","backfill_progress",["symbol","tf"])
 
+    # =========================
+    # signals
+    # =========================
     op.create_table('signals',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('symbol', sa.String()),
@@ -58,6 +86,9 @@ def upgrade():
         sa.Column('status', sa.String(), default="published"),
     )
 
+    # =========================
+    # executions
+    # =========================
     op.create_table('executions',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('signal_id', sa.Integer()),
@@ -68,6 +99,9 @@ def upgrade():
         sa.Column('status', sa.String()), sa.Column('ts', sa.BigInteger()),
     )
 
+    # =========================
+    # pnl
+    # =========================
     op.create_table('pnl',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('signal_id', sa.Integer()),
@@ -77,6 +111,9 @@ def upgrade():
         sa.Column('funding_paid', sa.Float(), default=0.0),
     )
 
+    # =========================
+    # training_runs
+    # =========================
     op.create_table('training_runs',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('started_at', sa.TIMESTAMP(timezone=True)),
@@ -86,6 +123,9 @@ def upgrade():
         sa.Column('metrics_json', postgresql.JSON(astext_type=sa.Text())),
     )
 
+    # =========================
+    # backtests
+    # =========================
     op.create_table('backtests',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('params_json', postgresql.JSON(astext_type=sa.Text())),
@@ -94,6 +134,9 @@ def upgrade():
         sa.Column('summary_json', postgresql.JSON(astext_type=sa.Text())),
     )
 
+    # =========================
+    # backtest_trades
+    # =========================
     op.create_table('backtest_trades',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('signal_id', sa.Integer()),
@@ -103,6 +146,9 @@ def upgrade():
         sa.Column('opened_at', sa.BigInteger()), sa.Column('closed_at', sa.BigInteger()),
     )
 
+    # =========================
+    # users
+    # =========================
     op.create_table('users',
         sa.Column('id', sa.Integer(), primary_key=True),
         sa.Column('risk_profile', sa.String(), default="LOW"),
@@ -112,5 +158,8 @@ def upgrade():
     )
 
 def downgrade():
+    conn = op.get_bind()
+    conn.execute(sa.text("DROP INDEX IF EXISTS idx_features_symbol_tf_tstz;"))
+    conn.execute(sa.text("DROP INDEX IF EXISTS idx_ohlcv_symbol_tf_tstz;"))
     for t in ["users","backtest_trades","backtests","training_runs","pnl","executions","signals","backfill_progress","features","ohlcv"]:
-        op.drop_table(t)
+        conn.execute(sa.text(f"DROP TABLE IF EXISTS {t} CASCADE;"))

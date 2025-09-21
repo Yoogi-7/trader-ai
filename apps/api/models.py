@@ -3,25 +3,29 @@ from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.sql import func
 from apps.api.db import Base
 
+# ===== Hypertable: OHLCV =====
 class OHLCV(Base):
     __tablename__ = "ohlcv"
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String, index=True, nullable=False)
-    tf = Column(String, index=True, nullable=False)
-    ts = Column(BigInteger, index=True, nullable=False)  # epoch ms
+    # PK zgodny z Timescale: zawiera kolumnę partycjonującą 'tstz'
+    symbol = Column(String, primary_key=True, index=True, nullable=False)
+    tf     = Column(String, primary_key=True, index=True, nullable=False)
+    tstz   = Column(TIMESTAMP(timezone=True), primary_key=True, nullable=False)
+
+    # pozostałe pola
+    ts = Column(BigInteger, index=True, nullable=False)  # epoch ms (pomocniczo)
     o = Column(Float); h = Column(Float); l = Column(Float); c = Column(Float); v = Column(Float)
     source_hash = Column(String, nullable=True)
-    __table_args__ = (UniqueConstraint("symbol","tf","ts", name="u_ohlcv_idx"),)
 
+# ===== Hypertable: FEATURES =====
 class Feature(Base):
     __tablename__ = "features"
-    id = Column(Integer, primary_key=True)
-    symbol = Column(String, index=True, nullable=False)
-    tf = Column(String, index=True, nullable=False)
+    symbol  = Column(String, primary_key=True, index=True, nullable=False)
+    tf      = Column(String, primary_key=True, index=True, nullable=False)
+    tstz    = Column(TIMESTAMP(timezone=True), primary_key=True, nullable=False)
+    version = Column(String, primary_key=True, default="v1")
+
     ts = Column(BigInteger, index=True, nullable=False)
     f_vector = Column(JSON, nullable=False)
-    version = Column(String, default="v1")
-    __table_args__ = (UniqueConstraint("symbol","tf","ts","version", name="u_features_idx"),)
 
 class BackfillProgress(Base):
     __tablename__ = "backfill_progress"
@@ -34,7 +38,6 @@ class BackfillProgress(Base):
     retry_count = Column(Integer, default=0)
     status = Column(String, default="idle")
     updated_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
-    __table_args__ = (UniqueConstraint("symbol","tf", name="u_backfill_idx"),)
 
 class Signal(Base):
     __tablename__ = "signals"
@@ -42,7 +45,7 @@ class Signal(Base):
     symbol = Column(String, index=True)
     tf_base = Column(String, default="15m")
     ts = Column(BigInteger, index=True)
-    dir = Column(String)  # long/short
+    dir = Column(String)
     entry = Column(Float); sl = Column(Float)
     tp = Column(ARRAY(Float))
     lev = Column(Integer); risk = Column(Float)
@@ -51,7 +54,7 @@ class Signal(Base):
     confidence = Column(Float)
     model_ver = Column(String)
     reason_discard = Column(String, nullable=True)
-    status = Column(String, default="published")  # or discarded
+    status = Column(String, default="published")
 
 class Execution(Base):
     __tablename__ = "executions"
@@ -108,7 +111,6 @@ class FundingRate(Base):
     symbol = Column(String, index=True, nullable=False)
     ts = Column(BigInteger, index=True, nullable=False)
     rate_bps = Column(Float, nullable=False)
-    __table_args__ = (UniqueConstraint("symbol","ts", name="u_funding_idx"),)
 
 class OpenInterest(Base):
     __tablename__ = "open_interest"
@@ -116,34 +118,27 @@ class OpenInterest(Base):
     symbol = Column(String, index=True, nullable=False)
     ts = Column(BigInteger, index=True, nullable=False)
     oi = Column(Float, nullable=False)
-    __table_args__ = (UniqueConstraint("symbol","ts", name="u_oi_idx"),)
 
-# === NEW: Orderbook snapshot ===
 class OrderBookSnapshot(Base):
     __tablename__ = "orderbook_snapshots"
     id = Column(Integer, primary_key=True)
     symbol = Column(String, index=True, nullable=False)
     ts = Column(BigInteger, index=True, nullable=False)
-    bid_px = Column(Float, nullable=False)
-    bid_qty = Column(Float, nullable=False)
-    ask_px = Column(Float, nullable=False)
-    ask_qty = Column(Float, nullable=False)
-    mid_px = Column(Float, nullable=False)
-    spread_bps = Column(Float, nullable=False)
-    depth_usd_1pct = Column(Float, nullable=False)  # suma (price*qty) w ±1% mid
-    __table_args__ = (UniqueConstraint("symbol","ts", name="u_ob_idx"),)
+    bid_px = Column(Float, nullable=False); bid_qty = Column(Float, nullable=False)
+    ask_px = Column(Float, nullable=False); ask_qty = Column(Float, nullable=False)
+    mid_px = Column(Float, nullable=False); spread_bps = Column(Float, nullable=False)
+    depth_usd_1pct = Column(Float, nullable=False)
 
-# === NEW: Paper positions ===
 class Position(Base):
     __tablename__ = "positions"
     id = Column(Integer, primary_key=True)
     symbol = Column(String, index=True, nullable=False)
-    side = Column(String, nullable=False)  # long/short
+    side = Column(String, nullable=False)
     entry_px = Column(Float, nullable=False)
     qty = Column(Float, nullable=False)
     lev = Column(Integer, nullable=False)
     margin_mode = Column(String, default="isolated")
     exposure_usd = Column(Float, nullable=False)
     opened_ts = Column(BigInteger, index=True, nullable=False)
-    status = Column(String, default="open")  # open/closed
+    status = Column(String, default="open")
     pnl = Column(Float, default=0.0)
