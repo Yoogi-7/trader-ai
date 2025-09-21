@@ -1,24 +1,21 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+# apps/api/schemas.py
+from pydantic import BaseModel, Field, condecimal, validator
+from typing import Optional, List, Literal, Dict
 
-class BackfillStart(BaseModel):
-    pairs: Optional[List[str]] = None
-    tf: str = "1m"
-    since_ms: Optional[int] = None
+RiskProfile = Literal["LOW", "MED", "HIGH"]
 
-class TrainRun(BaseModel):
-    params: Dict = {}
+class UserSettingsIn(BaseModel):
+    risk_profile: RiskProfile = Field(..., description="LOW/MED/HIGH")
+    pairs: Optional[List[str]] = Field(default=None, description="Whitelist symboli, np. ['BTCUSDT','ETHUSDT']")
+    max_parallel_positions: Optional[int] = Field(default=None, ge=1, le=50)
+    margin_mode: Optional[Literal["isolated", "cross"]] = "isolated"
 
-class BacktestRun(BaseModel):
-    params: Dict = {}
+class CapitalIn(BaseModel):
+    capital: condecimal(gt=0, decimal_places=2) = Field(..., description="Kapitał użytkownika w USD")
 
-class SignalRequest(BaseModel):
-    pairs: List[str]
-    risk_profile: str = "LOW"
-    capital: float = 100.0
-
-class SignalOut(BaseModel):
-    id: int; symbol: str; dir: str; entry: float; sl: float
-    tp: List[float]; lev: int; risk: float
-    margin_mode: str; expected_net_pct: float; confidence: float
-    status: str; reason_discard: Optional[str] = None
+class UserOut(BaseModel):
+    id: int
+    risk_profile: RiskProfile
+    capital: float
+    prefs: Optional[Dict] = None
+    api_connected: bool
