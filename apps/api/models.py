@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, JSON, BigInteger, UniqueConstraint, ARRAY, DateTime
+from sqlalchemy import Column, Integer, String, Float, Boolean, JSON, BigInteger, UniqueConstraint, ARRAY
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.sql import func
 from apps.api.db import Base
@@ -101,3 +101,21 @@ class User(Base):
     capital = Column(Float, default=100.0)
     prefs = Column(JSON, default={})
     api_connected = Column(Boolean, default=False)
+
+# === NEW: Funding rates ===
+class FundingRate(Base):
+    __tablename__ = "funding_rates"
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, index=True, nullable=False)
+    ts = Column(BigInteger, index=True, nullable=False)
+    rate_bps = Column(Float, nullable=False)  # funding rate * 10000
+    __table_args__ = (UniqueConstraint("symbol","ts", name="u_funding_idx"),)
+
+# === NEW: Open Interest ===
+class OpenInterest(Base):
+    __tablename__ = "open_interest"
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, index=True, nullable=False)
+    ts = Column(BigInteger, index=True, nullable=False)
+    oi = Column(Float, nullable=False)  # nominal OI (np. w USDT)
+    __table_args__ = (UniqueConstraint("symbol","ts", name="u_oi_idx"),)
