@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import List
+from typing import List, Dict
 
 import redis
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,53 +25,26 @@ from apps.api.models import (
     User,
     Position,
 )
-from apps.ml.validators import (
-    get_kill_switch,
-    in_cooldown,
-    set_cooldown,
-    basic_market_checks,
-    risk_profile_limits,
-    correlation_cap,
-    set_kill_switch,
+from apps.api.security import require_role
+from apps.ml.risk.engine import (
+    apply_caps_and_sizing,
+    quality_filter_2pct,
 )
-from apps.ml.train.lightgbm_pipeline import run as run_lgbm
 
-# Router główny API
 router = APIRouter()
 
-
-# ==== helpers ====
 def get_db():
-    """Zależność FastAPI – sesja DB per request."""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
-
 def _redis():
-    """Połączenie do Redis (Pub/Sub do sygnałów / progresów)."""
     return redis.from_url("redis://redis:6379/0")
 
-
-def _size_position(capital: float, risk: float, entry: float, sl: float, lev: int) -> float:
-    """
-    Sizing pozycji PAPER:
-    qty ~ (capital * risk) / |entry - sl|, skorygowany o lev i wycenę kontraktu (linear USDT: dzielimy przez entry).
-    """
-    risk_cash = capital * risk
-    dist = max(1e-6, abs(entry - sl))
-    qty = (risk_cash / dist) * lev / entry
-    return max(0.0, qty)
-
-
-# ==== Backfill ====
 @router.post("/backfill/start")
 def backfill_start(req: BackfillStart, db: Session = Depends(get_db)):
-    """
-    Wrzuca zadanie backfill do kolejki (status=queued). Job ML odpala batchy i publikuje progres na kanale 'progress'.
-    """
     pairs = req.pairs or ["BTCUSDT", "ETHUSDT"]
     for p in pairs:
         row = db.query(BackfillProgress).filter_by(symbol=p, tf=req.tf).one_or_none()
@@ -93,7 +66,6 @@ def backfill_start(req: BackfillStart, db: Session = Depends(get_db)):
     db.commit()
     return {"status": "queued", "pairs": pairs, "tf": req.tf, "since_ms": req.since_ms}
 
-
 @router.get("/backfill/status")
 def backfill_status(db: Session = Depends(get_db)):
     rows = db.query(BackfillProgress).all()
@@ -111,15 +83,12 @@ def backfill_status(db: Session = Depends(get_db)):
         for r in rows
     ]
 
-
-# ==== Training ====
 @router.post("/train/run")
 def train_run(req: TrainRun, db: Session = Depends(get_db)):
     tr = TrainingRun(status="running", params_json=req.params or {}, metrics_json={})
     db.add(tr)
     db.commit()
     return {"id": tr.id, "status": tr.status}
-
 
 @router.get("/train/status")
 def train_status(db: Session = Depends(get_db)):
@@ -129,21 +98,6 @@ def train_status(db: Session = Depends(get_db)):
         for r in runs
     ]
 
-
-@router.post("/train/run_lgbm")
-def train_run_lgbm(req: TrainRun, db: Session = Depends(get_db)):
-    """
-    Uruchamia LightGBM + Optuna (OOS objective, Purged/Embargo).
-    Metryki OOS lądują w TrainingRun.metrics_json.
-    """
-    symbol = (req.params or {}).get("symbol", "BTCUSDT")
-    tf = (req.params or {}).get("tf", "15m")
-    n_trials = int((req.params or {}).get("n_trials", 10))
-    res = run_lgbm(symbol=symbol, tf=tf, n_trials=n_trials)
-    return {"status": "done" if "error" not in res else "error", "metrics": res}
-
-
-# ==== Backtests ====
 @router.post("/backtest/run")
 def backtest_run(req: BacktestRun, db: Session = Depends(get_db)):
     bt = Backtest(params_json=req.params or {}, summary_json={})
@@ -151,40 +105,26 @@ def backtest_run(req: BacktestRun, db: Session = Depends(get_db)):
     db.commit()
     return {"id": bt.id, "status": "queued"}
 
-
 @router.get("/backtest/results")
 def backtest_results(db: Session = Depends(get_db)):
     res = db.query(Backtest).order_by(Backtest.id.desc()).limit(5).all()
     return [{"id": b.id, "summary": b.summary_json, "params": b.params_json} for b in res]
 
-
-# ==== Signals / Risk / Paper positions ====
 @router.post("/signals/generate", response_model=List[SignalOut])
 def signals_generate(req: SignalRequest, db: Session = Depends(get_db)):
-    """
-    Generuje sygnały na żądanie dla podanych par, z walidacjami:
-      - kill-switch & cooldown,
-      - limity profilu (lev/parallel),
-      - walidacje rynkowe (spread/depth/funding),
-      - korelacyjny cap (BTC/ETH vs capital),
-      - twardy filtr >= 2% net (fee+slippage).
-    Jeśli sygnał zostanie opublikowany -> tworzy paper position + nadaje event przez Redis ("signals").
-    """
-    if get_kill_switch() or in_cooldown():
-        return []
-
-    # Preferencje użytkownika (jeśli brak — z requestu)
+    # User & profile
     u = db.query(User).first()
     profile = (u.risk_profile if u else req.risk_profile or "LOW").upper()
     capital = float(u.capital if u else (req.capital or 100.0))
 
-    # Liczba równoległych „świeżych” publikacji (15 min okno)
-    fifteen_min_ago = int(time.time() * 1000) - 15 * 60 * 1000
-    parallel_now = (
-        db.query(Signal)
-        .filter(Signal.ts >= fifteen_min_ago, Signal.status == "published")
-        .count()
-    )
+    # Zlicz równoległe pozycje w krótkim oknie (tu: wszystkie open)
+    parallel_now = db.query(Position).filter(Position.status == "open").count()
+
+    # Ekspozycje per symbol (open)
+    rows = db.query(Position).filter(Position.status == "open").all()
+    exposure_by_symbol: Dict[str, float] = {}
+    for r in rows:
+        exposure_by_symbol[r.symbol] = exposure_by_symbol.get(r.symbol, 0.0) + abs(r.exposure_usd)
 
     out: List[SignalOut] = []
     now_ms = int(time.time() * 1000)
@@ -192,174 +132,86 @@ def signals_generate(req: SignalRequest, db: Session = Depends(get_db)):
 
     pairs = req.pairs or ["BTCUSDT", "ETHUSDT"]
     for sym in pairs:
-        # Limity profilu
-        ok, reason = risk_profile_limits(profile, requested_lev=5, current_parallel=parallel_now)
-        if not ok:
-            s = Signal(
-                symbol=sym,
-                tf_base="15m",
-                ts=now_ms,
-                dir="long",
-                entry=100.0,
-                sl=98.0,
-                tp=[102.0, 103.0, 104.0],
-                lev=5,
-                risk=0.01,
-                margin_mode="isolated",
-                expected_net_pct=0.0,
-                confidence=0.0,
-                model_ver="v1",
-                reason_discard=reason,
-                status="discarded",
-            )
-            db.add(s)
-            db.flush()
-            continue
-
-        # Walidacje rynku (spread/depth/funding)
-        ok, reason = basic_market_checks(db, sym)
-        if not ok:
-            s = Signal(
-                symbol=sym,
-                tf_base="15m",
-                ts=now_ms,
-                dir="long",
-                entry=100.0,
-                sl=98.0,
-                tp=[102.0, 103.0, 104.0],
-                lev=5,
-                risk=0.01,
-                margin_mode="isolated",
-                expected_net_pct=0.0,
-                confidence=0.0,
-                model_ver="v1",
-                reason_discard=reason,
-                status="discarded",
-            )
-            db.add(s)
-            db.flush()
-            continue
-
-        # Korelacyjny cap BTC/ETH
-        ok, reason = correlation_cap(db, user_capital=capital)
-        if not ok:
-            s = Signal(
-                symbol=sym,
-                tf_base="15m",
-                ts=now_ms,
-                dir="long",
-                entry=100.0,
-                sl=98.0,
-                tp=[102.0, 103.0, 104.0],
-                lev=5,
-                risk=0.01,
-                margin_mode="isolated",
-                expected_net_pct=0.0,
-                confidence=0.0,
-                model_ver="v1",
-                reason_discard=reason,
-                status="discarded",
-            )
-            db.add(s)
-            db.flush()
-            continue
-
-        # Filtr ≥ 2% net (upraszczamy: TP1)
+        # Prosty przykład poziomów — w produkcji generuje to engine sygnałów (MTF+ATR/Fibo/S/R)
         entry = 100.0
         sl = 98.0
-        tp = [102.0, 103.0, 104.0]
-        gross_gain_pct = (tp[0] - entry) / entry
-        taker_fee = 2 * 0.001  # wejście+wyjście
-        slippage = 0.0005
-        net = gross_gain_pct - taker_fee - slippage
-        status = "published" if net >= 0.02 else "discarded"
-        reason = None if status == "published" else "<2% net"
+        tp = [102.2, 103.5, 105.0]  # TP1/TP2/TP3
 
-        s = Signal(
-            symbol=sym,
-            tf_base="15m",
-            ts=now_ms,
-            dir="long",
-            entry=entry,
-            sl=sl,
-            tp=tp,
-            lev=5,
-            risk=0.01,
-            margin_mode="isolated",
-            expected_net_pct=round(net * 100, 2),
-            confidence=0.62,
-            model_ver="v1",
-            reason_discard=reason,
-            status=status,
+        # Filtr jakości ≥2% netto (maker-first preferowany)
+        ok_quality, net_pct = quality_filter_2pct(entry, tp[0], maker_first=True, holding_hours=8.0)
+        if not ok_quality:
+            s = Signal(
+                symbol=sym, tf_base="15m", ts=now_ms, dir="long",
+                entry=entry, sl=sl, tp=tp, lev=0, risk=0.0,
+                margin_mode="isolated", expected_net_pct=round(net_pct, 2),
+                confidence=0.0, model_ver="v1", reason_discard="<2% net", status="discarded",
+            )
+            db.add(s); db.flush()
+            continue
+
+        # Risk engine – limity profilu, caps, korelacja, sizing, lev, likwidacja
+        sizing = apply_caps_and_sizing(
+            symbol=sym, side="long", entry=entry, sl=sl,
+            capital_usd=capital, profile_name=profile,
+            existing_parallel_positions=parallel_now,
+            current_exposure_by_symbol=exposure_by_symbol,
+            requested_leverage=None,
         )
-        db.add(s)
-        db.flush()
-
-        if status == "published":
-            # Utwórz PAPER position
-            qty = _size_position(capital=capital, risk=s.risk, entry=s.entry, sl=s.sl, lev=s.lev)
-            exposure_usd = qty * s.entry
-            pos = Position(
-                symbol=s.symbol,
-                side=s.dir,
-                entry_px=s.entry,
-                qty=qty,
-                lev=s.lev,
-                margin_mode=s.margin_mode,
-                exposure_usd=exposure_usd,
-                opened_ts=now_ms,
-                status="open",
-                pnl=0.0,
+        if sizing.reason_block:
+            s = Signal(
+                symbol=sym, tf_base="15m", ts=now_ms, dir="long",
+                entry=entry, sl=sl, tp=tp, lev=sizing.leverage, risk=0.0,
+                margin_mode="isolated", expected_net_pct=round(net_pct, 2),
+                confidence=0.0, model_ver="v1", reason_discard=sizing.reason_block, status="discarded",
             )
-            db.add(pos)
-            db.flush()
+            db.add(s); db.flush()
+            continue
 
-            # Wyślij przez Redis live event (kanał: signals)
-            out_payload = dict(
-                id=s.id,
-                symbol=s.symbol,
-                dir=s.dir,
-                entry=s.entry,
-                sl=s.sl,
-                tp=s.tp,
-                lev=s.lev,
-                risk=s.risk,
-                margin_mode=s.margin_mode,
-                expected_net_pct=s.expected_net_pct,
-                confidence=s.confidence,
-                status=s.status,
-                reason_discard=s.reason_discard,
-                ts=now_ms,
-                source="api",
-            )
-            r.publish("signals", json.dumps(out_payload))
-            out.append(SignalOut(**out_payload))
+        # Publikujemy sygnał
+        s = Signal(
+            symbol=sym, tf_base="15m", ts=now_ms, dir="long",
+            entry=entry, sl=sl, tp=tp, lev=sizing.leverage, risk=0.0,
+            margin_mode="isolated", expected_net_pct=round(net_pct, 2),
+            confidence=0.62, model_ver="v1", reason_discard=None, status="published",
+        )
+        db.add(s); db.flush()
+
+        # Otwórz pozycję (paper/shadow)
+        pos = Position(
+            symbol=s.symbol, side=s.dir, entry_px=s.entry, qty=sizing.qty, lev=sizing.leverage,
+            margin_mode=s.margin_mode, exposure_usd=sizing.exposure_usd, opened_ts=now_ms,
+            status="open", pnl=0.0,
+        )
+        db.add(pos); db.flush()
+
+        out_payload = dict(
+            id=s.id, symbol=s.symbol, dir=s.dir, entry=s.entry, sl=s.sl, tp=s.tp,
+            lev=s.lev, risk=s.risk, margin_mode=s.margin_mode,
+            expected_net_pct=s.expected_net_pct, confidence=s.confidence,
+            status=s.status, reason_discard=s.reason_discard, ts=now_ms, source="api",
+        )
+        r.publish("signals", json.dumps(out_payload))
+        out.append(SignalOut(**out_payload))
+
+        # zaktualizuj kontekst ekspozycji i równoległość dla kolejnych par
+        parallel_now += 1
+        exposure_by_symbol[sym] = exposure_by_symbol.get(sym, 0.0) + abs(sizing.exposure_usd)
 
     db.commit()
     return out
-
 
 @router.get("/signals/history")
 def signals_history(db: Session = Depends(get_db)):
     rows = db.query(Signal).order_by(Signal.id.desc()).limit(100).all()
     return [
         {
-            "id": r.id,
-            "symbol": r.symbol,
-            "dir": r.dir,
-            "entry": r.entry,
-            "tp": r.tp,
-            "sl": r.sl,
-            "expected_net_pct": r.expected_net_pct,
-            "confidence": r.confidence,
-            "status": r.status,
-            "ts": r.ts,
+            "id": r.id, "symbol": r.symbol, "dir": r.dir, "entry": r.entry,
+            "tp": r.tp, "sl": r.sl, "expected_net_pct": r.expected_net_pct,
+            "confidence": r.confidence, "status": r.status, "ts": r.ts,
         }
         for r in rows
     ]
 
-
-# ==== Settings (profil/kapitał) ====
 @router.post("/settings/profile")
 def set_profile(risk_profile: str, db: Session = Depends(get_db)):
     rp = (risk_profile or "LOW").upper()
@@ -374,7 +226,6 @@ def set_profile(risk_profile: str, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True, "risk_profile": u.risk_profile}
 
-
 @router.post("/capital")
 def set_capital(capital: float, db: Session = Depends(get_db)):
     if capital <= 0:
@@ -388,8 +239,6 @@ def set_capital(capital: float, db: Session = Depends(get_db)):
     db.commit()
     return {"ok": True, "capital": u.capital}
 
-
-# ==== Positions (paper) ====
 @router.get("/positions/open")
 def positions_open(db: Session = Depends(get_db)):
     rows = db.query(Position).filter(Position.status == "open").all()
@@ -398,30 +247,22 @@ def positions_open(db: Session = Depends(get_db)):
         "total_exposure_usd": total,
         "positions": [
             dict(
-                id=r.id,
-                symbol=r.symbol,
-                side=r.side,
-                entry_px=r.entry_px,
-                qty=r.qty,
-                lev=r.lev,
-                exposure_usd=r.exposure_usd,
-                opened_ts=r.opened_ts,
-                status=r.status,
-            )
-            for r in rows
+                id=r.id, symbol=r.symbol, side=r.side, entry_px=r.entry_px, qty=r.qty,
+                lev=r.lev, exposure_usd=r.exposure_usd, opened_ts=r.opened_ts, status=r.status,
+            ) for r in rows
         ],
     }
 
-
-# ==== Admin (kill-switch / cooldown) ====
-@router.post("/admin/kill_switch")
+# Admin – ochrona kluczem (require_role("admin")) – endpoints zostają jak były, zakładam że masz je już w main/security
+@router.post("/admin/kill_switch", dependencies=[require_role("admin")])
 def admin_kill_switch(on: bool):
+    from apps.ml.validators import set_kill_switch
     set_kill_switch(on)
     return {"kill_switch": on}
 
-
-@router.post("/admin/cooldown")
+@router.post("/admin/cooldown", dependencies=[require_role("admin")])
 def admin_cooldown(minutes: int = 30):
+    from apps.ml.validators import set_cooldown
     if minutes < 1:
         raise HTTPException(status_code=400, detail="minutes must be >= 1")
     set_cooldown(minutes)
