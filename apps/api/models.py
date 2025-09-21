@@ -102,20 +102,48 @@ class User(Base):
     prefs = Column(JSON, default={})
     api_connected = Column(Boolean, default=False)
 
-# === NEW: Funding rates ===
 class FundingRate(Base):
     __tablename__ = "funding_rates"
     id = Column(Integer, primary_key=True)
     symbol = Column(String, index=True, nullable=False)
     ts = Column(BigInteger, index=True, nullable=False)
-    rate_bps = Column(Float, nullable=False)  # funding rate * 10000
+    rate_bps = Column(Float, nullable=False)
     __table_args__ = (UniqueConstraint("symbol","ts", name="u_funding_idx"),)
 
-# === NEW: Open Interest ===
 class OpenInterest(Base):
     __tablename__ = "open_interest"
     id = Column(Integer, primary_key=True)
     symbol = Column(String, index=True, nullable=False)
     ts = Column(BigInteger, index=True, nullable=False)
-    oi = Column(Float, nullable=False)  # nominal OI (np. w USDT)
+    oi = Column(Float, nullable=False)
     __table_args__ = (UniqueConstraint("symbol","ts", name="u_oi_idx"),)
+
+# === NEW: Orderbook snapshot ===
+class OrderBookSnapshot(Base):
+    __tablename__ = "orderbook_snapshots"
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, index=True, nullable=False)
+    ts = Column(BigInteger, index=True, nullable=False)
+    bid_px = Column(Float, nullable=False)
+    bid_qty = Column(Float, nullable=False)
+    ask_px = Column(Float, nullable=False)
+    ask_qty = Column(Float, nullable=False)
+    mid_px = Column(Float, nullable=False)
+    spread_bps = Column(Float, nullable=False)
+    depth_usd_1pct = Column(Float, nullable=False)  # suma (price*qty) w ±1% mid
+    __table_args__ = (UniqueConstraint("symbol","ts", name="u_ob_idx"),)
+
+# === NEW: Paper positions ===
+class Position(Base):
+    __tablename__ = "positions"
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String, index=True, nullable=False)
+    side = Column(String, nullable=False)  # long/short
+    entry_px = Column(Float, nullable=False)
+    qty = Column(Float, nullable=False)
+    lev = Column(Integer, nullable=False)
+    margin_mode = Column(String, default="isolated")
+    exposure_usd = Column(Float, nullable=False)
+    opened_ts = Column(BigInteger, index=True, nullable=False)
+    status = Column(String, default="open")  # open/closed
+    pnl = Column(Float, default=0.0)

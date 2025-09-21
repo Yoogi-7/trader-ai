@@ -9,6 +9,7 @@ export default function Admin(){
   const {data:bf}=useSWR('http://localhost:8000/backfill/status',fetcher,{refreshInterval:5000})
   const {data:tr}=useSWR('http://localhost:8000/train/status',fetcher,{refreshInterval:8000})
   const {data:bt}=useSWR('http://localhost:8000/backtest/results',fetcher,{refreshInterval:8000})
+  const {data:pos}=useSWR('http://localhost:8000/positions/open',fetcher,{refreshInterval:5000})
   const [live,setLive]=useState<LiveMsg[]>([])
   const [progress,setProgress]=useState<Record<string,Progress>>({})
   const wsRef = useRef<WebSocket | null>(null)
@@ -63,6 +64,8 @@ export default function Admin(){
         <pre>{JSON.stringify(tr,null,2)}</pre>
         <h3>Backtesty (REST)</h3>
         <pre>{JSON.stringify(bt,null,2)}</pre>
+        <h3>Pozycje (paper)</h3>
+        <pre>{JSON.stringify(pos,null,2)}</pre>
       </section>
       <section>
         <h3>Backfill – progress (WebSocket)</h3>
