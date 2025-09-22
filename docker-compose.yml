@@ -119,3 +119,16 @@ services:
     restart: unless-stopped
     networks:
       - trader_ai_net
+  data_fetcher:
+    build:
+      context: .
+      dockerfile: worker.Dockerfile
+    command: ["python", "-m", "apps.worker.data_fetcher"]
+    depends_on:
+      - db
+      - redis
+      - kafka
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - PAIRS=${PAIRS}
+      - BACKFILL_YEARS=${BACKFILL_YEARS}
