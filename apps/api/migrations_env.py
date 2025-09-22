@@ -1,32 +1,63 @@
-
 from __future__ import annotations
+
+from logging.config import fileConfig
+from sqlalchemy import create_engine, pool
 from alembic import context
-from sqlalchemy import engine_from_config, pool
-import os
-from apps.api.db.models import Base  # noqa
 
+from apps.api.config import get_settings
+from apps.api.db.base import Base  # <-- tu upewnij się, że Base importuje wszystkie modele
+
+# Alembic Config object
 config = context.config
-def get_url():
-    return f"postgresql+psycopg2://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
 
+# Konfiguracja loggerów z alembic.ini (tylko logowanie)
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# Meta danych modeli
 target_metadata = Base.metadata
 
-def run_migrations_offline():
-    context.configure(url=get_url(), target_metadata=target_metadata, literal_binds=True, compare_type=True)
+
+def run_migrations_offline() -> None:
+    """Tryb offline – renderuje SQL bez połączenia."""
+    settings = get_settings()
+    url = settings.sqlalchemy_dsn  # SYNC DSN (psycopg2)
+
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        compare_type=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
     with context.begin_transaction():
         context.run_migrations()
 
-def run_migrations_online():
-    connectable = engine_from_config(
-        {"sqlalchemy.url": get_url()},
-        prefix="sqlalchemy.",
+
+def run_migrations_online() -> None:
+    """Tryb online – realne połączenie do DB."""
+    settings = get_settings()
+    url = settings.sqlalchemy_dsn  # SYNC DSN (psycopg2)
+
+    connectable = create_engine(
+        url,
         poolclass=pool.NullPool,
+        future=True,
     )
+
     with connectable.connect() as connection:
-        context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+        )
+
         with context.begin_transaction():
             context.run_migrations()
 
+
+# Punkty wejścia
 if context.is_offline_mode():
     run_migrations_offline()
 else:
