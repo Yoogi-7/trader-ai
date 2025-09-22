@@ -1,30 +1,35 @@
-
 from __future__ import annotations
+
 from sqlalchemy import (
-    Integer, String, Float, Boolean, DateTime, ForeignKey, UniqueConstraint, Index, JSON as SAJSON
+    Integer, String, Float, Boolean, DateTime, ForeignKey, Index, JSON as SAJSON
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from datetime import datetime
 
-class Base(DeclarativeBase):
-    pass
 
+class Base(DeclarativeBase):
+    """Wspólna baza modeli ORM."""
+
+
+# -----------------------
+# Hypertable: OHLCV
+# -----------------------
 class OHLCV(Base):
     __tablename__ = "ohlcv"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    symbol: Mapped[str] = mapped_column(String(20), index=True)
-    tf: Mapped[str] = mapped_column(String(8), index=True)
-    ts: Mapped[datetime] = mapped_column(DateTime, index=True)  # UTC
+    # composite PK zgodny z hypertable (musi zawierać ts)
+    symbol: Mapped[str] = mapped_column(String(20), primary_key=True, index=True)
+    tf: Mapped[str] = mapped_column(String(8), primary_key=True, index=True)
+    ts: Mapped[datetime] = mapped_column(DateTime, primary_key=True, index=True)  # UTC
+
     o: Mapped[float] = mapped_column(Float)
     h: Mapped[float] = mapped_column(Float)
     l: Mapped[float] = mapped_column(Float)
     c: Mapped[float] = mapped_column(Float)
     v: Mapped[float] = mapped_column(Float)
     source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    __table_args__ = (
-        UniqueConstraint("symbol", "tf", "ts", name="uq_ohlcv_symbol_tf_ts"),
-        Index("idx_ohlcv_symbol_tf_ts", "symbol", "tf", "ts"),
-    )
+
+    __table_args__ = (Index("idx_ohlcv_ts", "ts"),)
+
 
 class BackfillProgress(Base):
     __tablename__ = "backfill_progress"
@@ -37,7 +42,7 @@ class BackfillProgress(Base):
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(20), default="idle")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    __table_args__ = (UniqueConstraint("symbol", "tf", name="uq_backfill_symbol_tf"),)
+
 
 class Signal(Base):
     __tablename__ = "signals"
@@ -60,6 +65,7 @@ class Signal(Base):
     reason_discard: Mapped[str | None] = mapped_column(String(200), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="published")  # published/rejected
 
+
 class Execution(Base):
     __tablename__ = "executions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -70,8 +76,9 @@ class Execution(Base):
     qty: Mapped[float] = mapped_column(Float)
     fee: Mapped[float] = mapped_column(Float, default=0.0)
     slippage_bps: Mapped[float] = mapped_column(Float, default=0.0)
-    status: Mapped[str] = mapped_column(String(16))  # filled/cancelled/etc.
+    status: Mapped[str] = mapped_column(String(16))
     ts: Mapped[datetime] = mapped_column(DateTime, index=True)
+
 
 class PnL(Base):
     __tablename__ = "pnl"
@@ -80,9 +87,10 @@ class PnL(Base):
     realized: Mapped[float] = mapped_column(Float)
     unrealized: Mapped[float] = mapped_column(Float)
     max_dd: Mapped[float] = mapped_column(Float)
-    rr: Mapped[float] = mapped_column(Float)  # risk-reward
+    rr: Mapped[float] = mapped_column(Float)
     holding_time_min: Mapped[int] = mapped_column(Integer)
     funding_paid: Mapped[float] = mapped_column(Float, default=0.0)
+
 
 class TrainingRun(Base):
     __tablename__ = "training_runs"
@@ -93,6 +101,7 @@ class TrainingRun(Base):
     params_json: Mapped[dict] = mapped_column(SAJSON, default=dict)
     metrics_json: Mapped[dict] = mapped_column(SAJSON, default=dict)
 
+
 class Backtest(Base):
     __tablename__ = "backtests"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -100,6 +109,7 @@ class Backtest(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     summary_json: Mapped[dict | None] = mapped_column(SAJSON, nullable=True)
+
 
 class User(Base):
     __tablename__ = "users"

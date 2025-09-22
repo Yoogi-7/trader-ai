@@ -10,11 +10,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Zależności API
 COPY infra/requirements-api.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Skopiuj cały monorepo (API używa apps/, migrations/, etc.)
+# Całe monorepo (API korzysta z apps/, migrations/, itp.)
 COPY . /app
 
 EXPOSE 8000
-# Komenda właściwa jest podawana w docker-compose.yml (uvicorn ...)
+# Komendę startową podajemy w docker-compose.yml (uvicorn apps.api.main:app ...)

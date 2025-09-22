@@ -1,48 +1,114 @@
+from __future__ import annotations
 
-from pydantic_settings import BaseSettings
 from functools import lru_cache
+from typing import List, Optional
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _parse_csv_or_json_list(val: str) -> List[str]:
+    """
+    Akceptuj:
+      - pusty string -> []
+      - CSV: "http://a,http://b"
+      - JSON list: '["http://a","http://b"]'
+    Zwracaj listę stringów bez pustych elementów.
+    """
+    if val is None:
+        return []
+    s = str(val).strip()
+    if s == "":
+        return []
+    if s.startswith("["):
+        import json
+        try:
+            data = json.loads(s)
+            if isinstance(data, list):
+                return [str(x).strip() for x in data if str(x).strip()]
+            return []
+        except Exception:
+            return [x.strip() for x in s.split(",") if x.strip()]
+    return [x.strip() for x in s.split(",") if x.strip()]
+
 
 class Settings(BaseSettings):
-    API_TITLE: str = "Trader AI API"
-    API_HOST: str = "0.0.0.0"
-    API_PORT: int = 8000
-    CORS_ORIGINS: str = "http://localhost:3000"
+    """
+    Centralna konfiguracja aplikacji.
+    - Czyta z .env
+    - Ignoruje nadmiarowe klucze (extra="ignore")
+    - CORS: czytamy jako string (alias 'cors_origins') i parsujemy ręcznie.
+    """
 
-    POSTGRES_USER: str = "trader"
-    POSTGRES_PASSWORD: str = "trader_pwd"
-    POSTGRES_DB: str = "trader_ai"
-    POSTGRES_HOST: str = "db"
-    POSTGRES_PORT: int = 5432
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
-    REDIS_URL: str = "redis://redis:6379/0"
+    # --- API / ogólne ---
+    log_level: str = Field(default="INFO")
+    api_host: str = Field(default="0.0.0.0")
+    api_port: int = Field(default=8000)
 
-    MIN_NET_PCT: float = 2.0
-    CONFIDENCE_THRESHOLD: float = 0.55
-    MAKER_FEE_BPS: float = 7.0
-    TAKER_FEE_BPS: float = 10.0
-    SLIPPAGE_BPS: float = 5.0
-    FUNDING_BPS: float = 1.0
+    # Surowa wartość z .env (alias 'cors_origins'); lista w property 'cors_origins'
+    cors_origins_raw: str = Field(
+        default="http://localhost:3000,http://127.0.0.1:3000",
+        alias="cors_origins",
+        description="CSV lub JSON list stringów do CORS; parsowane do listy w property 'cors_origins'.",
+    )
 
-    # risk caps
-    MAX_PARALLEL_LOW: int = 2
-    MAX_PARALLEL_MED: int = 4
-    MAX_PARALLEL_HIGH: int = 8
-    RISK_PCT_LOW: float = 0.01
-    RISK_PCT_MED: float = 0.02
-    RISK_PCT_HIGH: float = 0.03
-    MAX_LEV_LOW: int = 5
-    MAX_LEV_MED: int = 10
-    MAX_LEV_HIGH: int = 20
-    CORRELATION_CAP_BTC_ETH: float = 0.5
+    # --- DB / Timescale ---
+    db_host: str = Field(default="db")
+    db_port: int = Field(default=5432)
+    db_user: str = Field(default="trader")
+    db_password: str = Field(default="trader")
+    db_name: str = Field(default="trader_ai")
+    database_url: Optional[str] = None
+    timescale_twox: bool = Field(default=True)
 
-    EXCHANGE: str = "binanceusdm"
-    BASE_TF: str = "15m"
-    DATA_TF: str = "1m"
-    FUNDING_ON: bool = True
+    # --- Redis ---
+    redis_url: str = Field(default="redis://redis:6379/0")
 
-    class Config:
-        env_file = ".env"
+    # --- Kafka / Redpanda ---
+    kafka_broker: str = Field(default="kafka:9092")
+    kafka_topic_signals: str = Field(default="signals")
 
-@lru_cache
+    # --- Trading / parametry biznesowe ---
+    pairs: str = Field(
+        default="BTCUSDT,ETHUSDT",
+        description="Comma-separated symbols, e.g. 'BTCUSDT,ETHUSDT'",
+    )
+    backfill_years: int = Field(default=4)
+    maker_first: bool = Field(default=True)
+    shadow_paper: bool = Field(default=True)
+
+    # --- Koszty / domyślne ---
+    fee_maker_bps: float = Field(default=7.0)
+    fee_taker_bps: float = Field(default=10.0)
+    slippage_bps: float = Field(default=5.0)
+    funding_on: bool = Field(default=True)
+
+    @property
+    def cors_origins(self) -> List[str]:
+        return _parse_csv_or_json_list(self.cors_origins_raw)
+
+    @property
+    def sqlalchemy_dsn(self) -> str:
+        """Złóż DSN jeśli DATABASE_URL nie jest podane wprost."""
+        if self.database_url:
+            return self.database_url
+        return (
+            f"postgresql+psycopg2://{self.db_user}:{self.db_password}"
+            f"@{self.db_host}:{self.db_port}/{self.db_name}"
+        )
+
+    @property
+    def pairs_list(self) -> List[str]:
+        """Lista symboli z CSV (z .env)."""
+        return [p.strip() for p in self.pairs.split(",") if p.strip()]
+
+
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()

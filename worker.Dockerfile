@@ -1,4 +1,4 @@
-# api.Dockerfile
+# worker.Dockerfile
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -10,11 +10,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY infra/requirements-api.txt /app/requirements.txt
+COPY infra/requirements-ml.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Skopiuj cały monorepo (API używa apps/, migrations/, etc.)
 COPY . /app
 
-EXPOSE 8000
-# Komenda właściwa jest podawana w docker-compose.yml (uvicorn ...)
+# Komenda startowa jest w docker-compose.yml:
+# command: ["python", "-m", "apps.ml.worker"]

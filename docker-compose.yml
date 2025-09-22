@@ -1,77 +1,121 @@
+name: trader_ai
 
-version: "3.9"
+networks:
+  trader_ai_net:
+
+volumes:
+  trader_ai_db_data:
+
 services:
   db:
     image: timescale/timescaledb:2.14.2-pg15
+    container_name: trader_ai-db-1
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    ports:
-      - "5432:5432"
+      - POSTGRES_USER=trader
+      - POSTGRES_PASSWORD=trader
+      - POSTGRES_DB=trader_ai
+    # Bez publikacji portu na hosta — unikasz konfliktu z lokalnym 5432
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - trader_ai_db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      test: ["CMD-SHELL", "pg_isready -U trader -d trader_ai || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 10
-    networks: [default]
+      retries: 15
+      start_period: 10s
+    networks:
+      - trader_ai_net
 
   redis:
     image: redis:7-alpine
+    container_name: trader_ai-redis-1
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
-    networks: [default]
+    networks:
+      - trader_ai_net
 
   kafka:
     image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: trader_ai-kafka-1
     command:
-      - redpanda start --overprovisioned --smp 1 --memory 1G --reserve-memory 0M --node-id 0
-        --check=false --set redpanda.auto_create_topics_enabled=true
+      - redpanda
+      - start
+      - --overprovisioned
+      - --smp=1
+      - --memory=512M
+      - --reserve-memory=0M
+      - --node-id=0
+      - --check=false
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
+      - --advertise-kafka-addr=PLAINTEXT://kafka:9092
     ports:
       - "9092:9092"
-    networks: [default]
+    networks:
+      - trader_ai_net
 
   api:
     build:
       context: .
-      dockerfile: infra/api.Dockerfile
-    env_file: .env
+      dockerfile: api.Dockerfile
+    container_name: trader_ai-api-1
+    env_file:
+      - .env
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_started
+      kafka:
+        condition: service_started
+    command: >
+      uvicorn apps.api.main:app
+      --host 0.0.0.0
+      --port 8000
+      --proxy-headers
     ports:
       - "8000:8000"
-    command: bash -lc "alembic upgrade head && uvicorn apps.api.main:app --host 0.0.0.0 --port 8000"
-    networks: [default]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || curl -fsS http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    networks:
+      - trader_ai_net
 
   worker:
     build:
       context: .
-      dockerfile: infra/worker.Dockerfile
-    env_file: .env
+      dockerfile: worker.Dockerfile
+    container_name: trader_ai-worker-1
+    env_file:
+      - .env
     depends_on:
-      - api
-    command: python -m apps.ml.worker
-    networks: [default]
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_started
+    command: ["python", "-m", "apps.ml.worker"]
+    restart: unless-stopped
+    networks:
+      - trader_ai_net
 
   web:
     build:
       context: .
-      dockerfile: infra/web.Dockerfile
-    env_file: .env
+      dockerfile: web.Dockerfile
+    container_name: trader_ai-web-1
+    env_file:
+      - .env
+    depends_on:
+      api:
+        condition: service_started
     ports:
       - "3000:3000"
-    depends_on:
-      - api
-    networks: [default]
-
-volumes:
-  db_data:
-
-networks:
-  default:
-    name: ${NETWORK_NAME}
+    restart: unless-stopped
+    networks:
+      - trader_ai_net

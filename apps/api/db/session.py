@@ -1,18 +1,24 @@
+from __future__ import annotations
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
 from apps.api.config import get_settings
 
 settings = get_settings()
 
-DB_URL = f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
+# Używamy złożonego DSN z configu (obsługuje DATABASE_URL albo parametry host/port/user/db)
+ENGINE = create_engine(
+    settings.sqlalchemy_dsn,
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=10,
+    future=True,
+)
 
-engine = create_engine(DB_URL, pool_pre_ping=True, pool_size=10, max_overflow=20, future=True)
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+SessionLocal = sessionmaker(
+    bind=ENGINE,
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+)
