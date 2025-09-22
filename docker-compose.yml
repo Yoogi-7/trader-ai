@@ -14,7 +14,6 @@ services:
       - POSTGRES_USER=trader
       - POSTGRES_PASSWORD=trader
       - POSTGRES_DB=trader_ai
-    # Bez publikacji portu na hosta — unikasz konfliktu z lokalnym 5432
     volumes:
       - trader_ai_db_data:/var/lib/postgresql/data
     healthcheck:
@@ -104,6 +103,21 @@ services:
     networks:
       - trader_ai_net
 
+  data_fetcher:
+    build:
+      context: .
+      dockerfile: worker.Dockerfile
+    container_name: trader_ai-data-fetcher-1
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python", "-m", "apps.worker.data_fetcher"]
+    restart: "no"  # backfill jest zadaniem wsadowym – kończy gdy skończy dane
+    networks:
+      - trader_ai_net
+
   web:
     build:
       context: .
@@ -119,16 +133,3 @@ services:
     restart: unless-stopped
     networks:
       - trader_ai_net
-  data_fetcher:
-    build:
-      context: .
-      dockerfile: worker.Dockerfile
-    command: ["python", "-m", "apps.worker.data_fetcher"]
-    depends_on:
-      - db
-      - redis
-      - kafka
-    environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - PAIRS=${PAIRS}
-      - BACKFILL_YEARS=${BACKFILL_YEARS}

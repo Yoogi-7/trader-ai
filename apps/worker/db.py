@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy import MetaData, Table, Column, String, TIMESTAMP, Float
 
 from apps.api.config import get_settings
+
 settings = get_settings()
 
 engine = create_async_engine(settings.sqlalchemy_dsn_async, echo=False, future=True)
