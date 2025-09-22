@@ -1,36 +1,43 @@
-name: ci
+
+name: CI
 on:
   push:
     branches: [ main ]
   pull_request:
+    branches: [ main ]
 jobs:
-  test:
+  build-and-test:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: timescale/timescaledb:2.15.2-pg15
-        ports: ['5432:5432']
+        image: timescale/timescaledb:2.14.2-pg15
         env:
           POSTGRES_USER: trader
-          POSTGRES_PASSWORD: traderpass
-          POSTGRES_DB: traderai
+          POSTGRES_PASSWORD: trader_pwd
+          POSTGRES_DB: trader_ai
+        ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U trader -d traderai"
-          --health-interval 5s --health-timeout 5s --health-retries 20
+          --health-cmd="pg_isready -U trader -d trader_ai" --health-interval=10s --health-timeout=5s --health-retries=10
       redis:
-        image: redis:7.2
-        ports: ['6379:6379']
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s --health-timeout 3s --health-retries 20
+        image: redis:7-alpine
+        ports: ["6379:6379"]
     steps:
       - uses: actions/checkout@v4
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-      - name: Install API deps
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
         run: |
-          cd apps/api && pip install -U pip && pip install -e .
-      - name: Run unit tests
+          python -m pip install -r infra/requirements-api.txt
+      - name: Alembic migrate
+        env:
+          POSTGRES_USER: trader
+          POSTGRES_PASSWORD: trader_pwd
+          POSTGRES_DB: trader_ai
+          POSTGRES_HOST: 127.0.0.1
+          POSTGRES_PORT: 5432
         run: |
-          cd apps/api && pytest -q
+          PYTHONPATH=. alembic upgrade head
+      - name: Tests
+        run: |
+          PYTHONPATH=. pytest -q

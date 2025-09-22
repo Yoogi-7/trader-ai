@@ -1,50 +1,77 @@
-version: "3.9"
 
+version: "3.9"
 services:
   db:
-    image: timescale/timescaledb-ha:pg15-latest
+    image: timescale/timescaledb:2.14.2-pg15
     environment:
-      POSTGRES_USER: trader
-      POSTGRES_PASSWORD: trader
-      POSTGRES_DB: trader_ai
-    ports: ["5432:5432"]
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trader -d trader_ai"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 10
-    volumes:
-      - db_data:/var/lib/postgresql/data
-    command: >
-      postgres -c shared_preload_libraries=timescaledb
+    networks: [default]
 
   redis:
-    image: redis:7
-    ports: ["6379:6379"]
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks: [default]
 
-  redpanda:
-    image: redpandadata/redpanda:v24.1.10
+  kafka:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
     command:
-      - redpanda start --smp 1 --overprovisioned --kafka-addr 0.0.0.0:9092
-        --advertise-kafka-addr redpanda:9092
-    ports: ["9092:9092"]
+      - redpanda start --overprovisioned --smp 1 --memory 1G --reserve-memory 0M --node-id 0
+        --check=false --set redpanda.auto_create_topics_enabled=true
+    ports:
+      - "9092:9092"
+    networks: [default]
 
   api:
-    build: ./apps/api
+    build:
+      context: .
+      dockerfile: infra/api.Dockerfile
     env_file: .env
-    depends_on: [db, redis, redpanda]
-    ports: ["8000:8000"]
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    command: bash -lc "alembic upgrade head && uvicorn apps.api.main:app --host 0.0.0.0 --port 8000"
+    networks: [default]
 
   worker:
-    build: ./apps/ml
+    build:
+      context: .
+      dockerfile: infra/worker.Dockerfile
     env_file: .env
-    depends_on: [db, redis, redpanda]
+    depends_on:
+      - api
+    command: python -m apps.ml.worker
+    networks: [default]
 
   web:
-    build: ./apps/web
+    build:
+      context: .
+      dockerfile: infra/web.Dockerfile
     env_file: .env
-    depends_on: [api]
-    ports: ["3000:3000"]
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    networks: [default]
 
 volumes:
   db_data:
+
+networks:
+  default:
+    name: ${NETWORK_NAME}

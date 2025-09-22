@@ -1,18 +1,14 @@
-# apps/api/db/session.py
-import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from apps.api.config import get_settings
 
-DB_HOST = os.getenv("POSTGRES_HOST", "db")
-DB_PORT = os.getenv("POSTGRES_PORT", "5432")
-DB_USER = os.getenv("POSTGRES_USER", "trader")
-DB_PASS = os.getenv("POSTGRES_PASSWORD", "trader")
-DB_NAME = os.getenv("POSTGRES_DB", "trader_ai")
+settings = get_settings()
 
-DATABASE_URL = f"postgresql+psycopg2://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DB_URL = f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine, future=True)
+engine = create_engine(DB_URL, pool_pre_ping=True, pool_size=10, max_overflow=20, future=True)
+SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
 def get_db():
     db = SessionLocal()

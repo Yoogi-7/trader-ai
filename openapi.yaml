@@ -1,43 +1,59 @@
+
 openapi: 3.0.3
 info:
-  title: Trader AI
-  version: 0.1.0
+  title: Trader AI API
+  version: "1.0.0"
 paths:
+  /health:
+    get:
+      summary: Health
+      responses:
+        "200": { description: OK }
+  /settings/profile:
+    post:
+      summary: Set profile
+      responses:
+        "200": { description: OK }
+  /capital:
+    post:
+      summary: Set capital
+      responses:
+        "200": { description: OK }
   /backfill/start:
     post:
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                symbols: {type: array, items: {type: string}}
-                tf: {type: string}
-                years: {type: integer}
+      summary: Start backfill
       responses:
-        "200": {description: started}
+        "200": { description: OK }
   /backfill/status:
     get:
+      summary: Backfill status
       parameters:
         - in: query
           name: job_id
-          schema: {type: string}
+          schema: { type: string }
       responses:
-        "200": {description: status}
+        "200": { description: OK }
   /train/run:
     post:
-      responses: {"200": {description: started}}
+      summary: Start training
+      responses:
+        "200": { description: OK }
   /train/status:
     get:
+      summary: Training status
       parameters:
         - in: query
           name: job_id
-          schema: {type: string}
-      responses: {"200": {description: ok}}
+          schema: { type: string }
+      responses:
+        "200": { description: OK }
   /backtest/run:
     post:
-      responses: {"200": {description: ok}}
+      summary: Run backtest
+      responses:
+        "200": { description: OK }
   /signals/generate:
     post:
-      responses: {"200": {description: ok}}
+      summary: Decide publish signal
+      responses:
+        "200": { description: OK }

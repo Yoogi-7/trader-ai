@@ -1,49 +1,22 @@
-# Python
-__pycache__/
-*.pyc
+
 .env
-.venv
-# Node
-node_modules/
-.next/
-# Build
-dist/
-build/
-coverage/
-# Editor
-.vscode/
-.idea/
-# Archives
-*.zip
-*.b64# python
+.env.*
 __pycache__/
-*.py[cod]
-*.pyo
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-
-# node
 node_modules/
 .next/
-out/
-
-# data/artifacts
-*.zip
-*.tar.gz
-*.parquet
-*.csv
-*.db
-*.pkl
-*.onnx
-*.h5
-artifacts/
-models/
-mlruns/
-wandb/
-
-# misc
+dist/
+build/
 .DS_Store
-Thumbs.db
+*.sqlite
+*.pyc
+*.pyo
+*.pyd
 *.log
-nohup.out
+.coverage
+coverage.xml
+htmlcov/
+*.egg-info/
+.venv

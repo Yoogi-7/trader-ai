@@ -1,12 +1,13 @@
-# apps/api/routers.py
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from typing import Any, Dict
 
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+from typing import Any, Dict, List
 from apps.api.db.session import get_db
-from apps.api.schemas import UserSettingsIn, CapitalIn, UserOut
+from apps.api.schemas import UserSettingsIn, CapitalIn, UserOut, BackfillStartRequest, TrainRunRequest, BacktestRequest, SignalPublishRequest
 from apps.api import crud
 from apps.api.services.risk import map_profile
+from apps.api.tools.signals import publish_signal_decision
+from apps.api.tools.backtester import run_backtest_sync
 
 router = APIRouter()
 
@@ -16,51 +17,42 @@ def health() -> Dict[str, Any]:
 
 @router.post("/settings/profile", response_model=UserOut, tags=["settings"])
 def set_profile(payload: UserSettingsIn, db: Session = Depends(get_db)) -> UserOut:
-    # mapowanie profilu na parametry (aby zweryfikować, że profil istnieje)
     params = map_profile(payload.risk_profile)
-
-    # prefs: zapisujemy pairs, max_parallel_positions override oraz margin_mode
-    prefs = {}
-    if payload.pairs is not None:
-        prefs["pairs"] = payload.pairs
-    if payload.max_parallel_positions is not None:
-        # pozwalamy nadpisać w dół, ale nie w górę
-        if payload.max_parallel_positions > params.max_parallel_positions:
-            raise HTTPException(status_code=400, detail=f"max_parallel_positions cannot exceed preset ({params.max_parallel_positions})")
-        prefs["max_parallel_positions_override"] = payload.max_parallel_positions
-    if payload.margin_mode:
-        prefs["margin_mode"] = payload.margin_mode
-
-    crud.upsert_user_settings(db, user_id=1, risk_profile=payload.risk_profile, prefs=prefs or None, margin_mode=payload.margin_mode)
-    db.commit()
-    user = crud.get_user(db, 1)
-    if not user:
-        raise HTTPException(status_code=500, detail="user_not_persisted")
-    return UserOut(
-        id=user.id,
-        risk_profile=user.risk_profile,
-        capital=float(user.capital or 0),
-        prefs=user.prefs or {},
-        api_connected=bool(user.api_connected),
-    )
+    prefs = {"pairs": payload.pairs or [], "max_parallel_positions": payload.max_parallel_positions, "margin_mode": payload.margin_mode}
+    user = crud.update_user(db, {"risk_profile": payload.risk_profile, "prefs": prefs})
+    return UserOut.model_validate(user.__dict__)
 
 @router.post("/capital", response_model=UserOut, tags=["settings"])
 def set_capital(payload: CapitalIn, db: Session = Depends(get_db)) -> UserOut:
-    crud.update_capital(db, user_id=1, capital=float(payload.capital))
-    db.commit()
-    user = crud.get_user(db, 1)
-    if not user:
-        raise HTTPException(status_code=500, detail="user_not_persisted")
-    return UserOut(
-        id=user.id,
-        risk_profile=user.risk_profile,
-        capital=float(user.capital or 0),
-        prefs=user.prefs or {},
-        api_connected=bool(user.api_connected),
-    )
+    user = crud.update_user(db, {"capital": float(payload.capital)})
+    return UserOut.model_validate(user.__dict__)
 
-# PRZYKŁADOWE endpointy z istniejącego zakresu (zostaw jeśli już masz):
-@router.get("/signals/live", tags=["signals"])
-def signals_live_demo() -> Dict[str, Any]:
-    # stub – docelowo WS
-    return {"live": True, "items": []}
+# ---- Backfill hooks (synchronous stub; real job in worker) ----
+@router.post("/backfill/start", tags=["backfill"])
+def backfill_start(req: BackfillStartRequest) -> Dict[str, Any]:
+    return {"status": "queued", "symbols": req.symbols, "tf": req.tf, "years": req.years}
+
+@router.get("/backfill/status", tags=["backfill"])
+def backfill_status(job_id: str) -> Dict[str, Any]:
+    return {"job_id": job_id, "status": "running", "progress": 42, "eta": "15m"}
+
+# ---- Train ----
+@router.post("/train/run", tags=["train"])
+def train_run(req: TrainRunRequest) -> Dict[str, Any]:
+    return {"status": "started", "job_id": "train-"+ "0001"}
+
+@router.get("/train/status", tags=["train"])
+def train_status(job_id: str) -> Dict[str, Any]:
+    return {"job_id": job_id, "status": "running", "oos_hit_rate": 0.57}
+
+# ---- Backtest ----
+@router.post("/backtest/run", tags=["backtest"])
+def backtest_run(req: BacktestRequest) -> Dict[str, Any]:
+    summary = run_backtest_sync(req)
+    return {"status": "done", "summary": summary}
+
+# ---- Signals ----
+@router.post("/signals/generate", tags=["signals"])
+def signals_generate(req: SignalPublishRequest) -> Dict[str, Any]:
+    ok, expected_net_pct, reason = publish_signal_decision(req.dict())
+    return {"ok": ok, "expected_net_pct": expected_net_pct, "reason": reason}

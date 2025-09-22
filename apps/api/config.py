@@ -1,35 +1,48 @@
+
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from functools import lru_cache
 
 class Settings(BaseSettings):
-    POSTGRES_HOST: str = "db"
-    POSTGRES_PORT: int = 5432
-    POSTGRES_DB: str = "trader_ai"
-    POSTGRES_USER: str = "trader"
-    POSTGRES_PASSWORD: str = "trader_pw"
-    REDIS_URL: str = "redis://redis:6379/0"
-    KAFKA_BROKERS: str = "redpanda:9092"
+    API_TITLE: str = "Trader AI API"
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
-    BACKFILL_CHUNK_MINUTES: int = 1440
-    PAIRS: str = "BTCUSDT,ETHUSDT"
-    FEE_TAKER_BPS: int = 10
-    FEE_MAKER_BPS: int = 2
-    DEFAULT_SLIPPAGE_BPS: int = 5
-    FUNDING_TOGGLE: bool = True
-    DEMO_MODE: bool = True
-    DEMO_SEED_ROWS: int = 2000
-    SECRET_KEY: str = "changeme"
+    CORS_ORIGINS: str = "http://localhost:3000"
 
+    POSTGRES_USER: str = "trader"
+    POSTGRES_PASSWORD: str = "trader_pwd"
+    POSTGRES_DB: str = "trader_ai"
+    POSTGRES_HOST: str = "db"
+    POSTGRES_PORT: int = 5432
+
+    REDIS_URL: str = "redis://redis:6379/0"
+
+    MIN_NET_PCT: float = 2.0
+    CONFIDENCE_THRESHOLD: float = 0.55
+    MAKER_FEE_BPS: float = 7.0
+    TAKER_FEE_BPS: float = 10.0
+    SLIPPAGE_BPS: float = 5.0
+    FUNDING_BPS: float = 1.0
+
+    # risk caps
+    MAX_PARALLEL_LOW: int = 2
+    MAX_PARALLEL_MED: int = 4
+    MAX_PARALLEL_HIGH: int = 8
+    RISK_PCT_LOW: float = 0.01
+    RISK_PCT_MED: float = 0.02
+    RISK_PCT_HIGH: float = 0.03
     MAX_LEV_LOW: int = 5
     MAX_LEV_MED: int = 10
     MAX_LEV_HIGH: int = 20
-    RISK_PER_TRADE_LOW: float = 0.003
-    RISK_PER_TRADE_MED: float = 0.007
-    RISK_PER_TRADE_HIGH: float = 0.015
-    MAX_PARALLEL_POS_LOW: int = 2
-    MAX_PARALLEL_POS_MED: int = 4
-    MAX_PARALLEL_POS_HIGH: int = 6
-    CORR_CAP_BTC_ETH_PCT: float = 0.35
+    CORRELATION_CAP_BTC_ETH: float = 0.5
 
-settings = Settings()
+    EXCHANGE: str = "binanceusdm"
+    BASE_TF: str = "15m"
+    DATA_TF: str = "1m"
+    FUNDING_ON: bool = True
+
+    class Config:
+        env_file = ".env"
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

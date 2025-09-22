@@ -1,36 +1,35 @@
-SHELL := /bin/bash
 
-.PHONY: up down logs migrate seed backfill train backtest api web
+    export $(shell sed -e '/^#/d' -e '/^$/d' .env 2>/dev/null | xargs)
 
-up:
-\tdocker compose up -d --build
+    up:
+		docker compose up -d --build
 
-down:
-\tdocker compose down -v
+    down:
+		docker compose down
 
-logs:
-\tdocker compose logs -f
+    logs:
+		docker compose logs -f api worker web
 
-migrate:
-\tdocker compose exec api alembic upgrade head
+    migrate:
+		docker compose exec api alembic upgrade head
 
-seed:
-\t# przykładowy seed użytkownika
-\tdocker compose exec db psql -U $${DB_USER:-trader} -d $${DB_NAME:-traderai} -c "INSERT INTO users(id,risk_profile,capital) VALUES (1,'LOW',100) ON CONFLICT DO NOTHING;"
+    seed:
+		docker compose exec api python -m apps.api.seed
 
-backfill:
-\t# symulacyjne wywołanie jobów (realnie: Celery/Kafka)
-\tdocker compose exec ml python -c "from trader_ml.scheduler.tasks import run_backfill; print(run_backfill.delay('BTC/USDT'))"
+    backfill:
+		docker compose exec worker python -m apps.ml.jobs.backfill --years $${BACKFILL_YEARS:-4}
 
-train:
-\t# placeholder — w realu task celery na trening+walk-forward
-\techo "trigger train via API /train/run"
+    train:
+		docker compose exec worker python -m apps.ml.jobs.train
 
-backtest:
-\tcurl -s -X POST http://localhost:8000/backtest/run -H 'Content-Type: application/json' -d '{\"capital\":100, \"risk_profile\":\"LOW\",\"pairs\":[\"BTC/USDT\"],\"fee_maker_bps\":7,\"fee_taker_bps\":10,\"slippage_bps\":5,\"funding_on\":true}' | jq .
+    backtest:
+		docker compose exec api python -m apps.api.tools.run_backtest
 
-api:
-\tdocker compose exec api bash
+    api:
+		docker compose exec api uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
 
-web:
-\tdocker compose exec web sh
+    web:
+		docker compose exec web npm run dev
+
+    test:
+		docker compose exec api pytest -q
