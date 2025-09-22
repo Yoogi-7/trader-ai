@@ -2,86 +2,49 @@ version: "3.9"
 
 services:
   db:
-    image: timescale/timescaledb:2.15.2-pg15
-    container_name: traderai_db
+    image: timescale/timescaledb-ha:pg15-latest
     environment:
-      - POSTGRES_USER=${DB_USER:-trader}
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-traderpass}
-      - POSTGRES_DB=${DB_NAME:-traderai}
-      - TIMESCALEDB_TELEMETRY=off
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-trader} -d ${DB_NAME:-traderai}"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
+      POSTGRES_USER: trader
+      POSTGRES_PASSWORD: trader
+      POSTGRES_DB: trader_ai
     ports: ["5432:5432"]
-    volumes:
-      - dbdata:/var/lib/postgresql/data
-      - ./infra/sql:/docker-entrypoint-initdb.d:ro
-
-  redis:
-    image: redis:7.2
-    container_name: traderai_redis
-    ports: ["6379:6379"]
     healthcheck:
-      test: ["CMD", "redis-cli", "PING"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-
-  redpanda:
-    image: redpandadata/redpanda:v24.1.11
-    container_name: traderai_redpanda
-    command:
-      - redpanda start --smp 1 --memory 1G --reserve-memory 0M --overprovisioned
-        --kafka-addr PLAINTEXT://0.0.0.0:9092
-        --advertise-kafka-addr PLAINTEXT://redpanda:9092
-    ports: ["9092:9092"]
-    healthcheck:
-      test: ["CMD-SHELL", "rpk cluster health | grep -q 'All systems nominal' || exit 1"]
+      test: ["CMD-SHELL", "pg_isready -U trader -d trader_ai"]
       interval: 10s
       timeout: 5s
-      retries: 30
+      retries: 10
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    command: >
+      postgres -c shared_preload_libraries=timescaledb
+
+  redis:
+    image: redis:7
+    ports: ["6379:6379"]
+
+  redpanda:
+    image: redpandadata/redpanda:v24.1.10
+    command:
+      - redpanda start --smp 1 --overprovisioned --kafka-addr 0.0.0.0:9092
+        --advertise-kafka-addr redpanda:9092
+    ports: ["9092:9092"]
 
   api:
-    build:
-      context: .
-      dockerfile: ./infra/docker/api.Dockerfile
-    container_name: traderai_api
+    build: ./apps/api
     env_file: .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      redpanda:
-        condition: service_healthy
+    depends_on: [db, redis, redpanda]
     ports: ["8000:8000"]
-    command: ["uvicorn", "trader_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
 
-  ml:
-    build:
-      context: .
-      dockerfile: ./infra/docker/ml.Dockerfile
-    container_name: traderai_ml
+  worker:
+    build: ./apps/ml
     env_file: .env
-    depends_on:
-      db:
-        condition: service_healthy
-      redpanda:
-        condition: service_healthy
-    command: ["celery", "-A", "trader_ml.scheduler.tasks:app", "worker", "--loglevel=INFO"]
+    depends_on: [db, redis, redpanda]
 
   web:
-    build:
-      context: .
-      dockerfile: ./infra/docker/web.Dockerfile
-    container_name: traderai_web
+    build: ./apps/web
     env_file: .env
-    depends_on:
-      api:
-        condition: service_started
+    depends_on: [api]
     ports: ["3000:3000"]
 
 volumes:
-  dbdata:
+  db_data:
