@@ -15,4 +15,35 @@ coverage/
 .idea/
 # Archives
 *.zip
-*.b64
+*.b64# python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# node
+node_modules/
+.next/
+out/
+
+# data/artifacts
+*.zip
+*.tar.gz
+*.parquet
+*.csv
+*.db
+*.pkl
+*.onnx
+*.h5
+artifacts/
+models/
+mlruns/
+wandb/
+
+# misc
+.DS_Store
+Thumbs.db
+*.log
+nohup.out
