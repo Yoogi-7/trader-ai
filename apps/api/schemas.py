@@ -1,10 +1,12 @@
-
 from pydantic import BaseModel, Field
 from typing import List, Optional
 
 class StartBackfillRequest(BaseModel):
-    pairs: List[str]
+    pairs: Optional[List[str]] = None
     tf: str = "1m"
+    start_ts_ms: Optional[int] = None
+    end_ts_ms: Optional[int] = None
+    batch_limit: int = 1000
 
 class StartTrainRequest(BaseModel):
     params: dict = Field(default_factory=dict)

@@ -1,12 +1,16 @@
-
-from fastapi import APIRouter, Depends, WebSocket
+# apps/api/routers.py
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import select
+import time, uuid
+
 from apps.api.db.session import SessionLocal
 from apps.api.schemas import StartBackfillRequest, StartBacktestRequest, StartTrainRequest
 from apps.api.db import models
 from apps.api.config import settings
-import uuid, time
-from confluent_kafka import Producer
+
+# 🔁 Wspólna Celery app
+from apps.common.celery_app import app as celery_app
 
 router = APIRouter()
 
@@ -19,19 +23,89 @@ def get_db():
 
 @router.post("/backfill/start")
 def backfill_start(req: StartBackfillRequest):
-    p = Producer({"bootstrap.servers": settings.kafka_brokers})
-    payload = {"pairs": req.pairs, "tf": req.tf, "ts": int(time.time()*1000)}
-    p.produce(settings.kafka_backfill_topic, value=str(payload).encode())
-    p.flush(2)
-    return {"status": "queued", "payload": payload}
+    # Wyślij asynchroniczne zadanie do Workera
+    async_result = celery_app.send_task(
+        "apps.ml.jobs.backfill.run_backfill",
+        kwargs=dict(
+            pairs=req.pairs,
+            tf=req.tf,
+            start_ts_ms=req.start_ts_ms,
+            end_ts_ms=req.end_ts_ms,
+            batch_limit=req.batch_limit,
+            use_ccxt=True,
+        ),
+    )
+    return {"status": "queued", "task_id": async_result.id, "params": req.model_dump()}
 
 @router.get("/backfill/status")
-def backfill_status(job_id: str | None = None):
-    return {"status": "stub", "job_id": job_id}
+def backfill_status(db: Session = Depends(get_db)):
+    rows = db.execute(select(models.BackfillProgress)).scalars().all()
+    out = []
+    for r in rows:
+        total = None
+        pct = None
+        done = None
+        if r.chunk_start_ts and r.chunk_end_ts:
+            total = ((r.chunk_end_ts - r.chunk_start_ts) // 60_000) + 1
+            if r.last_ts_completed:
+                done = ((r.last_ts_completed - r.chunk_start_ts) // 60_000) + 1
+                pct = round(done / total * 100, 2) if total else None
+        out.append({
+            "symbol": r.symbol,
+            "tf": r.tf,
+            "status": r.status,
+            "last_ts_completed": r.last_ts_completed,
+            "chunk_start_ts": r.chunk_start_ts,
+            "chunk_end_ts": r.chunk_end_ts,
+            "retry_count": r.retry_count,
+            "gaps": r.gaps or [],
+            "progress_pct": pct,
+            "done": done,
+            "total": total,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+        })
+    return {"items": out}
+
+@router.post("/backfill/pause")
+def backfill_pause(symbol: str, tf: str = "1m", db: Session = Depends(get_db)):
+    row = db.execute(
+        select(models.BackfillProgress).where(models.BackfillProgress.symbol == symbol, models.BackfillProgress.tf == tf)
+    ).scalars().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="progress not found")
+    row.status = "paused"
+    db.add(row); db.commit()
+    return {"ok": True}
+
+@router.post("/backfill/resume")
+def backfill_resume(symbol: str, tf: str = "1m"):
+    async_result = celery_app.send_task(
+        "apps.ml.jobs.backfill.run_backfill",
+        kwargs=dict(pairs=[symbol], tf=tf),
+    )
+    return {"status": "queued", "task_id": async_result.id, "symbol": symbol, "tf": tf}
+
+@router.post("/backfill/restart")
+def backfill_restart(symbol: str, tf: str = "1m", db: Session = Depends(get_db)):
+    row = db.execute(
+        select(models.BackfillProgress).where(models.BackfillProgress.symbol == symbol, models.BackfillProgress.tf == tf)
+    ).scalars().first()
+    if row:
+        row.last_ts_completed = None
+        row.chunk_start_ts = None
+        row.chunk_end_ts = None
+        row.retry_count = 0
+        row.status = "idle"
+        row.gaps = []
+        db.add(row); db.commit()
+    async_result = celery_app.send_task(
+        "apps.ml.jobs.backfill.run_backfill",
+        kwargs=dict(pairs=[symbol], tf=tf),
+    )
+    return {"status": "queued", "task_id": async_result.id, "symbol": symbol, "tf": tf}
 
 @router.post("/train/run")
 def train_run(req: StartTrainRequest):
-    # In real system send to Kafka or Celery
     return {"status": "queued", "params": req.params}
 
 @router.get("/train/status")
@@ -48,7 +122,6 @@ def backtest_results():
 
 @router.post("/signals/generate")
 def signals_generate(db: Session = Depends(get_db)):
-    # Demo: generate a single signal to prove path end-to-end
     sig = models.Signal(
         id=str(uuid.uuid4()),
         symbol="BTCUSDT",

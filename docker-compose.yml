@@ -1,4 +1,3 @@
-
 name: trader_ai
 
 networks:
@@ -15,8 +14,8 @@ services:
       - POSTGRES_USER=trader
       - POSTGRES_PASSWORD=trader
       - POSTGRES_DB=trader_ai
-    ports:
-      - "5432:5432"
+    # UWAGA: Nie wystawiamy portu 5432 na hosta, żeby uniknąć konfliktów.
+    # Jeśli chcesz dostęp z hosta, dodaj np.:  ports: ["15432:5432"]
     volumes:
       - trader_ai_db_data:/var/lib/postgresql/data
     healthcheck:
@@ -29,7 +28,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: trader_ai-redis-1
-    ports: ["6379:6379"]
+    # Redis też nie musi być wystawiony na hosta.
     networks: [trader_ai_net]
 
   redpanda:
@@ -47,9 +46,14 @@ services:
         --advertise-kafka-addr redpanda:9092
         --rpc-addr 0.0.0.0:33145
         --advertise-rpc-addr redpanda:33145
-    ports:
-      - "9092:9092"
-      - "9644:9644"
+    # Bez mapowania portów na hosta (unikamy konfliktów 9092/9644).
+    # Jeśli chcesz dostęp z hosta: ports: ["29092:9092","19644:9644"]
+    healthcheck:
+      # rpk jest w obrazie Redpandy — proste sprawdzenie zdrowia klastra
+      test: ["CMD", "rpk", "cluster", "health", "--watch=false"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
     networks: [trader_ai_net]
 
   api:
@@ -58,11 +62,17 @@ services:
       dockerfile: api.Dockerfile
     container_name: trader_ai-api-1
     env_file: [.env]
+    environment:
+      - PYTHONPATH=/app
     depends_on:
-      db: { condition: service_healthy }
-      redis: { condition: service_started }
-      redpanda: { condition: service_started }
-    ports: ["8000:8000"]
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      redpanda:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
     restart: unless-stopped
     networks: [trader_ai_net]
 
@@ -72,11 +82,17 @@ services:
       dockerfile: worker.Dockerfile
     container_name: trader_ai-worker-1
     env_file: [.env]
+    environment:
+      - PYTHONPATH=/app
     depends_on:
-      - api
-      - db
-      - redis
-      - redpanda
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      redpanda:
+        condition: service_healthy
+      api:
+        condition: service_started
     command: [ "celery", "-A", "apps.ml.worker:app", "worker", "-l", "INFO" ]
     restart: unless-stopped
     networks: [trader_ai_net]
@@ -88,7 +104,9 @@ services:
     container_name: trader_ai-web-1
     env_file: [.env]
     depends_on:
-      api: { condition: service_started }
-    ports: ["3000:3000"]
+      api:
+        condition: service_started
+    ports:
+      - "3000:3000"
     restart: unless-stopped
     networks: [trader_ai_net]

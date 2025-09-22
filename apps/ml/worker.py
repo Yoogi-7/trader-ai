@@ -1,8 +1,11 @@
+# apps/ml/worker.py
+from __future__ import annotations
+from apps.common.celery_app import app  # <- wspólna instancja Celery
 
-from celery import Celery
-import os
+# Opcjonalnie: trasy zadań / kolejki
+# app.conf.task_routes = {
+#     "apps.ml.jobs.backfill.run_backfill": {"queue": "backfill"},
+# }
 
-broker = os.getenv("REDIS_URL", "redis://redis:6379/0")
-backend = broker
-app = Celery("trader_ai", broker=broker, backend=backend, include=["apps.ml.jobs.backfill", "apps.ml.jobs.train", "apps.ml.jobs.backtest"])
-app.conf.task_routes = {"apps.ml.jobs.*": {"queue": "ml"}}
+if __name__ == "__main__":
+    app.start()
