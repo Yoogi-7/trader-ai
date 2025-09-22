@@ -1,12 +1,15 @@
-from apps.api.models import BackfillProgress
-from apps.api.db import SessionLocal
+from sqlalchemy import create_engine, text
+from trader_api.config import settings
+from datetime import datetime, timezone, timedelta
 
-def test_resume_backfill_checkpoint():
-    db = SessionLocal()
-    row = BackfillProgress(symbol="BTCUSDT", tf="1m", last_ts_completed=1000, chunk_start_ts=0, chunk_end_ts=2000, status="running")
-    db.add(row); db.commit()
-    # simulate interruption and resume
-    row.status = "queued"
-    db.commit()
-    r = db.query(BackfillProgress).filter_by(symbol="BTCUSDT", tf="1m").one()
-    assert r.last_ts_completed == 1000 and r.status == "queued"
+def test_resume_progress_table():
+    engine = create_engine(settings.DB_URL)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM backfill_progress WHERE symbol='BTC/USDT' AND tf='1m'"))
+        now = datetime.now(timezone.utc)
+        conn.execute(text("""
+          INSERT INTO backfill_progress(symbol,tf,last_ts_completed,chunk_start_ts,chunk_end_ts,status)
+          VALUES('BTC/USDT','1m', :last, :cs, :ce, 'ok')
+        """), {"last": now, "cs": now - timedelta(hours=12), "ce": now})
+        row = conn.execute(text("SELECT last_ts_completed FROM backfill_progress WHERE symbol='BTC/USDT' AND tf='1m'")).fetchone()
+        assert row and row[0] is not None

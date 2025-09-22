@@ -1,0 +1,36 @@
+name: ci
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: timescale/timescaledb:2.15.2-pg15
+        ports: ['5432:5432']
+        env:
+          POSTGRES_USER: trader
+          POSTGRES_PASSWORD: traderpass
+          POSTGRES_DB: traderai
+        options: >-
+          --health-cmd "pg_isready -U trader -d traderai"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+      redis:
+        image: redis:7.2
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install API deps
+        run: |
+          cd apps/api && pip install -U pip && pip install -e .
+      - name: Run unit tests
+        run: |
+          cd apps/api && pytest -q

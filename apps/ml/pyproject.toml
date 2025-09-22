@@ -1,0 +1,18 @@
+[project]
+name = "trader-ml"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "pandas==2.2.2",
+  "numpy==2.0.1",
+  "scikit-learn==1.5.1",
+  "lightgbm==4.5.0",
+  "xgboost==2.1.1",
+  "optuna==3.6.1",
+  "ccxt==4.4.31",
+  "SQLAlchemy==2.0.34",
+  "psycopg[binary]==3.2.1",
+  "redis==5.0.8",
+  "celery==5.4.0",
+  "orjson==3.10.7",
+]

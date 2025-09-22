@@ -1,66 +1,36 @@
 SHELL := /bin/bash
 
-# ==== Konfiguracja ====
-COMPOSE := docker compose
-DB_USER := trader
-DB_NAME := trader_ai
-DB_HOST := db
-DB_PORT := 5432
-
-.PHONY: up down rebuild logs api web ml db dbwait migrate seed psql reset-schema help
-
-help:
-	@echo "Użycie:"
-	@echo "  make up              - build & uruchom wszystkie serwisy"
-	@echo "  make down            - zatrzymaj i usuń serwisy"
-	@echo "  make migrate         - poczekaj na DB i wykonaj alembic upgrade head"
-	@echo "  make seed            - odpal seedy"
-	@echo "  make dbwait          - poczekaj aż DB przyjmuje połączenia"
-	@echo "  make reset-schema    - DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-	@echo "  make psql            - wejdź do psql"
-	@echo "  make api|web|ml      - zbuduj i uruchom wybrane"
-	@echo "  make logs            - tail logów"
-	@echo "  make rebuild         - przebuduj obrazy wszystkich serwisów"
+.PHONY: up down logs migrate seed backfill train backtest api web
 
 up:
-	$(COMPOSE) up -d --build
+\tdocker compose up -d --build
 
 down:
-	$(COMPOSE) down
-
-rebuild:
-	$(COMPOSE) build --no-cache
-	$(COMPOSE) up -d
+\tdocker compose down -v
 
 logs:
-	$(COMPOSE) logs -f
-
-api:
-	$(COMPOSE) up -d --build api
-
-web:
-	$(COMPOSE) up -d --build web
-
-ml:
-	$(COMPOSE) up -d --build ml
-
-db:
-	$(COMPOSE) up -d db
-	$(COMPOSE) logs -f db
-
-dbwait:
-	./scripts/wait_for_db.sh $(DB_HOST) $(DB_PORT) $(DB_USER) $(DB_NAME) 60
+\tdocker compose logs -f
 
 migrate:
-	./scripts/wait_for_db.sh $(DB_HOST) $(DB_PORT) $(DB_USER) $(DB_NAME) 60
-	$(COMPOSE) run --rm api alembic upgrade head
+\tdocker compose exec api alembic upgrade head
 
 seed:
-	./scripts/wait_for_db.sh $(DB_HOST) $(DB_PORT) $(DB_USER) $(DB_NAME) 60
-	$(COMPOSE) run --rm api python -m apps.api.seed
+\t# przykładowy seed użytkownika
+\tdocker compose exec db psql -U $${DB_USER:-trader} -d $${DB_NAME:-traderai} -c "INSERT INTO users(id,risk_profile,capital) VALUES (1,'LOW',100) ON CONFLICT DO NOTHING;"
 
-psql:
-	$(COMPOSE) exec -T db psql -U $(DB_USER) -d $(DB_NAME)
+backfill:
+\t# symulacyjne wywołanie jobów (realnie: Celery/Kafka)
+\tdocker compose exec ml python -c "from trader_ml.scheduler.tasks import run_backfill; print(run_backfill.delay('BTC/USDT'))"
 
-reset-schema:
-	$(COMPOSE) exec -T db psql -U $(DB_USER) -d $(DB_NAME) -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+train:
+\t# placeholder — w realu task celery na trening+walk-forward
+\techo "trigger train via API /train/run"
+
+backtest:
+\tcurl -s -X POST http://localhost:8000/backtest/run -H 'Content-Type: application/json' -d '{\"capital\":100, \"risk_profile\":\"LOW\",\"pairs\":[\"BTC/USDT\"],\"fee_maker_bps\":7,\"fee_taker_bps\":10,\"slippage_bps\":5,\"funding_on\":true}' | jq .
+
+api:
+\tdocker compose exec api bash
+
+web:
+\tdocker compose exec web sh
