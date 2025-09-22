@@ -2,58 +2,39 @@
 openapi: 3.0.3
 info:
   title: Trader AI API
-  version: "1.0.0"
+  version: 0.1.0
 paths:
-  /health:
-    get:
-      summary: Health
-      responses:
-        "200": { description: OK }
-  /settings/profile:
-    post:
-      summary: Set profile
-      responses:
-        "200": { description: OK }
-  /capital:
-    post:
-      summary: Set capital
-      responses:
-        "200": { description: OK }
   /backfill/start:
     post:
-      summary: Start backfill
-      responses:
-        "200": { description: OK }
+      summary: Start backfill job
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pairs: { type: array, items: { type: string } }
+                tf: { type: string }
+      responses: { "200": { description: OK } }
   /backfill/status:
     get:
       summary: Backfill status
-      parameters:
-        - in: query
-          name: job_id
-          schema: { type: string }
-      responses:
-        "200": { description: OK }
+      responses: { "200": { description: OK } }
   /train/run:
-    post:
-      summary: Start training
-      responses:
-        "200": { description: OK }
+    post: { summary: Start training, responses: { "200": { description: OK } } }
   /train/status:
-    get:
-      summary: Training status
-      parameters:
-        - in: query
-          name: job_id
-          schema: { type: string }
-      responses:
-        "200": { description: OK }
+    get: { summary: Training status, responses: { "200": { description: OK } } }
   /backtest/run:
-    post:
-      summary: Run backtest
-      responses:
-        "200": { description: OK }
+    post: { summary: Start backtest, responses: { "200": { description: OK } } }
+  /backtest/results:
+    get: { summary: Backtest results, responses: { "200": { description: OK } } }
   /signals/generate:
-    post:
-      summary: Decide publish signal
-      responses:
-        "200": { description: OK }
+    post: { summary: Generate demo signal, responses: { "200": { description: OK } } }
+  /signals/live:
+    get: { summary: Live signals, responses: { "200": { description: OK } } }
+  /signals/history:
+    get: { summary: Signals history, responses: { "200": { description: OK } } }
+  /settings/profile:
+    post: { summary: Set risk profile, responses: { "200": { description: OK } } }
+  /capital:
+    post: { summary: Set capital, responses: { "200": { description: OK } } }

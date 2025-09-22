@@ -1,58 +1,80 @@
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, WebSocket
 from sqlalchemy.orm import Session
-from typing import Any, Dict, List
-from apps.api.db.session import get_db
-from apps.api.schemas import UserSettingsIn, CapitalIn, UserOut, BackfillStartRequest, TrainRunRequest, BacktestRequest, SignalPublishRequest
-from apps.api import crud
-from apps.api.services.risk import map_profile
-from apps.api.tools.signals import publish_signal_decision
-from apps.api.tools.backtester import run_backtest_sync
+from apps.api.db.session import SessionLocal
+from apps.api.schemas import StartBackfillRequest, StartBacktestRequest, StartTrainRequest
+from apps.api.db import models
+from apps.api.config import settings
+import uuid, time
+from confluent_kafka import Producer
 
 router = APIRouter()
 
-@router.get("/health", tags=["system"])
-def health() -> Dict[str, Any]:
-    return {"status": "ok"}
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-@router.post("/settings/profile", response_model=UserOut, tags=["settings"])
-def set_profile(payload: UserSettingsIn, db: Session = Depends(get_db)) -> UserOut:
-    params = map_profile(payload.risk_profile)
-    prefs = {"pairs": payload.pairs or [], "max_parallel_positions": payload.max_parallel_positions, "margin_mode": payload.margin_mode}
-    user = crud.update_user(db, {"risk_profile": payload.risk_profile, "prefs": prefs})
-    return UserOut.model_validate(user.__dict__)
+@router.post("/backfill/start")
+def backfill_start(req: StartBackfillRequest):
+    p = Producer({"bootstrap.servers": settings.kafka_brokers})
+    payload = {"pairs": req.pairs, "tf": req.tf, "ts": int(time.time()*1000)}
+    p.produce(settings.kafka_backfill_topic, value=str(payload).encode())
+    p.flush(2)
+    return {"status": "queued", "payload": payload}
 
-@router.post("/capital", response_model=UserOut, tags=["settings"])
-def set_capital(payload: CapitalIn, db: Session = Depends(get_db)) -> UserOut:
-    user = crud.update_user(db, {"capital": float(payload.capital)})
-    return UserOut.model_validate(user.__dict__)
+@router.get("/backfill/status")
+def backfill_status(job_id: str | None = None):
+    return {"status": "stub", "job_id": job_id}
 
-# ---- Backfill hooks (synchronous stub; real job in worker) ----
-@router.post("/backfill/start", tags=["backfill"])
-def backfill_start(req: BackfillStartRequest) -> Dict[str, Any]:
-    return {"status": "queued", "symbols": req.symbols, "tf": req.tf, "years": req.years}
+@router.post("/train/run")
+def train_run(req: StartTrainRequest):
+    # In real system send to Kafka or Celery
+    return {"status": "queued", "params": req.params}
 
-@router.get("/backfill/status", tags=["backfill"])
-def backfill_status(job_id: str) -> Dict[str, Any]:
-    return {"job_id": job_id, "status": "running", "progress": 42, "eta": "15m"}
+@router.get("/train/status")
+def train_status():
+    return {"status": "stub"}
 
-# ---- Train ----
-@router.post("/train/run", tags=["train"])
-def train_run(req: TrainRunRequest) -> Dict[str, Any]:
-    return {"status": "started", "job_id": "train-"+ "0001"}
+@router.post("/backtest/run")
+def backtest_run(req: StartBacktestRequest):
+    return {"status": "queued", "params": req.params}
 
-@router.get("/train/status", tags=["train"])
-def train_status(job_id: str) -> Dict[str, Any]:
-    return {"job_id": job_id, "status": "running", "oos_hit_rate": 0.57}
+@router.get("/backtest/results")
+def backtest_results():
+    return {"status": "stub"}
 
-# ---- Backtest ----
-@router.post("/backtest/run", tags=["backtest"])
-def backtest_run(req: BacktestRequest) -> Dict[str, Any]:
-    summary = run_backtest_sync(req)
-    return {"status": "done", "summary": summary}
+@router.post("/signals/generate")
+def signals_generate(db: Session = Depends(get_db)):
+    # Demo: generate a single signal to prove path end-to-end
+    sig = models.Signal(
+        id=str(uuid.uuid4()),
+        symbol="BTCUSDT",
+        tf_base=settings.base_tf,
+        ts=int(time.time()*1000),
+        dir="long",
+        entry=65000.0, tp=[65500.0, 66000.0, 67000.0],
+        sl=64000.0, lev=5, risk=0.01,
+        margin_mode="isolated", expected_net_pct=0.025,
+        confidence=0.62, model_ver="v0.1", reason_discard=None, status="published"
+    )
+    db.add(sig); db.commit()
+    return {"inserted": sig.id}
 
-# ---- Signals ----
-@router.post("/signals/generate", tags=["signals"])
-def signals_generate(req: SignalPublishRequest) -> Dict[str, Any]:
-    ok, expected_net_pct, reason = publish_signal_decision(req.dict())
-    return {"ok": ok, "expected_net_pct": expected_net_pct, "reason": reason}
+@router.get("/signals/live")
+def signals_live(db: Session = Depends(get_db)):
+    return {"signals": [s.__dict__ for s in db.query(models.Signal).order_by(models.Signal.ts.desc()).limit(20)]}
+
+@router.get("/signals/history")
+def signals_history(limit: int = 100, db: Session = Depends(get_db)):
+    return {"signals": [s.__dict__ for s in db.query(models.Signal).order_by(models.Signal.ts.desc()).limit(limit)]}
+
+@router.post("/settings/profile")
+def settings_profile(profile: str):
+    return {"ok": True, "profile": profile}
+
+@router.post("/capital")
+def capital_set(amount: float):
+    return {"ok": True, "capital": amount}

@@ -1,28 +1,39 @@
-from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from apps.api.routers import router
+from apps.api.db.base import Base
+from apps.api.db.session import engine
+from apps.api.config import settings
+import asyncio, json, time
 
-from apps.api.config import get_settings
+app = FastAPI(title="Trader AI API")
 
-settings = get_settings()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-app = FastAPI(title="Trader AI API", version="1.0.0")
+# Create tables (for dev). In prod, rely on Alembic migrations.
+Base.metadata.create_all(bind=engine)
 
-# CORS
-if settings.cors_origins:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+app.include_router(router)
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+# Simple WebSocket broadcaster (demo)
+clients: set[WebSocket] = set()
 
-# tutaj możesz mieć resztę routerów, np.:
-# from apps.api.routes import router as api_router
-# app.include_router(api_router)
+@app.websocket("/ws/live")
+async def ws_live(ws: WebSocket):
+    await ws.accept()
+    clients.add(ws)
+    try:
+        while True:
+            # heartbeats / demo messages
+            await asyncio.sleep(5)
+            msg = {"type": "heartbeat", "ts": int(time.time()*1000)}
+            await ws.send_text(json.dumps(msg))
+    except WebSocketDisconnect:
+        clients.discard(ws)

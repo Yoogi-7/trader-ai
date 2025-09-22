@@ -1,35 +1,38 @@
 
-    export $(shell sed -e '/^#/d' -e '/^$/d' .env 2>/dev/null | xargs)
+.PHONY: up down logs seed backfill train backtest api web tests lint fmt
 
-    up:
-		docker compose up -d --build
+up:
+	docker compose up -d --build
 
-    down:
-		docker compose down
+down:
+	docker compose down -v
 
-    logs:
-		docker compose logs -f api worker web
+logs:
+	docker compose logs -f --tail=200
 
-    migrate:
-		docker compose exec api alembic upgrade head
+seed:
+	docker compose exec api python -m apps.api.seed
 
-    seed:
-		docker compose exec api python -m apps.api.seed
+backfill:
+	docker compose exec worker python -m apps.ml.jobs.backfill
 
-    backfill:
-		docker compose exec worker python -m apps.ml.jobs.backfill --years $${BACKFILL_YEARS:-4}
+train:
+	docker compose exec worker python -m apps.ml.jobs.train
 
-    train:
-		docker compose exec worker python -m apps.ml.jobs.train
+backtest:
+	docker compose exec worker python -m apps.ml.jobs.backtest
 
-    backtest:
-		docker compose exec api python -m apps.api.tools.run_backtest
+api:
+	docker compose exec api bash
 
-    api:
-		docker compose exec api uvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
+web:
+	docker compose exec web sh
 
-    web:
-		docker compose exec web npm run dev
+tests:
+	docker compose exec api pytest -q
 
-    test:
-		docker compose exec api pytest -q
+lint:
+	docker compose exec api ruff check .
+
+fmt:
+	docker compose exec api ruff format .

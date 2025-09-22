@@ -1,138 +1,32 @@
 {
   "info": {
     "name": "Trader AI API",
-    "_postman_id": "3c7b1c3e-8a9c-4e8a-af7c-103853",
-    "description": "Basic endpoints for Trader AI",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
     {
-      "name": "Health",
+      "name": "Backfill start",
+      "request": {
+        "method": "POST",
+        "url": "http://localhost:8000/backfill/start",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"pairs\": [\"BTCUSDT\"], \"tf\": \"1m\"}"
+        }
+      }
+    },
+    {
+      "name": "Signals live",
       "request": {
         "method": "GET",
-        "header": [],
-        "url": {
-          "raw": "http://localhost:8000/health",
-          "protocol": "http",
-          "host": [
-            "localhost"
-          ],
-          "port": "8000",
-          "path": [
-            "health"
-          ]
-        }
+        "url": "http://localhost:8000/signals/live"
       }
     },
     {
-      "name": "Set Profile",
+      "name": "Generate signal",
       "request": {
         "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "http://localhost:8000/settings/profile",
-          "protocol": "http",
-          "host": [
-            "localhost"
-          ],
-          "port": "8000",
-          "path": [
-            "settings",
-            "profile"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\"risk_profile\": \"LOW\", \"pairs\": [\"BTCUSDT\", \"ETHUSDT\"], \"max_parallel_positions\": 2, \"margin_mode\": \"isolated\"}"
-        }
-      }
-    },
-    {
-      "name": "Set Capital",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "http://localhost:8000/capital",
-          "protocol": "http",
-          "host": [
-            "localhost"
-          ],
-          "port": "8000",
-          "path": [
-            "capital"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\"capital\": 100.0}"
-        }
-      }
-    },
-    {
-      "name": "Backtest Run",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "http://localhost:8000/backtest/run",
-          "protocol": "http",
-          "host": [
-            "localhost"
-          ],
-          "port": "8000",
-          "path": [
-            "backtest",
-            "run"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\"capital\": 100.0, \"risk_profile\": \"LOW\", \"pairs\": [\"BTCUSDT\", \"ETHUSDT\"], \"fee_maker_bps\": 7, \"fee_taker_bps\": 10, \"slippage_bps\": 5, \"funding_on\": true}"
-        }
-      }
-    },
-    {
-      "name": "Signal Generate",
-      "request": {
-        "method": "POST",
-        "header": [
-          {
-            "key": "Content-Type",
-            "value": "application/json"
-          }
-        ],
-        "url": {
-          "raw": "http://localhost:8000/signals/generate",
-          "protocol": "http",
-          "host": [
-            "localhost"
-          ],
-          "port": "8000",
-          "path": [
-            "signals",
-            "generate"
-          ]
-        },
-        "body": {
-          "mode": "raw",
-          "raw": "{\"symbol\": \"BTCUSDT\", \"direction\": \"LONG\", \"entry\": 60000, \"sl\": 59400, \"tp\": [60600, 61200, 62000], \"leverage\": 5, \"risk_pct\": 0.01, \"margin_mode\": \"isolated\", \"tf_base\": \"15m\", \"ts\": \"2025-09-22T10:38:53.928808\", \"confidence\": 0.6}"
-        }
+        "url": "http://localhost:8000/signals/generate"
       }
     }
   ]

@@ -1,22 +1,33 @@
 
-.env
-.env.*
+# Python
 __pycache__/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-node_modules/
-.next/
-dist/
-build/
-.DS_Store
-*.sqlite
 *.pyc
 *.pyo
 *.pyd
-*.log
-.coverage
-coverage.xml
-htmlcov/
+.venv/
+.env
+.env.*
+.envrc
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+
+# Byte-compiled / build
+build/
 *.egg-info/
-.venv
+
+# IDE
+.vscode/
+.idea/
+
+# Coverage
+.coverage
+htmlcov/
+coverage.xml
+
+# Docker
+*.log
+docker-data/

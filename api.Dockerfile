@@ -1,21 +1,13 @@
-# api.Dockerfile
+
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential libpq-dev git curl ca-certificates \
- && rm -rf /var/lib/apt/lists/*
+ENV POETRY_VERSION=1.8.3
+RUN pip install --no-cache-dir poetry==$POETRY_VERSION
 
 WORKDIR /app
+COPY pyproject.toml poetry.lock* ./
+RUN poetry config virtualenvs.create false && poetry install --no-interaction --no-ansi
 
-# Zależności API
-COPY infra/requirements-api.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
-
-# Całe monorepo (API korzysta z apps/, migrations/, itp.)
-COPY . /app
-
+COPY . .
 EXPOSE 8000
-# Komendę startową podajemy w docker-compose.yml (uvicorn apps.api.main:app ...)
+CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
