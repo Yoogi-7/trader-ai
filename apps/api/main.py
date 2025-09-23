@@ -1,14 +1,21 @@
+# apps/api/main.py
+# PL: Główny plik FastAPI, mount routerów i WS. EN: FastAPI app, routers, WS.
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from apps.api.routers import router
-# Usuwamy runtime-owe tworzenie tabel! W prod polegamy wyłącznie na Alembic.
-# from apps.api.db.base import Base
-# from apps.api.db.session import engine
 from apps.api.config import settings
-import asyncio, json, time
+from apps.api.routes import backfill, train, backtest, signals, settings as settings_routes
+from apps.api.ws import ws_manager
 
-app = FastAPI(title="Trader AI API")
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.version,
+    openapi_url="/openapi.json",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
 
+# CORS – można zawęzić w .env
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,23 +24,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ❌ Nie robimy: Base.metadata.create_all(bind=engine)
-# ✔️ Tabele tworzą wyłącznie migracje Alembica.
+# Routery
+app.include_router(backfill.router, prefix=settings.api_prefix)
+app.include_router(train.router, prefix=settings.api_prefix)
+app.include_router(backtest.router, prefix=settings.api_prefix)
+app.include_router(signals.router, prefix=settings.api_prefix)
+app.include_router(settings_routes.router, prefix=settings.api_prefix)
 
-app.include_router(router)
-
-# Simple WebSocket broadcaster (demo)
-clients: set[WebSocket] = set()
-
+# WebSocket: /ws/live
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):
-    await ws.accept()
-    clients.add(ws)
+    await ws_manager.connect(ws)
     try:
+        # heartbeat + echo pingu klienta
         while True:
-            # heartbeats / demo messages
-            await asyncio.sleep(5)
-            msg = {"type": "heartbeat", "ts": int(time.time()*1000)}
-            await ws.send_text(json.dumps(msg))
+            msg = await ws.receive_text()
+            if msg == "ping":
+                await ws.send_text("pong")
     except WebSocketDisconnect:
-        clients.discard(ws)
+        ws_manager.disconnect(ws)
+
+# Health
+@app.get("/healthz")
+def health():
+    return {"ok": True, "name": settings.app_name, "version": settings.version}
