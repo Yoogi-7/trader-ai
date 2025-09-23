@@ -1,38 +1,32 @@
+# Makefile (root)
 
-.PHONY: up down logs seed backfill train backtest api web tests lint fmt
+SHELL := /bin/bash
+
+.PHONY: up down logs sh-api sh-worker ps web api backfill
 
 up:
-	docker compose up -d --build
+\tdocker compose -f infra/docker-compose.yml up -d --build
 
 down:
-	docker compose down -v
+\tdocker compose -f infra/docker-compose.yml down -v
 
 logs:
-	docker compose logs -f --tail=200
+\tdocker compose -f infra/docker-compose.yml logs -f --tail=200
 
-seed:
-	docker compose exec api python -m apps.api.seed
+ps:
+\tdocker compose -f infra/docker-compose.yml ps
 
-backfill:
-	docker compose exec worker python -m apps.ml.jobs.backfill
+sh-api:
+\tdocker compose -f infra/docker-compose.yml exec api /bin/sh
 
-train:
-	docker compose exec worker python -m apps.ml.jobs.train
-
-backtest:
-	docker compose exec worker python -m apps.ml.jobs.backtest
+sh-worker:
+\tdocker compose -f infra/docker-compose.yml exec ml-backfill /bin/sh
 
 api:
-	docker compose exec api bash
+\tuvicorn apps.api.main:app --host 0.0.0.0 --port 8000 --reload
 
 web:
-	docker compose exec web sh
+\tcd apps/web && npm run dev
 
-tests:
-	docker compose exec api pytest -q
-
-lint:
-	docker compose exec api ruff check .
-
-fmt:
-	docker compose exec api ruff format .
+backfill:
+\tBACKFILL_MODE=loop python -m apps.ml.backfill
