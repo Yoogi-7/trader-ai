@@ -5,6 +5,8 @@ from apps.api.config import settings
 from apps.api.routes import backfill, train, backtest, signals, settings as settings_routes
 from apps.api.routes import internal  # NEW
 from apps.api.ws import ws_manager
+from apps.api.routes import signals as signals_routes
+
 
 app = FastAPI(
     title=settings.app_name,
@@ -26,6 +28,7 @@ app.include_router(backfill.router, prefix=settings.api_prefix)
 app.include_router(train.router, prefix=settings.api_prefix)
 app.include_router(backtest.router, prefix=settings.api_prefix)
 app.include_router(signals.router, prefix=settings.api_prefix)
+app.include_router(signals_routes.router, prefix="/api")
 app.include_router(settings_routes.router, prefix=settings.api_prefix)
 app.include_router(internal.router, prefix=settings.api_prefix)  # NEW
 
