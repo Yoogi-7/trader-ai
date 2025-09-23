@@ -25,6 +25,10 @@ COPY apps /app/apps
 COPY alembic.ini /app/alembic.ini
 COPY migrations /app/migrations
 
+# Entry script
+COPY infra/entrypoints/api.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
 EXPOSE 8000
 USER appuser
-CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/app/entrypoint.sh"]
