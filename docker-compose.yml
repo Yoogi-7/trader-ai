@@ -45,7 +45,7 @@ services:
     build:
       context: ..
       dockerfile: infra/dockerfiles/api.Dockerfile
-    env_file: ../.env
+    env_file: ./.env
     environment:
       DATABASE_URL: postgresql+psycopg2://trader:traderpass@db:5432/traderai
       REDIS_URL: redis://redis:6379/0
@@ -70,7 +70,7 @@ services:
     build:
       context: ..
       dockerfile: infra/dockerfiles/web.Dockerfile
-    env_file: ../.env
+    env_file: ./.env
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
     depends_on:
@@ -87,7 +87,7 @@ services:
     build:
       context: ..
       dockerfile: infra/dockerfiles/ml.Dockerfile
-    env_file: ../.env
+    env_file: ./.env
     environment:
       BACKFILL_MODE: loop
       DATABASE_URL: postgresql+psycopg2://trader:traderpass@db:5432/traderai
@@ -105,7 +105,7 @@ services:
     build:
       context: ..
       dockerfile: infra/dockerfiles/ml.Dockerfile
-    env_file: ../.env
+    env_file: ./.env
     environment:
       API_INTERNAL_URL: http://api:8000
       KAFKA_BROKERS: redpanda:9092

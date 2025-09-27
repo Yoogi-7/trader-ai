@@ -1,12 +1,11 @@
 # apps/api/main.py
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from apps.api.config import settings
-from apps.api.routes import backfill, train, backtest, signals, settings as settings_routes
-from apps.api.routes import internal  # NEW
-from apps.api.ws import ws_manager
-from apps.api.routes import signals as signals_routes
 
+from apps.api.config import settings
+from apps.api.ws import ws_manager
+
+from apps.api.routers import backfill, train, backtest, signals, settings as settings_routes, internal
 
 app = FastAPI(
     title=settings.app_name,
@@ -24,13 +23,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(backfill.router, prefix=settings.api_prefix)
-app.include_router(train.router, prefix=settings.api_prefix)
-app.include_router(backtest.router, prefix=settings.api_prefix)
-app.include_router(signals.router, prefix=settings.api_prefix)
-app.include_router(signals_routes.router, prefix="/api")
-app.include_router(settings_routes.router, prefix=settings.api_prefix)
-app.include_router(internal.router, prefix=settings.api_prefix)  # NEW
+app.include_router(backfill.router)
+app.include_router(train.router)
+app.include_router(backtest.router)
+app.include_router(signals.router)
+app.include_router(settings_routes.router)
+app.include_router(internal.router)
 
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):

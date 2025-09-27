@@ -1,12 +1,12 @@
 # migrations/versions/0001_init.py
-# PL: Pierwsza migracja – tworzy rozszerzenia, tabele, indeksy, hypertable Timescale.
-# EN: Initial migration – creates extensions, tables, indexes, Timescale hypertables.
+# Initial migration – Timescale extensions, core tables, hypertables for heavy TS (ohlcv, features).
+# IMPORTANT: 'signals' stays a regular table (NOT a hypertable) to allow FK references to it.
 
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-# Revision identifiers, used by Alembic.
+# Revision identifiers
 revision = "0001_init"
 down_revision = None
 branch_labels = None
@@ -20,7 +20,7 @@ def upgrade():
 
     # --- Tables ---
 
-    # ohlcv
+    # OHLCV (time-series, will be hypertable)
     op.create_table(
         "ohlcv",
         sa.Column("symbol", sa.String(), primary_key=True),
@@ -34,9 +34,9 @@ def upgrade():
         sa.Column("source_hash", sa.String(), nullable=True),
     )
     op.create_index("ix_ohlcv_ts", "ohlcv", ["ts"])
-    op.create_index("ix_ohlcv_sym_tf_ts_desc", "ohlcv", ["symbol", "tf", "ts"])
+    op.create_index("ix_ohlcv_sym_tf_ts", "ohlcv", ["symbol", "tf", "ts"])
 
-    # features
+    # FEATURES (time-series, will be hypertable)
     op.create_table(
         "features",
         sa.Column("symbol", sa.String(), primary_key=True),
@@ -47,7 +47,7 @@ def upgrade():
     )
     op.create_index("ix_features_ts", "features", ["ts"])
 
-    # backfill_progress
+    # BACKFILL PROGRESS (control/meta)
     op.create_table(
         "backfill_progress",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -63,7 +63,7 @@ def upgrade():
     )
     op.create_index("ix_backfill_status", "backfill_progress", ["status"])
 
-    # signals
+    # SIGNALS (regular table! NOT hypertable — to allow inbound FKs)
     op.create_table(
         "signals",
         sa.Column("id", sa.String(), primary_key=True),
@@ -86,11 +86,11 @@ def upgrade():
     op.create_index("ix_signals_sym_tf_ts", "signals", ["symbol", "tf_base", "ts"])
     op.create_index("ix_signals_status", "signals", ["status"])
 
-    # executions
+    # EXECUTIONS (FK -> signals.id)
     op.create_table(
         "executions",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("signal_id", sa.String(), sa.ForeignKey("signals.id", ondelete="CASCADE")),
+        sa.Column("signal_id", sa.String(), sa.ForeignKey("signals.id", ondelete="SET NULL")),
         sa.Column("side", sa.String(), nullable=False),
         sa.Column("order_id", sa.String(), nullable=True),
         sa.Column("px", sa.Float(), nullable=False),
@@ -102,11 +102,11 @@ def upgrade():
     )
     op.create_index("ix_exec_signal_ts", "executions", ["signal_id", "ts"])
 
-    # pnl
+    # PNL (FK -> signals.id)
     op.create_table(
         "pnl",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("signal_id", sa.String(), sa.ForeignKey("signals.id", ondelete="CASCADE")),
+        sa.Column("signal_id", sa.String(), sa.ForeignKey("signals.id", ondelete="SET NULL")),
         sa.Column("realized", sa.Float(), nullable=True),
         sa.Column("unrealized", sa.Float(), nullable=True),
         sa.Column("max_dd", sa.Float(), nullable=True),
@@ -116,19 +116,19 @@ def upgrade():
     )
     op.create_index("ix_pnl_signal", "pnl", ["signal_id"])
 
-    # training_runs
+    # TRAINING RUNS (meta)
     op.create_table(
         "training_runs",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("started_at", sa.BigInteger(), nullable=False),
         sa.Column("finished_at", sa.BigInteger(), nullable=True),
-        sa.Column("status", sa.String(), nullable=False, server_default="running"),
+        sa.Column("status", sa.String(), nullable=False, server_default="new"),
         sa.Column("params_json", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("metrics_json", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
     )
     op.create_index("ix_train_status_start", "training_runs", ["status", "started_at"])
 
-    # backtests
+    # BACKTESTS
     op.create_table(
         "backtests",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -139,7 +139,7 @@ def upgrade():
     )
     op.create_index("ix_backtests_start", "backtests", ["started_at"])
 
-    # backtest_trades
+    # BACKTEST TRADES (FK -> backtests.id)
     op.create_table(
         "backtest_trades",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
@@ -156,27 +156,24 @@ def upgrade():
     op.create_index("ix_bt_trades_bt", "backtest_trades", ["backtest_id"])
     op.create_index("ix_bt_trades_sym", "backtest_trades", ["symbol"])
 
-    # users
+    # USERS
     op.create_table(
         "users",
         sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
-        sa.Column("risk_profile", sa.String(), nullable=False, server_default="LOW"),
-        sa.Column("capital", sa.Float(), nullable=False, server_default="100"),
-        sa.Column("prefs", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-        sa.Column("api_connected", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+        sa.Column("email", sa.String(), unique=True, nullable=False),
+        sa.Column("role", sa.String(), nullable=False, server_default="user"),
+        sa.Column("created_at", sa.BigInteger(), nullable=False),
     )
-    op.create_index("ix_users_risk", "users", ["risk_profile"])
 
-    # --- Timescale hypertables ---
-    # Uwaga: Timescale wspiera integer-based time; chunk = 7 dni w ms.
-    op.execute("SELECT create_hypertable('ohlcv','ts', if_not_exists => TRUE, chunk_time_interval => 604800000);")
+    # --- Hypertables for heavy time-series ---
+    op.execute("SELECT create_hypertable('ohlcv','ts', if_not_exists => TRUE, chunk_time_interval => 604800000);")   # 7d in ms
     op.execute("SELECT create_hypertable('features','ts', if_not_exists => TRUE, chunk_time_interval => 604800000);")
-    # Signals są mniej masywne, ale również czasowe – można włączyć hypertable:
-    op.execute("SELECT create_hypertable('signals','ts', if_not_exists => TRUE, chunk_time_interval => 604800000);")
+    # NO hypertable for 'signals' (keep it regular table!)
 
 def downgrade():
-    # Kolejność odwrotna dla FK
+    # Drop in reverse order
     op.drop_table("users")
+
     op.drop_index("ix_bt_trades_sym", table_name="backtest_trades")
     op.drop_index("ix_bt_trades_bt", table_name="backtest_trades")
     op.drop_table("backtest_trades")
@@ -203,8 +200,6 @@ def downgrade():
     op.drop_index("ix_features_ts", table_name="features")
     op.drop_table("features")
 
-    op.drop_index("ix_ohlcv_sym_tf_ts_desc", table_name="ohlcv")
+    op.drop_index("ix_ohlcv_sym_tf_ts", table_name="ohlcv")
     op.drop_index("ix_ohlcv_ts", table_name="ohlcv")
     op.drop_table("ohlcv")
-
-    # Nie usuwamy rozszerzeń w downgrade (często współdzielone).
