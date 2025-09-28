@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os, uuid, time
 from typing import Optional, Dict, Any, Tuple, Literal
+from math import isfinite
 from sqlalchemy.orm import Session
 from sqlalchemy import select, desc
 from apps.api.db import models
@@ -31,7 +32,7 @@ def generate_ai_summary(
     tp: list[float] | None,
     sl: float,
     expected_net_pct: float,
-    confidence: float | None,
+    confidence_rating: int | None,
 ) -> str:
     direction_text = "trend wzrostowy" if direction.upper() == "LONG" else "trend spadkowy"
     tf_label = tf_base.upper()
@@ -45,8 +46,8 @@ def generate_ai_summary(
         f"SL { _format_pct(abs(sl_pct)) }",
         f"Net { _format_pct(expected_net_pct * 100.0) }",
     ]
-    if confidence is not None:
-        summary_parts.append(f"confidence {confidence:.2f}")
+    if confidence_rating is not None:
+        summary_parts.append(f"rating {confidence_rating}/100")
     return " ".join(summary_parts)
 
 def _side_mult(direction: str) -> int:
@@ -127,6 +128,9 @@ def evaluate_signal(
     if conf < CONF_MIN:
         return None, f"low_confidence ({conf:.2f}<{CONF_MIN:.2f})"
 
+    rating_raw = int(round(conf * 100.0))
+    confidence_rating = int(min(100, max(1, rating_raw))) if isfinite(conf) else None
+
     # ≥ 2% netto
     net = _expected_net_pct(direction, lv.entry, lv.tp, lv.sl, qty, funding_rate_hourly)
     if net < MIN_NET:
@@ -141,7 +145,7 @@ def evaluate_signal(
         tp=lv.tp[:3] if lv.tp else None,
         sl=lv.sl,
         expected_net_pct=float(net),
-        confidence=conf,
+        confidence_rating=confidence_rating,
     )
 
     sig = models.Signal(
@@ -164,4 +168,6 @@ def evaluate_signal(
         ai_summary=summary_text,
     )
     db.add(sig); db.commit(); db.refresh(sig)
+    if confidence_rating is not None:
+        sig.__dict__["confidence_rating"] = confidence_rating  # type: ignore[attr-defined]
     return sig, None

@@ -200,15 +200,17 @@ def _generate_signal(db: Session, symbol: str) -> None:
             "sl": sig.sl,
             "tp": sig.tp,
             "confidence": sig.confidence,
+            "confidence_rating": int(round(float(sig.confidence) * 100.0)) if sig.confidence is not None else None,
             "ai_summary": sig.ai_summary,
         },
     )
     logger.info(
-        "auto signal created symbol=%s dir=%s entry=%.4f conf=%.2f",
+        "auto signal created symbol=%s dir=%s entry=%.4f conf=%.2f rating=%s",
         sig.symbol,
         sig.dir,
         sig.entry,
         sig.confidence or 0.0,
+        getattr(sig, "confidence_rating", None) or int(round((sig.confidence or 0.0) * 100)),
     )
 
 

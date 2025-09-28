@@ -45,7 +45,9 @@ def generate_auto(req: AutoReq, db: Session = Depends(db_dep)):
         "id": sig.id, "symbol": sig.symbol, "tf_base": sig.tf_base, "ts": sig.ts, "dir": sig.dir,
         "entry": sig.entry, "tp": sig.tp, "sl": sig.sl, "lev": sig.lev, "risk": sig.risk,
         "margin_mode": sig.margin_mode, "expected_net_pct": sig.expected_net_pct,
-        "confidence": sig.confidence, "model_ver": sig.model_ver, "status": sig.status
+        "confidence": sig.confidence,
+        "confidence_rating": int(round(float(sig.confidence) * 100.0)) if sig.confidence is not None else None,
+        "model_ver": sig.model_ver, "status": sig.status
     }
 
 @router.get("/history")

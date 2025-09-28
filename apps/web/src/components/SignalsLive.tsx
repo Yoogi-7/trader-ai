@@ -1,8 +1,24 @@
+import { useMemo } from 'react';
+import { useAuth } from '../context/AuthContext';
 import { useWS } from '../ws';
 
 export const SignalsLive: React.FC = () => {
   const { messages } = useWS();
-  const items = messages.filter(m => m?.type === 'signal_published');
+  const { user } = useAuth();
+  const minRating = useMemo(() => {
+    const value = user?.prefs?.min_confidence_rating;
+    if (typeof value !== 'number' || Number.isNaN(value)) return 0;
+    return Math.min(100, Math.max(0, value));
+  }, [user]);
+
+  const items = useMemo(() => {
+    return messages
+      .filter((m) => m?.type === 'signal_published')
+      .filter((m) => {
+        if (!m?.confidence_rating && m?.confidence_rating !== 0) return true;
+        return m.confidence_rating >= minRating;
+      });
+  }, [messages, minRating]);
 
   return (
     <div className="overflow-auto max-h-80">
@@ -14,6 +30,9 @@ export const SignalsLive: React.FC = () => {
               <span className="font-semibold">{m.symbol}</span> — <span>{m.signal_id ?? m.id}</span>
             </div>
             <div className="text-xs text-slate-600">dir: {m.dir}</div>
+            {typeof m.confidence_rating === 'number' && (
+              <div className="text-xs text-indigo-600">rating: {m.confidence_rating}/100</div>
+            )}
             {m.ai_summary && <div className="text-xs text-emerald-700">{m.ai_summary}</div>}
           </li>
         ))}

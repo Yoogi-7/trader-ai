@@ -401,21 +401,45 @@ def signals_generate(db: Session = Depends(get_db), _admin: models.User = Depend
 
 @router.get("/signals/live")
 def signals_live(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    q = db.query(models.Signal).order_by(models.Signal.ts.desc()).limit(20).all()
+    query = db.query(models.Signal)
+    min_conf = _min_confidence_rating(current_user)
+    if min_conf is not None:
+        query = query.filter(models.Signal.confidence >= min_conf / 100.0)
+    q = query.order_by(models.Signal.ts.desc()).limit(20).all()
     return {"signals": [_signal_to_dict(s) for s in q]}
 
 @router.get("/signals/history")
 def signals_history(limit: int = 100, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     limit = max(1, min(limit, 1000))
-    q = db.query(models.Signal).order_by(models.Signal.ts.desc()).limit(limit).all()
+    query = db.query(models.Signal)
+    min_conf = _min_confidence_rating(current_user)
+    if min_conf is not None:
+        query = query.filter(models.Signal.confidence >= min_conf / 100.0)
+    q = query.order_by(models.Signal.ts.desc()).limit(limit).all()
     return {"signals": [_signal_to_dict(s) for s in q]}
 
+def _min_confidence_rating(user: models.User) -> Optional[float]:
+    prefs = getattr(user, "prefs", None) or {}
+    value = prefs.get("min_confidence_rating") if isinstance(prefs, dict) else None
+    if value is None:
+        return None
+    try:
+        rating = float(value)
+    except (TypeError, ValueError):
+        return None
+    rating = max(0.0, min(100.0, rating))
+    return rating
+
 def _signal_to_dict(s: models.Signal) -> dict:
+    rating = None
+    if s.confidence is not None:
+        rating = int(round(float(s.confidence) * 100.0))
+        rating = max(0, min(100, rating))
     return {
         "id": s.id, "symbol": s.symbol, "tf_base": s.tf_base, "ts": s.ts, "dir": s.dir,
         "entry": s.entry, "tp": s.tp, "sl": s.sl, "lev": s.lev, "risk": s.risk,
         "margin_mode": s.margin_mode, "expected_net_pct": s.expected_net_pct,
-        "confidence": s.confidence, "model_ver": s.model_ver,
+        "confidence": s.confidence, "confidence_rating": rating, "model_ver": s.model_ver,
         "reason_discard": s.reason_discard, "status": s.status,
         "ai_summary": s.ai_summary,
     }

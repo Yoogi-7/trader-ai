@@ -8,6 +8,7 @@ export const RiskForm: React.FC<{ onSaved: () => void }> = ({ onSaved }) => {
   const [capital, setCapital] = useState<number>(100);
   const [pairs, setPairs] = useState<string>('BTC/USDT,ETH/USDT');
   const [maxAllocationPct, setMaxAllocationPct] = useState<number>(10);
+  const [minConfidenceRating, setMinConfidenceRating] = useState<number>(0);
 
   useEffect(() => {
     if (user) {
@@ -19,6 +20,10 @@ export const RiskForm: React.FC<{ onSaved: () => void }> = ({ onSaved }) => {
       const prefMax = user.prefs?.max_allocation_pct;
       if (typeof prefMax === 'number' && Number.isFinite(prefMax)) {
         setMaxAllocationPct(Math.round(prefMax * 1000) / 10);
+      }
+      const prefConfidence = user.prefs?.min_confidence_rating;
+      if (typeof prefConfidence === 'number' && Number.isFinite(prefConfidence)) {
+        setMinConfidenceRating(Math.min(100, Math.max(0, prefConfidence)));
       }
     }
   }, [user]);
@@ -33,6 +38,9 @@ export const RiskForm: React.FC<{ onSaved: () => void }> = ({ onSaved }) => {
       ...(user?.prefs ?? {}),
       pairs: parsedPairs,
       max_allocation_pct: sanitizedMax !== undefined ? sanitizedMax / 100 : undefined,
+      min_confidence_rating: Number.isFinite(minConfidenceRating)
+        ? Math.min(100, Math.max(0, minConfidenceRating))
+        : undefined,
     };
     await api.setProfile({ risk_profile, capital, prefs });
     onSaved();
@@ -62,6 +70,18 @@ export const RiskForm: React.FC<{ onSaved: () => void }> = ({ onSaved }) => {
           step={0.1}
           value={maxAllocationPct}
           onChange={(e) => setMaxAllocationPct(Number(e.target.value))}
+        />
+      </label>
+      <label className="text-sm">
+        <span className="block text-slate-600">Minimalny rating sygnału (%)</span>
+        <input
+          className="w-full border rounded px-2 py-1"
+          type="number"
+          min={0}
+          max={100}
+          step={1}
+          value={minConfidenceRating}
+          onChange={(e) => setMinConfidenceRating(Number(e.target.value))}
         />
       </label>
       <label className="text-sm">

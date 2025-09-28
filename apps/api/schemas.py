@@ -144,6 +144,7 @@ class SignalItem(BaseModel):
     margin_mode: str
     expected_net_pct: float
     confidence: Optional[float] = None
+    confidence_rating: Optional[int] = None
     model_ver: Optional[str] = None
     reason_discard: Optional[str] = None
     status: str

@@ -109,6 +109,11 @@ export const Simulator: React.FC = () => {
           <div>
             <b>Net%:</b> {(resp.expected_net_pct * 100).toFixed(2)}%
           </div>
+          {typeof resp.confidence_rating === 'number' && (
+            <div>
+              <b>Rating:</b> {resp.confidence_rating}/100
+            </div>
+          )}
         </div>
       )}
     </div>

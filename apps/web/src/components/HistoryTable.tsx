@@ -5,6 +5,7 @@ type Signal = {
   id: string; symbol: string; tf_base: string; ts: number; dir: string; entry: number;
   tp?: number[]; sl: number; lev: number; risk: string; margin_mode: string; expected_net_pct: number; status: string;
   ai_summary?: string | null;
+  confidence_rating?: number | null;
 };
 
 export const HistoryTable: React.FC<{ rows: Signal[] }> = ({ rows }) => {
@@ -19,6 +20,11 @@ export const HistoryTable: React.FC<{ rows: Signal[] }> = ({ rows }) => {
     { header: 'Risk', accessorKey: 'risk' },
     { header: 'Net %', accessorKey: 'expected_net_pct',
       cell: info => (info.getValue<number>()*100).toFixed(2) + '%' },
+    { header: 'Rating', accessorKey: 'confidence_rating',
+      cell: info => {
+        const value = info.getValue<number | null | undefined>();
+        return value != null ? `${value}/100` : '—';
+      } },
     { header: 'Status', accessorKey: 'status' },
     { header: 'Opis AI', accessorKey: 'ai_summary', cell: info => info.getValue<string | null>() || '—' },
   ], []);
