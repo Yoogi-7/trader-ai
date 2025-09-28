@@ -22,9 +22,11 @@ def _forward(evt: dict):
 def main():
     try:
         from kafka import KafkaConsumer  # kafka-python
-    except Exception:
-        print("[event_consumer] kafka-python not available, exiting")
-        return
+    except Exception as exc:  # pragma: no cover - optional dep missing in some envs
+        print(f"[event_consumer] kafka-python not available ({exc!r}), running noop loop")
+        while True:
+            time.sleep(30)
+        # never reached
 
     consumer = KafkaConsumer(
         EVENTS_TOPIC,
