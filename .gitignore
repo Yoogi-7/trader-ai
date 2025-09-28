@@ -31,3 +31,4 @@ coverage.xml
 # Docker
 *.log
 docker-data/
+trader_ai_test.db

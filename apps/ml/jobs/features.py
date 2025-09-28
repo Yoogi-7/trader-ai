@@ -5,14 +5,14 @@ from datetime import datetime, timezone
 from typing import Optional, List
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import text, select
 from sqlalchemy.orm import Session
 from celery import shared_task
 
 from apps.api.db.session import SessionLocal
-from apps.api.db.models import Feature
+from apps.api.db.models import Feature, OHLCV
 from apps.api.config import settings
-from apps.ml.features.indicators import ema, rsi, macd, atr, bollinger, stochastic, ichimoku
+from apps.ml.ta_utils import ema, rsi, macd, atr, bollinger, stoch, ichimoku
 
 UTC = timezone.utc
 
@@ -25,9 +25,23 @@ TF_VIEW = {
 }
 
 def _fetch_ohlcv_df(db: Session, symbol: str, tf: str, start_iso: Optional[str], end_iso: Optional[str]) -> pd.DataFrame:
+    bind = db.get_bind()
+    if bind and bind.dialect.name == "sqlite":
+        stmt = (
+            select(OHLCV.ts, OHLCV.o, OHLCV.h, OHLCV.l, OHLCV.c, OHLCV.v)
+            .where(OHLCV.symbol == symbol, OHLCV.tf == tf)
+            .order_by(OHLCV.ts.asc())
+        )
+        rows = db.execute(stmt).all()
+        if not rows:
+            return pd.DataFrame(columns=["o", "h", "l", "c", "v"], index=pd.Index([], name="ts_time"))
+        df = pd.DataFrame(rows, columns=["ts", "o", "h", "l", "c", "v"])
+        df["ts_time"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
+        df.set_index("ts_time", inplace=True)
+        return df[["o", "h", "l", "c", "v"]]
+
     view = TF_VIEW[tf]
     if tf == "1m":
-        # surowa tabela ohlcv – używamy ts_time
         sql = f"""
         SELECT ts_time, o, h, l, c, v
         FROM {view}
@@ -54,24 +68,39 @@ def _fetch_ohlcv_df(db: Session, symbol: str, tf: str, start_iso: Optional[str],
     return df
 
 def _compute_features(df: pd.DataFrame) -> pd.DataFrame:
-    out = pd.DataFrame(index=df.index)
-    out["ema_20"] = ema(df["c"], 20)
-    out["ema_50"] = ema(df["c"], 50)
-    out["rsi_14"] = rsi(df["c"], 14)
-    macd_df = macd(df["c"], 12, 26, 9)
-    out = out.join(macd_df)
-    out["atr_14"] = atr(df["h"], df["l"], df["c"], 14)
-    out = out.join(bollinger(df["c"], 20, 2.0))
-    out = out.join(stochastic(df["h"], df["l"], df["c"], 14, 3))
-    out = out.join(ichimoku(df["h"], df["l"]))
-    # Dodatkowe proste cechy: zmienność i zwroty
-    out["ret_1"] = df["c"].pct_change().fillna(0.0)
-    out["rv_10"] = (df["c"].pct_change().rolling(10).std() * (10 ** 0.5)).fillna(0.0)
+    if df.empty:
+        return pd.DataFrame(index=df.index)
+
+    work = df.rename(
+        columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume"}
+    ).copy()
+
+    ema(work, 20)
+    ema(work, 50)
+    rsi(work, 14)
+    macd(work, 12, 26, 9)
+    atr(work, 14)
+    bollinger(work, 20, 2.0)
+    stoch(work, 14, 3)
+    ichimoku(work)
+
+    out = work[[
+        "ema_20", "ema_50", "rsi",
+        "macd", "macd_signal", "macd_hist",
+        "atr", "bb_mid", "bb_up", "bb_low",
+        "stoch_k", "stoch_d",
+        "ichi_conv", "ichi_base", "ichi_span_a", "ichi_span_b",
+    ]].copy()
+
+    out["ret_1"] = work["close"].pct_change().fillna(0.0)
+    out["rv_10"] = (work["close"].pct_change().rolling(10).std() * (10 ** 0.5)).fillna(0.0)
     return out
 
 def _upsert_features(db: Session, symbol: str, tf: str, version: str, fdf: pd.DataFrame, chunk: int = 1000) -> int:
     total = 0
     cols = list(fdf.columns)
+    bind = db.get_bind()
+    is_sqlite = bool(bind and bind.dialect.name == "sqlite")
     for start in range(0, len(fdf), chunk):
         part = fdf.iloc[start:start+chunk]
         payload = [
@@ -86,13 +115,30 @@ def _upsert_features(db: Session, symbol: str, tf: str, version: str, fdf: pd.Da
         ]
         if not payload:
             continue
-        # ON CONFLICT (symbol, tf, ts, version) DO UPDATE SET f_vector=EXCLUDED.f_vector
-        db.execute(text("""
-            INSERT INTO features (symbol, tf, ts, f_vector, version)
-            VALUES (:symbol, :tf, :ts, :f_vector::jsonb, :version)
-            ON CONFLICT (symbol, tf, ts, version)
-            DO UPDATE SET f_vector = EXCLUDED.f_vector
-        """), payload)
+        if is_sqlite:
+            serialised = [
+                {
+                    **row,
+                    "f_vector": json.dumps(row["f_vector"]),
+                }
+                for row in payload
+            ]
+            db.execute(
+                text(
+                    """
+                    INSERT OR REPLACE INTO features (symbol, tf, ts, f_vector, version)
+                    VALUES (:symbol, :tf, :ts, :f_vector, :version)
+                    """
+                ),
+                serialised,
+            )
+        else:
+            db.execute(text("""
+                INSERT INTO features (symbol, tf, ts, f_vector, version)
+                VALUES (:symbol, :tf, :ts, :f_vector::jsonb, :version)
+                ON CONFLICT (symbol, tf, ts, version)
+                DO UPDATE SET f_vector = EXCLUDED.f_vector
+            """), payload)
         db.commit()
         total += len(payload)
     return total
