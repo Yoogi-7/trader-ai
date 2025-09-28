@@ -71,7 +71,7 @@ def backfill_status(db: Session = Depends(get_db)):
             "symbol": r.symbol, "tf": r.tf, "status": r.status,
             "last_ts_completed": r.last_ts_completed,
             "chunk_start_ts": r.chunk_start_ts, "chunk_end_ts": r.chunk_end_ts,
-            "retry_count": r.retry_count, "gaps": r.gaps or [],
+            "retry_count": r.retry_count, "gaps": getattr(r, "gaps", []) or [],
             "progress_pct": pct, "done": done, "total": total,
             "updated_at": _to_iso(r.updated_at),
         })
@@ -121,7 +121,8 @@ def backfill_restart(payload: dict = Body(...), db: Session = Depends(get_db)):
         row.chunk_end_ts = None
         row.retry_count = 0
         row.status = "idle"
-        row.gaps = []
+        if hasattr(row, "gaps"):
+            row.gaps = []
         db.add(row); db.commit()
     async_result = celery_app.send_task(
         "apps.ml.jobs.backfill.run_backfill",

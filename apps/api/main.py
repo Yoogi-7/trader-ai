@@ -23,7 +23,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(routes.router)
+prefix = settings.api_prefix.strip()
+if prefix:
+    if not prefix.startswith("/"):
+        prefix = f"/{prefix}"
+    app.include_router(routes.router, prefix=prefix)
+else:
+    app.include_router(routes.router)
 
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):

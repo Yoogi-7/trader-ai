@@ -4,6 +4,7 @@ Trader AI is a full-stack cryptocurrency trading research and execution platform
 
 ## Highlights
 - **Event-driven architecture:** Lightweight HTTP webhook fan-out keeps API, worker jobs, and dashboards in sync without external brokers.
+- **Autonomous research loop:** The `ml-backfill` worker continuously backfills, resamples, computes features, retrains, and mints fresh signals without manual intervention.
 - **TimescaleDB-backed history:** Backfill and resumable jobs populate TimescaleDB with candle data and progress metadata.
 - **Feature + labeling pipeline:** Modular feature builders, triple-barrier labeling, and walk-forward training automation (Optuna-ready).
 - **Signal governance:** Net profit filters, confidence thresholds, exposure caps, cooldowns, and funding adjustments baked into the signal engine.

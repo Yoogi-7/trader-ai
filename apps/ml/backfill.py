@@ -22,6 +22,7 @@ from apps.common.event_bus import publish
 from apps.ml.features import compute_and_store_features
 from apps.ml.ta_utils import ema as ta_ema, atr as ta_atr, fibonacci_levels
 from apps.api.services.signals_service import evaluate_signal
+from apps.ml.jobs.train import run_training as training_task
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,13 @@ SIGNAL_RISK_PROFILE = os.getenv("AUTO_SIGNAL_RISK", "MED")
 SIGNAL_CAPITAL = float(os.getenv("AUTO_SIGNAL_CAPITAL", "1000"))
 SIGNAL_FUNDING_RATE = float(os.getenv("AUTO_SIGNAL_FUNDING_RATE", "0.0"))
 SIGNAL_COOLDOWN_MIN = int(os.getenv("AUTO_SIGNAL_COOLDOWN_MIN", "120"))
+TRAIN_INTERVAL_MIN = int(os.getenv("AUTO_TRAIN_INTERVAL_MIN", "1440"))
+TRAIN_LOOKBACK_MIN = int(os.getenv("AUTO_TRAIN_LOOKBACK_MIN", "10080"))
+TRAIN_SYMBOL = os.getenv("AUTO_TRAIN_SYMBOL", SYMBOLS[0] if SYMBOLS else "BTC/USDT")
+TRAIN_TF = os.getenv("AUTO_TRAIN_TF", SIGNAL_TF)
+TRAIN_CAPITAL = float(os.getenv("AUTO_TRAIN_CAPITAL", "1000"))
+TRAIN_RISK = os.getenv("AUTO_TRAIN_RISK", "MED")
+TRAIN_FOLDS = int(os.getenv("AUTO_TRAIN_FOLDS", "5"))
 
 
 def _recent_start_ts(minutes: int) -> int:
@@ -201,6 +209,8 @@ def _generate_signal(db: Session, symbol: str) -> None:
     )
 
 
+LAST_TRAINING_RUN = 0.0
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -346,6 +356,34 @@ def backfill_symbol(db: Session, client: CcxtClient, symbol: str, tf: str, from_
     publish("backfill_finished", {"symbol": symbol, "tf": tf, "written": total_written, "fetched": fetched_total})
 
 
+def _maybe_run_training() -> None:
+    global LAST_TRAINING_RUN
+    if TRAIN_INTERVAL_MIN <= 0:
+        return
+    interval_sec = TRAIN_INTERVAL_MIN * 60
+    now = time.time()
+    if now - LAST_TRAINING_RUN < interval_sec:
+        return
+    params = {
+        "symbol": TRAIN_SYMBOL,
+        "tf": TRAIN_TF,
+        "start_ts": _recent_start_ts(max(1, TRAIN_LOOKBACK_MIN)),
+        "end_ts": now_ms(),
+        "capital": TRAIN_CAPITAL,
+        "risk": TRAIN_RISK,
+        "n_folds": max(1, TRAIN_FOLDS),
+    }
+    try:
+        result = training_task.apply(kwargs={"params": params})
+        logger.info("auto training triggered symbol=%s tf=%s folds=%s", params["symbol"], params["tf"], params["n_folds"])
+        if getattr(result, "result", None) is not None:
+            logger.debug("auto training result=%s", result.result)
+    except Exception as exc:
+        logger.warning("auto training failed: %s", exc)
+    finally:
+        LAST_TRAINING_RUN = now
+
+
 def _parse_optional_int_env(name: str) -> Optional[int]:
     value = os.getenv(name)
     if value is None or not value.strip():
@@ -377,6 +415,7 @@ def run_once(symbols: Optional[List[str]] = None, tf: str = BASE_TF, from_ts: Op
                     logger.warning("signal generation failed for %s: %s", sym, exc)
             except Exception:
                 logger.exception("Backfill failed for %s", sym)
+        _maybe_run_training()
     finally:
         db.close()
 
