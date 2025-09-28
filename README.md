@@ -1,9 +1,9 @@
 # Trader AI — Production-Ready Monorepo
 
-Trader AI is a full-stack cryptocurrency trading research and execution platform. The repository bundles a FastAPI service, an ML/Celery worker, and a Next.js dashboard together with infrastructure tooling (TimescaleDB, Redis, Redpanda/Kafka) so the system can be demonstrated end-to-end: fetch market data, engineer features, train and backtest models, and surface live trading signals.
+Trader AI is a full-stack cryptocurrency trading research and execution platform. The repository bundles a FastAPI service, an ML/Celery worker, and a Next.js dashboard together with infrastructure tooling (TimescaleDB, Redis) so the system can be demonstrated end-to-end: fetch market data, engineer features, train and backtest models, and surface live trading signals.
 
 ## Highlights
-- **Event-driven architecture:** Redpanda/Kafka glues the API, worker jobs, and auxiliary consumers together.
+- **Event-driven architecture:** Lightweight HTTP webhook fan-out keeps API, worker jobs, and dashboards in sync without external brokers.
 - **TimescaleDB-backed history:** Backfill and resumable jobs populate TimescaleDB with candle data and progress metadata.
 - **Feature + labeling pipeline:** Modular feature builders, triple-barrier labeling, and walk-forward training automation (Optuna-ready).
 - **Signal governance:** Net profit filters, confidence thresholds, exposure caps, cooldowns, and funding adjustments baked into the signal engine.
@@ -24,11 +24,9 @@ Trader AI is a full-stack cryptocurrency trading research and execution platform
 The stack runs the following containers via `docker-compose.yml`:
 - `db` — TimescaleDB (PostgreSQL 15) with persistence; readiness probed before API boot.
 - `redis` — Cache and task queue broker for Celery.
-- `redpanda` — Kafka-compatible event bus for signal/event streaming.
 - `api` — FastAPI app served by Uvicorn; runs Alembic migrations on startup and exposes `/docs`, `/redoc`, and `/ws/live`.
 - `web` — Next.js dashboard served from the production build.
 - `ml-backfill` — Python worker performing continuous CCXT backfills and feature generation.
-- `events-consumer` — Ops utility service that reacts to Kafka events (e.g., to fan-out notifications or internal callbacks).
 
 ## Prerequisites
 - Docker 24+
@@ -81,7 +79,7 @@ Point `NEXT_PUBLIC_API_URL` in `.env.local` (or `.env`) at your API instance.
 
 ## Configuration
 All runtime configuration is sourced from `.env`. Key sections in `.env.example` include:
-- **Core services:** `DATABASE_URL`, `REDIS_URL`, `KAFKA_BROKERS`, `API_PREFIX`.
+- **Core services:** `DATABASE_URL`, `REDIS_URL`, `API_PREFIX`.
 - **Backfill controls:** Exchange, symbol list, chunk sizing, and retry/backoff knobs.
 - **Feature & labeling:** `FEATURES_VERSION`, triple-barrier parameters, walk-forward purge/embargo.
 - **Signal engine:** Net profit thresholds, fee/slippage, exposure caps, cooldown switches.
@@ -107,7 +105,7 @@ See `openapi.yaml` or import `postman_collection.json` into Postman for a ready-
 ## Operational Notes
 - API entrypoint waits for PostgreSQL, runs `alembic upgrade head`, then starts Uvicorn (`infra/entrypoints/api.sh`).
 - ML images default to executing the backfill loop; override the command to launch Celery workers or ad-hoc jobs.
-- TimescaleDB and Redpanda volumes (`dbdata`, `redpandadata`) persist across restarts. Use `make down` to remove them locally.
+- TimescaleDB volumes (`dbdata`) persist across restarts. Use `make down` to remove them locally.
 
 ## License
 Released under the MIT License.

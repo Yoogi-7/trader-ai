@@ -21,20 +21,6 @@ services:
       timeout: 5s
       retries: 5
 
-  redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v23.3.20
-    command:
-      - redpanda start --overprovisioned --smp 1 --memory 1G --reserve-memory 0M
-        --node-id 0 --check=false --set redpanda.enable_transactions=true
-        --advertise-kafka-addr redpanda:9092 --kafka-addr PLAINTEXT://0.0.0.0:9092
-    healthcheck:
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/9092'"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    volumes:
-      - redpandadata:/var/lib/redpanda/data
-
   api:
     build:
       context: ..
@@ -43,15 +29,12 @@ services:
     environment:
       DATABASE_URL: postgresql+psycopg2://trader:traderpass@db:5432/traderai
       REDIS_URL: redis://redis:6379/0
-      KAFKA_BROKERS: redpanda:9092
       API_PREFIX: /api
       NEXT_PUBLIC_API_URL: http://localhost:8000
     depends_on:
       db:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      redpanda:
         condition: service_healthy
     ports: ["8000:8000"]
     healthcheck:
@@ -94,34 +77,12 @@ services:
       BACKFILL_MODE: loop
       DATABASE_URL: postgresql+psycopg2://trader:traderpass@db:5432/traderai
       REDIS_URL: redis://redis:6379/0
-      KAFKA_BROKERS: redpanda:9092
+      API_INTERNAL_URL: http://api:8000
     depends_on:
       db:
-        condition: service_healthy
-      redpanda:
         condition: service_healthy
     command: ["python", "-m", "apps.ml.backfill"]
     restart: unless-stopped
 
-  events-consumer:
-    build:
-      context: ..
-      dockerfile: infra/dockerfiles/ml.Dockerfile
-    env_file: ../.env
-    environment:
-      API_INTERNAL_URL: http://api:8000
-      KAFKA_BROKERS: redpanda:9092
-      KAFKA_GROUP_ID: trader-ai-consumers
-      EVENTS_TOPIC: traderai.events
-      INTERNAL_SECRET: changeme
-    depends_on:
-      api:
-        condition: service_healthy
-      redpanda:
-        condition: service_healthy
-    command: ["python", "-m", "apps.ops.event_consumer"]
-    restart: unless-stopped
-
 volumes:
   dbdata: {}
-  redpandadata: {}
