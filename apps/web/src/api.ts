@@ -1,13 +1,21 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+export const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+const RAW_PREFIX = process.env.NEXT_PUBLIC_API_PREFIX ?? '/api';
+const API_PREFIX = RAW_PREFIX ? (RAW_PREFIX.startsWith('/') ? RAW_PREFIX : `/${RAW_PREFIX}`) : '';
+
+function buildUrl(path: string) {
+  const suffix = path.startsWith('/') ? path : `/${path}`;
+  const raw = `${API_URL}${API_PREFIX}${suffix}`;
+  return raw.replace(/([^:]\/)\/+/g, '$1').replace('http:/', 'http://').replace('https:/', 'https://');
+}
 
 export async function fetcher(path: string) {
-  const res = await fetch(`${API_URL}${path.startsWith('/') ? path : `/${path}`}`);
+  const res = await fetch(buildUrl(path));
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 
 export async function poster<T=any>(path: string, body: any): Promise<T> {
-  const res = await fetch(`${API_URL}${path.startsWith('/') ? path : `/${path}`}`, {
+  const res = await fetch(buildUrl(path), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

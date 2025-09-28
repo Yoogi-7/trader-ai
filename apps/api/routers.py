@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Body
-from sqlalchemy import select, text
+from sqlalchemy import select, text, desc
 from sqlalchemy.orm import Session
 
 from apps.api.db.session import SessionLocal
@@ -129,6 +129,103 @@ def backfill_restart(payload: dict = Body(...), db: Session = Depends(get_db)):
         kwargs=dict(pairs=[symbol], tf=tf),
     )
     return {"status": "queued", "task_id": async_result.id, "symbol": symbol, "tf": tf}
+
+@router.get("/admin/summary")
+def admin_summary(db: Session = Depends(get_db)):
+    backfills = db.execute(
+        select(models.BackfillProgress)
+        .order_by(desc(models.BackfillProgress.updated_at))
+        .limit(10)
+    ).scalars().all()
+    trainings = db.execute(
+        select(models.TrainingRun)
+        .order_by(desc(models.TrainingRun.started_at))
+        .limit(10)
+    ).scalars().all()
+    signals = db.execute(
+        select(models.Signal)
+        .order_by(desc(models.Signal.ts))
+        .limit(10)
+    ).scalars().all()
+
+    backfill_payload = [
+        {
+            "symbol": row.symbol,
+            "tf": row.tf,
+            "status": row.status,
+            "chunk_start_ts": row.chunk_start_ts,
+            "chunk_end_ts": row.chunk_end_ts,
+            "last_ts_completed": row.last_ts_completed,
+            "updated_at": _to_iso(row.updated_at),
+        }
+        for row in backfills
+    ]
+
+    training_payload = [
+        {
+            "id": row.id,
+            "params": row.params_json,
+            "started_at": _to_iso(row.started_at),
+            "finished_at": _to_iso(row.finished_at),
+            "status": row.status,
+            "metrics": row.metrics_json,
+        }
+        for row in trainings
+    ]
+
+    signal_payload = [
+        {
+            "id": row.id,
+            "symbol": row.symbol,
+            "tf": row.tf_base,
+            "dir": row.dir,
+            "ts": row.ts,
+            "expected_net_pct": row.expected_net_pct,
+            "confidence": row.confidence,
+            "status": row.status,
+        }
+        for row in signals
+    ]
+
+    resample_views = {}
+    for view in ("ohlcv_15m", "ohlcv_1h", "ohlcv_4h", "ohlcv_1d"):
+        row = db.execute(
+            text(f"SELECT COUNT(*)::bigint AS cnt, max(ts) AS last_ts FROM {view};")
+        ).mappings().first()
+        resample_views[view] = {
+            "rows": int(row["cnt"]) if row and row["cnt"] is not None else 0,
+            "last_ts": _to_iso(row["last_ts"]) if row and row["last_ts"] is not None else None,
+        }
+
+    features_rows = db.execute(
+        text("""
+            SELECT symbol, tf, version, COUNT(*)::bigint AS rows, max(ts) AS last_ts
+            FROM features
+            GROUP BY symbol, tf, version
+            ORDER BY last_ts DESC
+            LIMIT 10
+        """)
+    ).mappings().all()
+
+    features_payload = [
+        {
+            "symbol": row["symbol"],
+            "tf": row["tf"],
+            "version": row["version"],
+            "rows": int(row["rows"]) if row["rows"] is not None else 0,
+            "last_ts": _to_iso(row["last_ts"]) if row["last_ts"] is not None else None,
+        }
+        for row in features_rows
+    ]
+
+    return {
+        "backfill": backfill_payload,
+        "training": training_payload,
+        "signals": signal_payload,
+        "resample": resample_views,
+        "features": features_payload,
+    }
+
 
 # -------- Resampling --------
 
