@@ -47,6 +47,7 @@ def generate_auto(req: AutoReq, db: Session = Depends(db_dep)):
         "margin_mode": sig.margin_mode, "expected_net_pct": sig.expected_net_pct,
         "confidence": sig.confidence,
         "confidence_rating": int(round(float(sig.confidence) * 100.0)) if sig.confidence is not None else None,
+        "market_regime": getattr(sig, "market_regime", None),
         "model_ver": sig.model_ver, "status": sig.status
     }
 

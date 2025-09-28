@@ -8,6 +8,13 @@ from sqlalchemy import select, desc
 from apps.api.db import models
 from apps.ml.signal_engine import atr_levels, fib_adjust, Levels
 from apps.ml.risk import dynamic_risk_fraction, position_size
+from apps.ml.market_regime import (
+    detect_market_regime,
+    REGIME_TREND_UP,
+    REGIME_TREND_DOWN,
+    REGIME_SIDEWAYS,
+    REGIME_HIGH_VOL,
+)
 from apps.ml.feature_pipeline import build_mtf_context, multi_tf_confirm
 from apps.ml.models.stacking import StackingEnsemble
 from apps.ml.models.conformal import InductiveConformal
@@ -33,6 +40,7 @@ def generate_ai_summary(
     sl: float,
     expected_net_pct: float,
     confidence_rating: int | None,
+    market_regime: str,
 ) -> str:
     direction_text = "trend wzrostowy" if direction.upper() == "LONG" else "trend spadkowy"
     tf_label = tf_base.upper()
@@ -48,6 +56,7 @@ def generate_ai_summary(
     ]
     if confidence_rating is not None:
         summary_parts.append(f"rating {confidence_rating}/100")
+    summary_parts.append(f"regime {market_regime}")
     return " ".join(summary_parts)
 
 def _side_mult(direction: str) -> int:
@@ -65,6 +74,40 @@ def _expected_net_pct(direction: str, entry: float, tp: list[float], sl: float, 
     margin = qty*abs(entry-sl)
     if margin<=0: return -1.0
     return float((pnl - fee - slip - funding)/margin)
+
+
+def _regime_fraction_multiplier(regime: str, direction: str) -> float:
+    if regime == REGIME_TREND_UP:
+        return 1.25 if direction == "LONG" else 0.6
+    if regime == REGIME_TREND_DOWN:
+        return 1.25 if direction == "SHORT" else 0.6
+    if regime == REGIME_SIDEWAYS:
+        return 0.7
+    if regime == REGIME_HIGH_VOL:
+        return 0.5
+    return 1.0
+
+
+def _regime_tp_scale(regime: str, direction: str) -> float:
+    if regime == REGIME_TREND_UP:
+        return 1.15 if direction == "LONG" else 0.9
+    if regime == REGIME_TREND_DOWN:
+        return 1.15 if direction == "SHORT" else 0.9
+    if regime == REGIME_HIGH_VOL:
+        return 1.3
+    if regime == REGIME_SIDEWAYS:
+        return 0.75
+    return 1.0
+
+
+def _scale_targets(entry: float, targets: list[float], scale: float) -> list[float]:
+    if not targets or scale == 1.0:
+        return targets
+    scaled = []
+    for t in targets:
+        delta = t - entry
+        scaled.append(entry + delta * scale)
+    return scaled
 
 def evaluate_signal(
     db: Session,
@@ -88,6 +131,7 @@ def evaluate_signal(
     # Levels
     lv = atr_levels(close, atr, direction)
     lv = fib_adjust(lv, fibo)
+    market_regime = detect_market_regime(close, atr, ctx)
 
     # Sizing
     risk_map = {"LOW":0.01, "MED":0.02, "HIGH":0.05}
@@ -101,6 +145,15 @@ def evaluate_signal(
         volatility_ratio=volatility_ratio,
         max_portfolio_fraction=max_fraction,
     )
+
+    fraction_multiplier = _regime_fraction_multiplier(market_regime, direction)
+    dynamic_fraction *= fraction_multiplier
+    if max_fraction is not None:
+        dynamic_fraction = min(dynamic_fraction, max_fraction)
+    dynamic_fraction = max(dynamic_fraction, base_fraction * 0.25)
+
+    tp_scale = _regime_tp_scale(market_regime, direction)
+    lv.tp = _scale_targets(lv.entry, lv.tp[:3] if lv.tp else [], tp_scale)
 
     qty, risk_usd = position_size(
         capital,
@@ -146,6 +199,7 @@ def evaluate_signal(
         sl=lv.sl,
         expected_net_pct=float(net),
         confidence_rating=confidence_rating,
+        market_regime=market_regime,
     )
 
     sig = models.Signal(
@@ -162,7 +216,7 @@ def evaluate_signal(
         margin_mode="ISOLATED",
         expected_net_pct=float(net),
         confidence=conf,
-        model_ver="ensemble-demo",
+        model_ver=f"ensemble-demo|{market_regime}",
         reason_discard=None,
         status="published",
         ai_summary=summary_text,
@@ -170,4 +224,5 @@ def evaluate_signal(
     db.add(sig); db.commit(); db.refresh(sig)
     if confidence_rating is not None:
         sig.__dict__["confidence_rating"] = confidence_rating  # type: ignore[attr-defined]
+    sig.__dict__["market_regime"] = market_regime  # type: ignore[attr-defined]
     return sig, None

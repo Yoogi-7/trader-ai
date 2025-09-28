@@ -90,6 +90,8 @@ def test_signals_live_respects_min_confidence():
     ids = [item['id'] for item in data['signals']]
     assert 'sig-high' in ids
     assert 'sig-low' not in ids
+    for item in data['signals']:
+        assert 'market_regime' in item
 
 
 def test_signals_history_without_filter_returns_all():
@@ -116,3 +118,4 @@ def test_signals_history_filter_applied():
     ids = [item['id'] for item in data['signals']]
     assert ids == ['sig-high']
     assert data['signals'][0]['confidence_rating'] >= 80
+    assert 'market_regime' in data['signals'][0]

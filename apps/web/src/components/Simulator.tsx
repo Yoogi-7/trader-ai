@@ -114,6 +114,11 @@ export const Simulator: React.FC = () => {
               <b>Rating:</b> {resp.confidence_rating}/100
             </div>
           )}
+          {resp.market_regime && (
+            <div>
+              <b>Regime:</b> {resp.market_regime}
+            </div>
+          )}
         </div>
       )}
     </div>

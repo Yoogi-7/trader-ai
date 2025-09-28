@@ -430,16 +430,33 @@ def _min_confidence_rating(user: models.User) -> Optional[float]:
     rating = max(0.0, min(100.0, rating))
     return rating
 
+
+def _extract_market_regime(s: models.Signal) -> Optional[str]:
+    attr = getattr(s, "market_regime", None)
+    if isinstance(attr, str) and attr:
+        return attr
+    if isinstance(s.model_ver, str) and "|" in s.model_ver:
+        suffix = s.model_ver.split("|", 1)[1]
+        if suffix:
+            return suffix
+    summary = s.ai_summary or ""
+    tokens = summary.split()
+    for idx, token in enumerate(tokens):
+        if token.lower() == "regime" and idx + 1 < len(tokens):
+            return tokens[idx + 1]
+    return None
+
 def _signal_to_dict(s: models.Signal) -> dict:
     rating = None
     if s.confidence is not None:
         rating = int(round(float(s.confidence) * 100.0))
         rating = max(0, min(100, rating))
+    regime = _extract_market_regime(s)
     return {
         "id": s.id, "symbol": s.symbol, "tf_base": s.tf_base, "ts": s.ts, "dir": s.dir,
         "entry": s.entry, "tp": s.tp, "sl": s.sl, "lev": s.lev, "risk": s.risk,
         "margin_mode": s.margin_mode, "expected_net_pct": s.expected_net_pct,
-        "confidence": s.confidence, "confidence_rating": rating, "model_ver": s.model_ver,
+        "confidence": s.confidence, "confidence_rating": rating, "market_regime": regime, "model_ver": s.model_ver,
         "reason_discard": s.reason_discard, "status": s.status,
         "ai_summary": s.ai_summary,
     }
