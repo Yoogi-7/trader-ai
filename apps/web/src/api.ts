@@ -87,6 +87,13 @@ export const api = {
   leaderboard: () => fetcher('/leaderboard'),
   riskDashboard: () => fetcher('/risk/dashboard'),
   journal: () => fetcher('/journal'),
+  scanArbitrage: (payload: { exchanges: string[]; symbols: string[]; min_spread_pct?: number; market_type?: 'spot' | 'future' }) =>
+    poster('/signals/arbitrage/scan', {
+      exchanges: payload.exchanges,
+      symbols: payload.symbols,
+      min_spread_pct: payload.min_spread_pct ?? 0.3,
+      market_type: payload.market_type ?? 'spot',
+    }),
 };
 
 export { getToken };

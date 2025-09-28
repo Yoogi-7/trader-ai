@@ -11,6 +11,8 @@ import { RiskForm } from '../src/components/RiskForm';
 import { Leaderboard } from '../src/components/Leaderboard';
 import { RiskDashboard } from '../src/components/RiskDashboard';
 import { TradingJournal } from '../src/components/TradingJournal';
+import { FeatureHighlights } from '../src/components/FeatureHighlights';
+import { ArbitrageWidget } from '../src/components/ArbitrageWidget';
 
 export default function Home() {
   const router = useRouter();
@@ -63,6 +65,10 @@ export default function Home() {
             <Leaderboard />
           </div>
 
+          <div className="mb-6">
+            <FeatureHighlights />
+          </div>
+
           <section className="grid md:grid-cols-3 gap-4">
             <div className="col-span-2">
               <div className="bg-white rounded-2xl shadow p-4 mb-4">
@@ -84,6 +90,10 @@ export default function Home() {
               <div className="bg-white rounded-2xl shadow p-4">
                 <h2 className="font-semibold mb-3">Risk dashboard</h2>
                 <RiskDashboard />
+              </div>
+              <div className="bg-white rounded-2xl shadow p-4">
+                <h2 className="font-semibold mb-3">Arbitrage radar</h2>
+                <ArbitrageWidget />
               </div>
               <div className="bg-white rounded-2xl shadow p-4">
                 <h2 className="font-semibold mb-3">Ustawienia profilu</h2>
