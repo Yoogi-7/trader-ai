@@ -84,5 +84,24 @@ services:
     command: ["python", "-m", "apps.ml.backfill"]
     restart: unless-stopped
 
+  worker:
+    build:
+      context: ..
+      dockerfile: infra/dockerfiles/ml.Dockerfile
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://trader:traderpass@db:5432/traderai
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      CELERY_TASK_MODULES: apps.ml.jobs.backfill,apps.ml.jobs.features,apps.ml.jobs.train,apps.ml.jobs.backtest
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["celery", "-A", "apps.common.celery_app", "worker", "-l", "info"]
+    restart: unless-stopped
+
 volumes:
   dbdata: {}

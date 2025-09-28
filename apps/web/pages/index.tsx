@@ -16,17 +16,20 @@ export default function Home() {
     refreshInterval: 5000,
   });
 
+  const viewParam = Array.isArray(router.query.view) ? router.query.view[0] : router.query.view;
+  const adminViewingUser = user?.role === 'ADMIN' && viewParam === 'user';
+
   useEffect(() => {
     if (!loading) {
       if (!user) {
         router.replace('/login');
-      } else if (user.role === 'ADMIN') {
+      } else if (user.role === 'ADMIN' && !adminViewingUser) {
         router.replace('/admin');
       }
     }
-  }, [user, loading, router]);
+  }, [user, loading, router, adminViewingUser]);
 
-  if (loading || !user || user.role !== 'USER') {
+  if (loading || !user || (user.role !== 'USER' && !adminViewingUser)) {
     return (
       <main className="min-h-screen flex items-center justify-center bg-slate-50">
         <p className="text-slate-600">Ładowanie…</p>
@@ -41,7 +44,17 @@ export default function Home() {
       </Head>
       <main className="min-h-screen bg-slate-50">
         <div className="max-w-7xl mx-auto px-4 py-6">
-          <h1 className="text-2xl font-bold mb-4">Trader AI — Panel użytkownika</h1>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+            <h1 className="text-2xl font-bold">Trader AI — Panel użytkownika</h1>
+            {adminViewingUser && (
+              <button
+                onClick={() => router.push('/admin')}
+                className="self-start md:self-auto px-3 py-2 rounded bg-slate-200 text-slate-700 hover:bg-slate-300"
+              >
+                Wróć do panelu administratora
+              </button>
+            )}
+          </div>
 
           <section className="grid md:grid-cols-3 gap-4">
             <div className="col-span-2">

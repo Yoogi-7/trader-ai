@@ -19,10 +19,29 @@ export const BackfillPanel: React.FC = () => {
   const [symbols, setSymbols] = useState('BTC/USDT,ETH/USDT');
   const [tf, setTf] = useState('15m');
   const { data, mutate, isLoading } = useSWR('/backfill/status?limit=200&offset=0', fetcher, { refreshInterval: 3000 });
+  const [isSubmitting, setSubmitting] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   async function start() {
-    await api.backfillStart(symbols.split(',').map((s) => s.trim()).filter(Boolean), tf, null, null);
-    mutate();
+    const list = symbols.split(',').map((s) => s.trim()).filter(Boolean);
+    if (!list.length) {
+      setErrorMsg('Podaj przynajmniej jeden symbol');
+      setStatusMsg(null);
+      return;
+    }
+    setSubmitting(true);
+    setStatusMsg(null);
+    setErrorMsg(null);
+    try {
+      const res = await api.backfillStart(list, tf, null, null);
+      setStatusMsg(`Zadanie wysłane (task ${res.task_id ?? 'n/a'})`);
+      mutate();
+    } catch (err: any) {
+      setErrorMsg(err?.message ?? 'Nie udało się uruchomić backfillu');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const rows = data?.items ?? [];
@@ -31,8 +50,16 @@ export const BackfillPanel: React.FC = () => {
     <div className="bg-white rounded-2xl shadow p-4">
       <div className="flex items-center justify-between">
         <h2 className="font-semibold">Backfill</h2>
-        <button onClick={start} className="px-3 py-2 rounded bg-indigo-600 text-white">Start</button>
+        <button
+          onClick={start}
+          disabled={isSubmitting}
+          className={`px-3 py-2 rounded text-white ${isSubmitting ? 'bg-indigo-300 cursor-not-allowed' : 'bg-indigo-600'}`}
+        >
+          {isSubmitting ? 'Wysyłanie…' : 'Start'}
+        </button>
       </div>
+      {statusMsg && <div className="mt-2 text-sm text-emerald-600">{statusMsg}</div>}
+      {errorMsg && <div className="mt-2 text-sm text-red-600">{errorMsg}</div>}
       <div className="grid md:grid-cols-3 gap-2 mt-3">
         <label className="text-sm">Symbols
           <input className="w-full border rounded px-2 py-1" value={symbols} onChange={(e) => setSymbols(e.target.value)} />

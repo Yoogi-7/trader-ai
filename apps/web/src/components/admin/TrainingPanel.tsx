@@ -9,10 +9,23 @@ export const TrainingPanel: React.FC = () => {
     symbol: 'BTC/USDT', tf: '15m', n_folds: 5, capital: 1000, risk: 'MED',
     start_ts: 0, end_ts: Date.now()
   });
+  const [isSubmitting, setSubmitting] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   async function run() {
-    await api.trainRun(form);
-    mutate();
+    setSubmitting(true);
+    setStatusMsg(null);
+    setErrorMsg(null);
+    try {
+      const res = await api.trainRun(form);
+      setStatusMsg(`Zadanie treningowe wysłane (${res.status ?? 'queued'})`);
+      mutate();
+    } catch (err: any) {
+      setErrorMsg(err?.message ?? 'Nie udało się uruchomić treningu');
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const points = (data?.items ?? []).filter((r:any)=>r.metrics_json?.ok).map((r:any)=>({
@@ -26,8 +39,16 @@ export const TrainingPanel: React.FC = () => {
     <div className="bg-white rounded-2xl shadow p-4">
       <div className="flex items-center justify-between">
         <h2 className="font-semibold">Training (Walk-Forward + Tuning)</h2>
-        <button onClick={run} className="px-3 py-2 rounded bg-indigo-600 text-white">Run</button>
+        <button
+          onClick={run}
+          disabled={isSubmitting}
+          className={`px-3 py-2 rounded text-white ${isSubmitting ? 'bg-indigo-300 cursor-not-allowed' : 'bg-indigo-600'}`}
+        >
+          {isSubmitting ? 'Wysyłanie…' : 'Run'}
+        </button>
       </div>
+      {statusMsg && <div className="mt-2 text-sm text-emerald-600">{statusMsg}</div>}
+      {errorMsg && <div className="mt-2 text-sm text-red-600">{errorMsg}</div>}
       <div className="grid md:grid-cols-5 gap-2 mt-3">
         {Object.entries(form).map(([k,v])=>(
           <label key={k} className="text-sm">

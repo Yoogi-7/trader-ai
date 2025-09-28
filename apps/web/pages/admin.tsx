@@ -39,7 +39,15 @@ export default function Admin() {
       </Head>
       <main className="min-h-screen bg-slate-50">
         <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-          <h1 className="text-2xl font-bold">Trader AI — Panel administratora</h1>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <h1 className="text-2xl font-bold">Trader AI — Panel administratora</h1>
+            <button
+              onClick={() => router.push('/?view=user')}
+              className="self-start md:self-auto px-3 py-2 rounded bg-slate-200 text-slate-700 hover:bg-slate-300"
+            >
+              Przejdź do panelu sygnałów
+            </button>
+          </div>
 
           <SystemStatusPanel />
           <BackfillPanel />

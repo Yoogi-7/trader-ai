@@ -11,6 +11,12 @@ TASK_SERIALIZER = os.getenv("CELERY_TASK_SERIALIZER", "json")
 RESULT_SERIALIZER = os.getenv("CELERY_RESULT_SERIALIZER", "json")
 ACCEPT_CONTENT = os.getenv("CELERY_ACCEPT_CONTENT", "json").split(",")
 TIMEZONE = os.getenv("TZ", "UTC")
+DEFAULT_TASK_MODULES = "apps.ml.jobs.backfill,apps.ml.jobs.features,apps.ml.jobs.train,apps.ml.jobs.backtest"
+TASK_MODULES = [
+    module.strip()
+    for module in os.getenv("CELERY_TASK_MODULES", DEFAULT_TASK_MODULES).split(",")
+    if module.strip()
+]
 
 
 def _build_real_celery() -> Optional[Any]:
@@ -32,7 +38,7 @@ def _build_real_celery() -> Optional[Any]:
         "trader_ai",
         broker=BROKER_URL,
         backend=RESULT_BACKEND,
-        include=[],
+        include=TASK_MODULES,
     )
     app.conf.update(
         task_serializer=TASK_SERIALIZER,

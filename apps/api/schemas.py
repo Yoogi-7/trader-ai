@@ -42,7 +42,7 @@ class UserUpdateReq(BaseModel):
     prefs: Optional[Dict[str, Any]] = None
 
 class BackfillStartReq(BaseModel):
-    symbols: conlist(str, min_items=1)
+    symbols: conlist(str, min_length=1)
     tf: Literal["1m", "5m", "15m", "1h", "4h", "1d"] = "15m"
     from_ts: Optional[int] = None  # epoch ms
     to_ts: Optional[int] = None    # epoch ms

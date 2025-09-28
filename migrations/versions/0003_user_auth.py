@@ -23,28 +23,63 @@ pwd_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
 
 
 def upgrade() -> None:
-    op.add_column('users', sa.Column('email', sa.String(), nullable=True))
-    op.add_column('users', sa.Column('password_hash', sa.String(), nullable=True))
-    op.add_column('users', sa.Column('role', sa.String(), nullable=False, server_default='USER'))
-    op.add_column('users', sa.Column('created_at', sa.BigInteger(), nullable=True))
-    op.add_column('users', sa.Column('updated_at', sa.BigInteger(), nullable=True))
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at BIGINT")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at BIGINT")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS risk_profile VARCHAR")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS capital DOUBLE PRECISION")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS prefs JSONB")
+    op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS api_connected BOOLEAN")
 
     conn = op.get_bind()
     now_ms = int(datetime.utcnow().timestamp() * 1000)
     default_hash = pwd_context.hash('changeme')
     conn.execute(sa.text(
         "UPDATE users SET email = CONCAT('legacy_user_', id, '@local'), "
-        "password_hash = :hash, created_at = :now, updated_at = :now "
+        "password_hash = COALESCE(password_hash, :hash), created_at = COALESCE(created_at, :now), "
+        "updated_at = COALESCE(updated_at, :now), risk_profile = COALESCE(risk_profile, 'LOW'), "
+        "capital = COALESCE(capital, 100.0), prefs = COALESCE(prefs, '{}'::jsonb), "
+        "api_connected = COALESCE(api_connected, FALSE), role = COALESCE(role, 'USER') "
         "WHERE email IS NULL"
     ), {"hash": default_hash, "now": now_ms})
+
+    conn.execute(sa.text(
+        "UPDATE users SET risk_profile = COALESCE(risk_profile, 'LOW'), "
+        "capital = COALESCE(capital, 100.0), prefs = COALESCE(prefs, '{}'::jsonb), "
+        "api_connected = COALESCE(api_connected, FALSE), role = COALESCE(role, 'USER')"
+    ))
+
+    op.execute("ALTER TABLE users ALTER COLUMN role SET DEFAULT 'USER'")
+    op.execute("ALTER TABLE users ALTER COLUMN risk_profile SET DEFAULT 'LOW'")
+    op.execute("ALTER TABLE users ALTER COLUMN capital SET DEFAULT 100.0")
+    op.execute("ALTER TABLE users ALTER COLUMN api_connected SET DEFAULT FALSE")
 
     op.alter_column('users', 'email', nullable=False)
     op.alter_column('users', 'password_hash', nullable=False)
     op.alter_column('users', 'created_at', nullable=False)
     op.alter_column('users', 'updated_at', nullable=False)
-    op.create_unique_constraint('uq_users_email', 'users', ['email'])
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'users'::regclass AND conname = 'uq_users_email'
+            ) THEN
+                ALTER TABLE users ADD CONSTRAINT uq_users_email UNIQUE (email);
+            END IF;
+        END
+        $$;
+        """
+    )
 def downgrade() -> None:
     op.drop_constraint('uq_users_email', 'users', type_='unique')
+    op.drop_column('users', 'api_connected')
+    op.drop_column('users', 'prefs')
+    op.drop_column('users', 'capital')
+    op.drop_column('users', 'risk_profile')
     op.drop_column('users', 'updated_at')
     op.drop_column('users', 'created_at')
     op.drop_column('users', 'role')
