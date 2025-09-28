@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException, Body
@@ -44,6 +45,17 @@ def backfill_start(payload: dict = Body(default={})):
         "pairs": pairs, "tf": tf, "start_ts_ms": start_ts_ms, "end_ts_ms": end_ts_ms, "batch_limit": batch_limit
     }}
 
+def _to_iso(value):
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    try:
+        return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc).isoformat()
+    except Exception:
+        return str(value)
+
+
 @router.get("/backfill/status")
 def backfill_status(db: Session = Depends(get_db)):
     rows = db.execute(select(models.BackfillProgress)).scalars().all()
@@ -61,7 +73,7 @@ def backfill_status(db: Session = Depends(get_db)):
             "chunk_start_ts": r.chunk_start_ts, "chunk_end_ts": r.chunk_end_ts,
             "retry_count": r.retry_count, "gaps": r.gaps or [],
             "progress_pct": pct, "done": done, "total": total,
-            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            "updated_at": _to_iso(r.updated_at),
         })
     return {"items": out}
 
