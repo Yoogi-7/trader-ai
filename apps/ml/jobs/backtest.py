@@ -33,6 +33,7 @@ def run_backtest(params: dict | None = None):
     time_stop_min = int(params.get("time_stop_min", 240))
     slippage_bps = float(params.get("slippage_bps", 10.0))
     taker_only = bool(params.get("taker_only", True))
+    trailing_offset_pct = float(params.get("trailing_offset_pct", 0.002))
 
     # ładujemy sygnały
     s_q = (select(Signal)
@@ -44,7 +45,15 @@ def run_backtest(params: dict | None = None):
         return {"id": bt.id, "error": "no_signals_in_range"}
 
     bars = _load_bars(db, symbol, tf, start_ts, end_ts)
-    p = BTParams(capital=capital, risk=risk, funding_rate_hourly=funding_rate_hourly, time_stop_min=time_stop_min, slippage_bps=slippage_bps, taker_only=taker_only)
+    p = BTParams(
+        capital=capital,
+        risk=risk,
+        funding_rate_hourly=funding_rate_hourly,
+        time_stop_min=time_stop_min,
+        slippage_bps=slippage_bps,
+        taker_only=taker_only,
+        trailing_offset_pct=trailing_offset_pct,
+    )
 
     eq = capital
     equity = [eq]

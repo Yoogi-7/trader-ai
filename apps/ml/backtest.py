@@ -22,6 +22,7 @@ class BTParams:
     taker_only: bool = True
     tp_split: Tuple[float,float,float] = (0.3,0.4,0.3)
     trailing_after_tp1: bool = True
+    trailing_offset_pct: float = 0.002  # 0.2% default trail distance
 
 @dataclass
 class TradeResult:
@@ -40,47 +41,109 @@ def simulate_trade(
     bars: List[Dict], side: Literal["LONG","SHORT"], entry: float, tp: List[float], sl: float,
     qty: float, p: BTParams
 ) -> TradeResult:
-    fee_open = entry * qty * (FEE_TAKER if p.taker_only else 0.0)
-    slip = entry * qty * bps(p.slippage_bps if p.taker_only else 0.0)
-    remain = qty
+    qty_total = float(qty)
+    fee_open = entry * qty_total * (FEE_TAKER if p.taker_only else 0.0)
+    slip = entry * qty_total * bps(p.slippage_bps if p.taker_only else 0.0)
+    remain = qty_total
     got1 = got2 = got3 = False
     cur_sl = sl
     entry_ts = bars[0]["ts"] if bars else 0
+    direction_mult = 1 if side == "LONG" else -1
+    realized_pnl = -(fee_open + slip)
+    total_fees = fee_open + slip
+    best_price = entry
+    trail_active = False
+    trail_offset = max(0.0, float(p.trailing_offset_pct))
 
-    # Iterujemy po barach (przybliżenie: 1 bar = 1 min)
-    for i, b in enumerate(bars[: max(1, p.time_stop_min)], start=1):
-        # TP
-        for k, t in enumerate(tp[:3], start=1):
-            if [got1, got2, got3][k-1]:
+    max_bars = max(1, p.time_stop_min)
+    tp_targets = tp[:3]
+
+    # Iterate bars (approx 1 bar = 1 minute)
+    for idx, b in enumerate(bars[:max_bars], start=1):
+        high = float(b["h"])
+        low = float(b["l"])
+        tp_hit_this_bar = False
+
+        if trail_active:
+            if side == "LONG":
+                best_price = max(best_price, high)
+                cur_sl = max(cur_sl, best_price * (1.0 - trail_offset))
+            else:
+                best_price = min(best_price, low)
+                cur_sl = min(cur_sl, best_price * (1.0 + trail_offset))
+
+        # Take profit levels
+        for k, target in enumerate(tp_targets, start=1):
+            if remain <= 0:
+                break
+            if (k == 1 and got1) or (k == 2 and got2) or (k == 3 and got3):
                 continue
-            hit = (b["h"] >= t) if side=="LONG" else (b["l"] <= t)
-            if hit:
-                part = p.tp_split[k-1] * qty
-                part = min(part, remain)
-                pnl_part = (t - entry) * (1 if side=="LONG" else -1) * part
-                remain -= part
-                if k==1:
-                    got1 = True
-                    if p.trailing_after_tp1:
-                        cur_sl = entry * (0.999 if side=="LONG" else 1.001)
-                elif k==2: got2 = True
-                elif k==3: got3 = True
+            hit = (high >= target) if side == "LONG" else (low <= target)
+            if not hit:
+                continue
 
-        # SL/trailing
-        if remain > 0:
-            sl_hit = (b["l"] <= cur_sl) if side=="LONG" else (b["h"] >= cur_sl)
-            if sl_hit:
-                exit_px = cur_sl
-                realized = (exit_px - entry) * (1 if side=="LONG" else -1) * remain
-                fee_close = exit_px * qty * (FEE_TAKER if p.taker_only else 0.0)
-                funding = (entry * qty * p.funding_rate_hourly * (p.time_stop_min/60.0)) if FUNDING_ON else 0.0
-                return TradeResult(entry_ts, b["ts"], entry, exit_px, side, fee_open+fee_close+slip+funding, realized - (fee_open+fee_close+slip+funding), got1, got2, got3)
-    # time-stop close @ last
-    if bars:
-        last = bars[min(len(bars)-1, p.time_stop_min-1 if p.time_stop_min>0 else -1)]
-        exit_px = last["c"]
-        realized = (exit_px - entry) * (1 if side=="LONG" else -1) * remain
-        fee_close = exit_px * qty * (FEE_TAKER if p.taker_only else 0.0)
-        funding = (entry * qty * p.funding_rate_hourly * (p.time_stop_min/60.0)) if FUNDING_ON else 0.0
-        return TradeResult(entry_ts, last["ts"], entry, exit_px, side, fee_open+fee_close+slip+funding, realized - (fee_open+fee_close+slip+funding), got1, got2, got3)
-    return TradeResult(0,0,entry,entry,side,0.0,0.0,False,False,False)
+            desired_part = p.tp_split[k-1] * qty_total if k-1 < len(p.tp_split) else 0.0
+            part = min(remain, desired_part if desired_part > 0 else remain)
+            if part <= 0:
+                continue
+
+            exit_px = target
+            fee_part = exit_px * part * (FEE_TAKER if p.taker_only else 0.0)
+            pnl_part = ((exit_px - entry) * direction_mult * part) - fee_part
+            realized_pnl += pnl_part
+            total_fees += fee_part
+            remain -= part
+            tp_hit_this_bar = True
+
+            if k == 1:
+                got1 = True
+                if p.trailing_after_tp1 and not trail_active:
+                    trail_active = True
+                    if side == "LONG":
+                        best_price = max(best_price, exit_px)
+                    else:
+                        best_price = min(best_price, exit_px)
+                    if side == "LONG":
+                        cur_sl = max(cur_sl, best_price * (1.0 - trail_offset))
+                    else:
+                        cur_sl = min(cur_sl, best_price * (1.0 + trail_offset))
+            elif k == 2:
+                got2 = True
+            elif k == 3:
+                got3 = True
+
+            if remain <= 0:
+                return TradeResult(entry_ts, b["ts"], entry, exit_px, side, total_fees, realized_pnl, got1, got2, got3)
+
+        if remain <= 0:
+            break
+
+        # Stop-loss / trailing stop check after TP handling
+        if tp_hit_this_bar:
+            continue
+
+        sl_hit = (low <= cur_sl) if side == "LONG" else (high >= cur_sl)
+        if sl_hit:
+            exit_px = cur_sl
+            fee_close = exit_px * remain * (FEE_TAKER if p.taker_only else 0.0)
+            funding = (entry * qty_total * p.funding_rate_hourly * (p.time_stop_min / 60.0)) if FUNDING_ON else 0.0
+            pnl_close = ((exit_px - entry) * direction_mult * remain) - fee_close - funding
+            realized_pnl += pnl_close
+            total_fees += fee_close + funding
+            remain = 0.0
+            return TradeResult(entry_ts, b["ts"], entry, exit_px, side, total_fees, realized_pnl, got1, got2, got3)
+
+    # Time-stop close if trade still open
+    if bars and remain > 0:
+        last_index = min(len(bars) - 1, max_bars - 1)
+        last = bars[last_index]
+        exit_px = float(last["c"])
+        fee_close = exit_px * remain * (FEE_TAKER if p.taker_only else 0.0)
+        funding = (entry * qty_total * p.funding_rate_hourly * (p.time_stop_min / 60.0)) if FUNDING_ON else 0.0
+        pnl_close = ((exit_px - entry) * direction_mult * remain) - fee_close - funding
+        realized_pnl += pnl_close
+        total_fees += fee_close + funding
+        remain = 0.0
+        return TradeResult(entry_ts, last["ts"], entry, exit_px, side, total_fees, realized_pnl, got1, got2, got3)
+
+    return TradeResult(entry_ts, entry_ts, entry, entry, side, total_fees, realized_pnl, got1, got2, got3)

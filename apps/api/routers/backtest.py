@@ -31,6 +31,7 @@ def backtest_run(req: schemas.BacktestRunReq, db: Session = Depends(db_dep)):
     slippage_bps = float(req.params.get("slippage_bps", float(os.getenv("SLIPPAGE_BPS","10"))))
     time_stop_min = int(req.params.get("time_stop_min", 240))
     taker_only = bool(req.params.get("taker_only", True))
+    trailing_offset_pct = float(req.params.get("trailing_offset_pct", 0.002))
 
     # Dane
     bars = load_bars(db, sym, tf, start_ts, end_ts)
@@ -55,6 +56,7 @@ def backtest_run(req: schemas.BacktestRunReq, db: Session = Depends(db_dep)):
         funding_rate_hourly=funding_rate_hourly,
         slippage_bps=slippage_bps,
         time_stop_min=time_stop_min,
+        trailing_offset_pct=trailing_offset_pct,
     )
 
     trades, metrics = backtest_signals(db, sym, tf, signals, bt_params, bars)
