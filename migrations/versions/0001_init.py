@@ -42,7 +42,7 @@ def upgrade():
         sa.Column("symbol", sa.String(), primary_key=True),
         sa.Column("tf", sa.String(), primary_key=True),
         sa.Column("ts", sa.BigInteger(), primary_key=True),
-        sa.Column("version", sa.Integer(), primary_key=True, server_default="1"),
+        sa.Column("version", sa.String(), primary_key=True, server_default="1"),
         sa.Column("f_vector", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     )
     op.create_index("ix_features_ts", "features", ["ts"])

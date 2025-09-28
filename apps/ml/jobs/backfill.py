@@ -17,7 +17,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 from celery import shared_task
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -154,7 +154,6 @@ class BackfillRunner:
                 retry_count=0,
                 status="idle",
                 updated_at=datetime.now(tz=UTC),
-                gaps=[],
             )
             self.db.add(row)
             self.db.commit()
@@ -164,25 +163,36 @@ class BackfillRunner:
     def _upsert_ohlcv_batch(self, symbol: str, rows: List[dict]) -> int:
         if not rows:
             return 0
-        stmt = insert(OHLCV).values(
-            [
-                dict(
-                    symbol=symbol,
-                    tf=self.tf,
-                    ts=row["ts"],
-                    o=row["o"],
-                    h=row["h"],
-                    l=row["l"],
-                    c=row["c"],
-                    v=row["v"],
-                    source_hash=None,
-                )
-                for row in rows
-            ]
-        )
-        stmt = stmt.on_conflict_do_nothing(
-            index_elements=["symbol", "tf", "ts"]
-        )  # Upsert: pomiń duplikaty
+        bind = self.db.get_bind()
+        payload = [
+            dict(
+                symbol=symbol,
+                tf=self.tf,
+                ts=row["ts"],
+                o=row["o"],
+                h=row["h"],
+                l=row["l"],
+                c=row["c"],
+                v=row["v"],
+                source_hash=None,
+            )
+            for row in rows
+        ]
+        if bind and bind.dialect.name == "sqlite":
+            res = self.db.execute(
+                text(
+                    """
+                    INSERT OR IGNORE INTO ohlcv (symbol, tf, ts, o, h, l, c, v, source_hash)
+                    VALUES (:symbol, :tf, :ts, :o, :h, :l, :c, :v, :source_hash)
+                    """
+                ),
+                payload,
+            )
+            self.db.commit()
+            return res.rowcount if res.rowcount != -1 else 0
+
+        stmt = insert(OHLCV).values(payload)
+        stmt = stmt.on_conflict_do_nothing(index_elements=["symbol", "tf", "ts"])
         res = self.db.execute(stmt)
         self.db.commit()
         return res.rowcount or 0
@@ -191,7 +201,8 @@ class BackfillRunner:
         self, row: BackfillProgress, **fields
     ) -> None:
         for k, v in fields.items():
-            setattr(row, k, v)
+            if hasattr(row, k):
+                setattr(row, k, v)
         row.updated_at = datetime.now(tz=UTC)
         self.db.add(row)
         self.db.commit()
@@ -210,8 +221,9 @@ class BackfillRunner:
 
         self._update_progress(row, status=status, chunk_start_ts=since, chunk_end_ts=until)
 
-        while since <= until:
+        while since < until:
             batch = self.fetcher(symbol, self.tf, since, self.batch_limit)
+            batch = [row for row in batch if row["ts"] < until]
             if not batch:
                 # brak danych – przejdź o jeden interwał, rejestruj lukę
                 seen_ts.append(since)

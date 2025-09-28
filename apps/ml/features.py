@@ -21,7 +21,7 @@ from apps.ml.ta_utils import (
 from apps.ml.labeling import triple_barrier_labels
 from apps.ml.sentiment_plugin import load_provider
 
-FEATURES_VERSION = int(os.getenv("FEATURES_VERSION", "1"))
+FEATURES_VERSION = os.getenv("FEATURES_VERSION", "1")
 LABEL_TP_PCT = float(os.getenv("LABEL_TP_PCT", "0.02"))
 LABEL_SL_PCT = float(os.getenv("LABEL_SL_PCT", "0.01"))
 LABEL_MAX_HORIZON = int(os.getenv("LABEL_MAX_HORIZON", "60"))
@@ -114,11 +114,11 @@ def _df_to_records(df: pd.DataFrame) -> List[Dict]:
         })
     return recs
 
-def upsert_features(db: Session, symbol: str, tf: str, version: int, records: List[Dict]) -> int:
+def upsert_features(db: Session, symbol: str, tf: str, version: str | int, records: List[Dict]) -> int:
     if not records:
         return 0
-    values = [{"symbol": symbol, "tf": tf, "ts": r["ts"], "version": version, "f_vector": r["f_vector"]} for r in records]
-    stmt = pg_insert(models.Features.__table__).values(values)
+    values = [{"symbol": symbol, "tf": tf, "ts": r["ts"], "version": str(version), "f_vector": r["f_vector"]} for r in records]
+    stmt = pg_insert(models.Feature.__table__).values(values)
     stmt = stmt.on_conflict_do_update(
         index_elements=["symbol", "tf", "ts", "version"],
         set_={"f_vector": stmt.excluded.f_vector}

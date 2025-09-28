@@ -2,10 +2,25 @@
 # PL: Kompletny zestaw modeli zgodny z wymaganiami + indeksy.
 # EN: Complete model set per spec + indexes.
 
+import os
 from sqlalchemy import (
     Column, String, Integer, Float, JSON, BigInteger, Boolean, ForeignKey, Index, UniqueConstraint
 )
-from sqlalchemy.dialects.postgresql import JSONB, ARRAY
+from sqlalchemy.types import JSON as GenericJSON
+
+USE_GENERIC_JSON = os.getenv("DATABASE_URL", "").startswith("sqlite") or os.getenv("SQLITE_FALLBACK", "1") == "1"
+
+if USE_GENERIC_JSON:
+    JSONField = GenericJSON
+    def ArrayFloat():  # pragma: no cover - simple helper
+        return GenericJSON
+else:
+    from sqlalchemy.dialects.postgresql import JSONB, ARRAY
+
+    JSONField = JSONB
+
+    def ArrayFloat():
+        return ARRAY(Float)
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from apps.api.db.base import Base
 
@@ -29,13 +44,13 @@ class OHLCV(Base):
         Index("ix_ohlcv_sym_tf_ts_desc", "symbol", "tf", "ts", postgresql_using="btree"),
     )
 
-class Features(Base):
+class Feature(Base):
     __tablename__ = "features"
     symbol: Mapped[str] = mapped_column(String, primary_key=True)
     tf: Mapped[str] = mapped_column(String, primary_key=True)
     ts: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    version: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    f_vector: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    version: Mapped[str] = mapped_column(String, primary_key=True, default="1")
+    f_vector: Mapped[dict] = mapped_column(JSONField, nullable=False)
 
     __table_args__ = (
         Index("ix_features_ts", "ts"),
@@ -68,7 +83,7 @@ class Signal(Base):
     ts: Mapped[int] = mapped_column(BigInteger, nullable=False)  # event time
     dir: Mapped[str] = mapped_column(String, nullable=False)  # 'LONG'/'SHORT'
     entry: Mapped[float] = mapped_column(Float, nullable=False)
-    tp: Mapped[list[float] | None] = mapped_column(ARRAY(Float), nullable=True)  # [tp1,tp2,tp3]
+    tp: Mapped[list[float] | None] = mapped_column(ArrayFloat(), nullable=True)  # [tp1,tp2,tp3]
     sl: Mapped[float] = mapped_column(Float, nullable=False)
     lev: Mapped[float] = mapped_column(Float, nullable=False)  # leverage used (planned)
     risk: Mapped[str] = mapped_column(String, nullable=False)  # LOW/MED/HIGH
@@ -131,8 +146,8 @@ class TrainingRun(Base):
     started_at: Mapped[int] = mapped_column(BigInteger, nullable=False)   # epoch ms
     finished_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="running")
-    params_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
-    metrics_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    params_json: Mapped[dict | None] = mapped_column(JSONField, nullable=True)
+    metrics_json: Mapped[dict | None] = mapped_column(JSONField, nullable=True)
 
     __table_args__ = (
         Index("ix_train_status_start", "status", "started_at"),
@@ -141,10 +156,10 @@ class TrainingRun(Base):
 class Backtest(Base):
     __tablename__ = "backtests"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    params_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    params_json: Mapped[dict | None] = mapped_column(JSONField, nullable=True)
     started_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     finished_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    summary_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    summary_json: Mapped[dict | None] = mapped_column(JSONField, nullable=True)
 
     trades: Mapped[list["BacktestTrade"]] = relationship("BacktestTrade", back_populates="backtest", cascade="all, delete-orphan")
 
@@ -177,7 +192,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     risk_profile: Mapped[str] = mapped_column(String, default="LOW")
     capital: Mapped[float] = mapped_column(Float, default=100.0)
-    prefs: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    prefs: Mapped[dict | None] = mapped_column(JSONField, nullable=True)
     api_connected: Mapped[bool] = mapped_column(Boolean, default=False)
 
     __table_args__ = (
