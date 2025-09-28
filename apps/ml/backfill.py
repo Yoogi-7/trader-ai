@@ -1,5 +1,6 @@
 # apps/ml/backfill.py
 # (fragment header bez zmian opisowych)
+import logging
 import os
 import sys
 import time
@@ -16,7 +17,9 @@ from apps.api.db.session import SessionLocal
 from apps.api.db import models
 from apps.ml.ccxt_client import CcxtClient
 from apps.ml.resample import resample_candles
-from apps.common.event_bus import publish  # NEW
+from apps.common.event_bus import publish
+
+logger = logging.getLogger(__name__)
 
 SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTC/USDT,ETH/USDT,BNB/USDT,ADA/USDT,SOL/USDT,XRP/USDT,DOGE/USDT,MATIC/USDT,ARB/USDT,OP/USDT").split(",")]
 BASE_TF = "1m"
@@ -170,3 +173,71 @@ def backfill_symbol(db: Session, client: CcxtClient, symbol: str, tf: str, from_
 
     update_progress(db, symbol, tf, status="done")
     publish("backfill_finished", {"symbol": symbol, "tf": tf, "written": total_written, "fetched": fetched_total})
+
+
+def _parse_optional_int_env(name: str) -> Optional[int]:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Ignoring %s=%r (not an integer)", name, value)
+    return None
+
+
+def run_once(symbols: Optional[List[str]] = None, tf: str = BASE_TF, from_ts: Optional[int] = None, to_ts: Optional[int] = None) -> None:
+    db = SessionLocal()
+    client = CcxtClient()
+    active_symbols = symbols or SYMBOLS
+    try:
+        for symbol in active_symbols:
+            sym = symbol.strip()
+            if not sym:
+                continue
+            try:
+                logger.info("Backfill start symbol=%s tf=%s", sym, tf)
+                backfill_symbol(db, client, sym, tf, from_ts, to_ts)
+                logger.info("Backfill done symbol=%s", sym)
+            except Exception:
+                logger.exception("Backfill failed for %s", sym)
+    finally:
+        db.close()
+
+
+def main() -> None:
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=os.getenv("BACKFILL_LOG_LEVEL", "INFO").upper())
+    mode = os.getenv("BACKFILL_MODE", "once").strip().lower() or "once"
+    sleep_seconds_raw = os.getenv("BACKFILL_SLEEP_SECONDS", "900")
+    try:
+        sleep_seconds = int(sleep_seconds_raw)
+    except ValueError:
+        logger.warning("Invalid BACKFILL_SLEEP_SECONDS=%r, defaulting to 900", sleep_seconds_raw)
+        sleep_seconds = 900
+    from_ts = _parse_optional_int_env("BACKFILL_FROM_TS")
+    to_ts = _parse_optional_int_env("BACKFILL_TO_TS")
+
+    logger.info(
+        "ml.backfill service starting (mode=%s, symbols=%s, tf=%s, from_ts=%s, to_ts=%s)",
+        mode,
+        SYMBOLS,
+        BASE_TF,
+        from_ts,
+        to_ts,
+    )
+
+    while True:
+        started = time.time()
+        run_once(tf=BASE_TF, from_ts=from_ts, to_ts=to_ts)
+        elapsed = time.time() - started
+        logger.info("ml.backfill iteration finished in %.2fs", elapsed)
+        if mode != "loop":
+            break
+        if sleep_seconds > 0:
+            logger.info("Sleeping %ss before next iteration", sleep_seconds)
+            time.sleep(sleep_seconds)
+
+
+if __name__ == "__main__":
+    main()
