@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, desc
 from apps.api.db import models
 from apps.ml.signal_engine import atr_levels, fib_adjust, Levels
+from apps.ml.risk import dynamic_risk_fraction, position_size
 from apps.ml.feature_pipeline import build_mtf_context, multi_tf_confirm
 from apps.ml.models.stacking import StackingEnsemble
 from apps.ml.models.conformal import InductiveConformal
@@ -64,14 +65,6 @@ def _expected_net_pct(direction: str, entry: float, tp: list[float], sl: float, 
     if margin<=0: return -1.0
     return float((pnl - fee - slip - funding)/margin)
 
-def _position_size(capital: float, risk_per_trade: float, entry: float, sl: float, min_notional: float=5.0) -> tuple[float,float]:
-    risk_usd = capital * risk_per_trade
-    if risk_usd<=0 or abs(entry-sl)<=0: return 0.0, 0.0
-    qty = risk_usd / abs(entry-sl)
-    if entry*qty < min_notional:
-        qty = min_notional/entry
-    return float(qty), float(risk_usd)
-
 def evaluate_signal(
     db: Session,
     symbol: str,
@@ -84,6 +77,7 @@ def evaluate_signal(
     risk_profile: Literal["LOW","MED","HIGH"],
     capital: float,
     funding_rate_hourly: float = 0.0,
+    max_allocation_pct: Optional[float] = None,
 ) -> Tuple[Optional[models.Signal], Optional[str]]:
     # Multi-TF confirm
     ctx = build_mtf_context(db, symbol, ts)
@@ -96,7 +90,24 @@ def evaluate_signal(
 
     # Sizing
     risk_map = {"LOW":0.01, "MED":0.02, "HIGH":0.05}
-    qty, risk_usd = _position_size(capital, risk_map[risk_profile], lv.entry, lv.sl)
+    base_fraction = risk_map[risk_profile]
+    volatility_ratio = abs(atr / close) if close else 0.0
+    max_fraction = None
+    if max_allocation_pct is not None and max_allocation_pct > 0:
+        max_fraction = min(max_allocation_pct, 1.0)
+    dynamic_fraction = dynamic_risk_fraction(
+        base_fraction=base_fraction,
+        volatility_ratio=volatility_ratio,
+        max_portfolio_fraction=max_fraction,
+    )
+
+    qty, risk_usd = position_size(
+        capital,
+        risk_profile,
+        lv.entry,
+        lv.sl,
+        risk_fraction_override=dynamic_fraction,
+    )
     if qty<=0: return None, "invalid_sizing"
 
     # Ensemble + confidence (tu: przykładowa ekstrakcja cech – do faktycznego feeder'a pod modele)
@@ -143,7 +154,7 @@ def evaluate_signal(
         tp=lv.tp[:3],
         sl=lv.sl,
         lev=3,
-        risk=risk_map[risk_profile],
+        risk=f"{dynamic_fraction:.4f}",
         margin_mode="ISOLATED",
         expected_net_pct=float(net),
         confidence=conf,

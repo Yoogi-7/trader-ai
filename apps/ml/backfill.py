@@ -45,6 +45,7 @@ SIGNAL_EMA_SLOW = int(os.getenv("AUTO_SIGNAL_EMA_SLOW", "55"))
 SIGNAL_MIN_ATR = float(os.getenv("AUTO_SIGNAL_MIN_ATR", "0.0"))
 SIGNAL_RISK_PROFILE = os.getenv("AUTO_SIGNAL_RISK", "MED")
 SIGNAL_CAPITAL = float(os.getenv("AUTO_SIGNAL_CAPITAL", "1000"))
+SIGNAL_MAX_ALLOCATION = float(os.getenv("AUTO_SIGNAL_MAX_PCT", "0.1"))
 SIGNAL_FUNDING_RATE = float(os.getenv("AUTO_SIGNAL_FUNDING_RATE", "0.0"))
 SIGNAL_COOLDOWN_MIN = int(os.getenv("AUTO_SIGNAL_COOLDOWN_MIN", "120"))
 TRAIN_INTERVAL_MIN = int(os.getenv("AUTO_TRAIN_INTERVAL_MIN", "1440"))
@@ -182,6 +183,7 @@ def _generate_signal(db: Session, symbol: str) -> None:
         risk_profile=SIGNAL_RISK_PROFILE,
         capital=SIGNAL_CAPITAL,
         funding_rate_hourly=SIGNAL_FUNDING_RATE,
+        max_allocation_pct=SIGNAL_MAX_ALLOCATION,
     )
     if sig is None:
         logger.debug("signal rejected symbol=%s reason=%s", symbol, reason)

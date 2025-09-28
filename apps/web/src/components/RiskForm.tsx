@@ -7,16 +7,34 @@ export const RiskForm: React.FC<{ onSaved: () => void }> = ({ onSaved }) => {
   const [risk_profile, setRisk] = useState<'LOW' | 'MED' | 'HIGH'>('LOW');
   const [capital, setCapital] = useState<number>(100);
   const [pairs, setPairs] = useState<string>('BTC/USDT,ETH/USDT');
+  const [maxAllocationPct, setMaxAllocationPct] = useState<number>(10);
 
   useEffect(() => {
     if (user) {
       setRisk((user.risk_profile as 'LOW' | 'MED' | 'HIGH') ?? 'LOW');
       setCapital(user.capital ?? 100);
+      if (user.prefs && Array.isArray(user.prefs.pairs)) {
+        setPairs(user.prefs.pairs.join(', '));
+      }
+      const prefMax = user.prefs?.max_allocation_pct;
+      if (typeof prefMax === 'number' && Number.isFinite(prefMax)) {
+        setMaxAllocationPct(Math.round(prefMax * 1000) / 10);
+      }
     }
   }, [user]);
 
   async function save() {
-    await api.setProfile({ risk_profile, capital, prefs: { pairs: pairs.split(',').map((s) => s.trim()).filter(Boolean) } });
+    const parsedPairs = pairs
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const sanitizedMax = Number.isFinite(maxAllocationPct) ? Math.min(100, Math.max(0, maxAllocationPct)) : undefined;
+    const prefs = {
+      ...(user?.prefs ?? {}),
+      pairs: parsedPairs,
+      max_allocation_pct: sanitizedMax !== undefined ? sanitizedMax / 100 : undefined,
+    };
+    await api.setProfile({ risk_profile, capital, prefs });
     onSaved();
   }
 
@@ -33,6 +51,18 @@ export const RiskForm: React.FC<{ onSaved: () => void }> = ({ onSaved }) => {
       <label className="text-sm">
         <span className="block text-slate-600">Kapitał ($)</span>
         <input className="w-full border rounded px-2 py-1" type="number" value={capital} onChange={(e) => setCapital(Number(e.target.value))} />
+      </label>
+      <label className="text-sm">
+        <span className="block text-slate-600">Maks. wykorzystanie portfela (%)</span>
+        <input
+          className="w-full border rounded px-2 py-1"
+          type="number"
+          min={0}
+          max={100}
+          step={0.1}
+          value={maxAllocationPct}
+          onChange={(e) => setMaxAllocationPct(Number(e.target.value))}
+        />
       </label>
       <label className="text-sm">
         <span className="block text-slate-600">Pary</span>

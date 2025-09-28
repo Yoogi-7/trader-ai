@@ -8,6 +8,7 @@ export type AuthUser = {
   role: 'ADMIN' | 'USER';
   risk_profile: string;
   capital: number;
+  prefs?: Record<string, any> | null;
 };
 
 interface AuthContextValue {

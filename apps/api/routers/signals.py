@@ -29,6 +29,7 @@ class AutoReq(BaseModel):
     risk_profile: Literal["LOW","MED","HIGH"] = "LOW"
     capital: float = 100.0
     funding_rate_hourly: float = 0.0
+    max_allocation_pct: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 @router.post("/auto")
 def generate_auto(req: AutoReq, db: Session = Depends(db_dep)):
@@ -36,6 +37,7 @@ def generate_auto(req: AutoReq, db: Session = Depends(db_dep)):
         db=db, symbol=req.symbol, tf_base=req.tf_base, ts=req.ts, direction=req.direction,
         close=req.close, atr=req.atr, fibo=req.fibo, risk_profile=req.risk_profile,
         capital=req.capital, funding_rate_hourly=req.funding_rate_hourly,
+        max_allocation_pct=req.max_allocation_pct,
     )
     if sig is None:
         raise HTTPException(status_code=400, detail={"reason": reason})

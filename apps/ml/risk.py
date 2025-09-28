@@ -39,12 +39,57 @@ def profile_of(risk: Literal["LOW","MED","HIGH"]) -> RiskProfile:
         return RiskProfile(RISK_PROFILE_MED, LEVERAGE_CAP_MED)
     return RiskProfile(RISK_PROFILE_HIGH, LEVERAGE_CAP_HIGH)
 
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return float(max(lo, min(hi, value)))
+
+
+def dynamic_risk_fraction(
+    base_fraction: float,
+    volatility_ratio: float,
+    *,
+    max_portfolio_fraction: Optional[float] = None,
+    low_vol_threshold: float = 0.005,
+    high_vol_threshold: float = 0.05,
+    min_scale: float = 0.4,
+    max_scale: float = 1.5,
+    floor_fraction: Optional[float] = None,
+) -> float:
+    """Adjust base risk fraction in response to observed volatility."""
+    if base_fraction <= 0.0:
+        return 0.0
+
+    ratio = max(0.0, float(volatility_ratio))
+    if high_vol_threshold <= low_vol_threshold:
+        normalized = 1.0 if ratio > low_vol_threshold else 0.0
+    else:
+        normalized = _clamp(
+            (ratio - low_vol_threshold) / (high_vol_threshold - low_vol_threshold),
+            0.0,
+            1.0,
+        )
+
+    scale = max_scale - (max_scale - min_scale) * normalized
+    scale = _clamp(scale, min_scale, max_scale)
+
+    fraction = base_fraction * scale
+
+    floor = floor_fraction if floor_fraction is not None else base_fraction * 0.25
+    if floor > 0:
+        fraction = max(fraction, floor)
+
+    if max_portfolio_fraction is not None and max_portfolio_fraction > 0:
+        fraction = min(fraction, max_portfolio_fraction)
+
+    return float(max(fraction, 0.0))
+
 def position_size(
     capital: float,
     risk: Literal["LOW","MED","HIGH"],
     entry: float,
     sl: float,
     min_notional: float = MIN_NOTIONAL,
+    risk_fraction_override: Optional[float] = None,
 ) -> Tuple[float, float]:
     """
     Returns (qty, risk_$). risk_$ = capital * risk_per_trade.
@@ -52,7 +97,9 @@ def position_size(
     Enforces min_notional.
     """
     rp = profile_of(risk)
-    risk_dollar = max(0.0, capital * rp.risk_per_trade)
+    fraction = risk_fraction_override if risk_fraction_override is not None else rp.risk_per_trade
+    fraction = max(0.0, float(fraction))
+    risk_dollar = max(0.0, capital * fraction)
     if risk_dollar <= 0 or abs(entry - sl) <= 0:
         return 0.0, 0.0
     qty = risk_dollar / abs(entry - sl)

@@ -18,6 +18,7 @@ class UserInfo(BaseModel):
     role: Literal['ADMIN', 'USER']
     risk_profile: str
     capital: float
+    prefs: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(from_attributes=True)
 

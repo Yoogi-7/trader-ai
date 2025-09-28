@@ -52,7 +52,20 @@ def run_backtest(params: dict | None = None):
     for s in signals:
         # qty zgodnie z risk$ / dist(SL)
         risk_map = {"LOW":0.01,"MED":0.02,"HIGH":0.05}
-        risk$ = capital * risk_map.get(s.risk if isinstance(s.risk,str) else "LOW", 0.01)
+        risk_fraction = None
+        if isinstance(s.risk, str):
+            if s.risk in risk_map:
+                risk_fraction = risk_map[s.risk]
+            else:
+                try:
+                    risk_fraction = float(s.risk)
+                except ValueError:
+                    risk_fraction = None
+        elif isinstance(s.risk, (int, float)):
+            risk_fraction = float(s.risk)
+        if risk_fraction is None:
+            risk_fraction = risk_map.get("LOW", 0.01)
+        risk$ = capital * risk_fraction
         dist = abs(s.entry - s.sl)
         if dist<=0: continue
         qty = risk$ / dist
