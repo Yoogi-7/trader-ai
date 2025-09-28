@@ -137,11 +137,11 @@ def resample_info(db: Session = Depends(get_db)):
     out = {}
     for view in ["ohlcv_15m","ohlcv_1h","ohlcv_4h","ohlcv_1d"]:
         row = db.execute(
-            text(f"SELECT COUNT(*)::bigint AS cnt, max(ts_time) AS last_ts FROM {view};")
+            text(f"SELECT COUNT(*)::bigint AS cnt, max(ts) AS last_ts FROM {view};")
         ).mappings().first()
         out[view] = {
             "rows": int(row["cnt"]) if row and row["cnt"] is not None else 0,
-            "last_ts": row["last_ts"].isoformat() if row and row["last_ts"] else None
+            "last_ts": _to_iso(row["last_ts"]) if row and row["last_ts"] is not None else None
         }
     return out
 
