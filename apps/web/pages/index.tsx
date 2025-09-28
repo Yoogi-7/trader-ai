@@ -13,6 +13,7 @@ import { RiskDashboard } from '../src/components/RiskDashboard';
 import { TradingJournal } from '../src/components/TradingJournal';
 import { FeatureHighlights } from '../src/components/FeatureHighlights';
 import { ArbitrageWidget } from '../src/components/ArbitrageWidget';
+import { StrategyAssistant } from '../src/components/StrategyAssistant';
 
 export default function Home() {
   const router = useRouter();
@@ -67,6 +68,10 @@ export default function Home() {
 
           <div className="mb-6">
             <FeatureHighlights />
+          </div>
+
+          <div className="mb-6">
+            <StrategyAssistant />
           </div>
 
           <section className="grid md:grid-cols-3 gap-4">

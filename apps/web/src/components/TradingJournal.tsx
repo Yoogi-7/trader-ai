@@ -1,3 +1,5 @@
+'use client';
+
 import useSWR from 'swr';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { fetcher } from '../api';

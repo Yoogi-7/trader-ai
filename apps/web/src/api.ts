@@ -59,6 +59,25 @@ export async function poster<T = any>(path: string, body: any): Promise<T> {
   return res.json();
 }
 
+type ArbitrageScanPayload = {
+  exchanges: string[];
+  symbols: string[];
+  min_spread_pct?: number;
+  market_type?: 'spot' | 'future';
+};
+
+type ArbitrageScanResponse = {
+  opportunities: Array<{
+    symbol: string;
+    buy_exchange: string;
+    sell_exchange: string;
+    buy_price: number;
+    sell_price: number;
+    spread_pct: number;
+    timestamp_ms: number;
+  }>;
+};
+
 export const api = {
   backfillStart: (symbols: string[], tf: string, from_ts?: number | null, to_ts?: number | null) =>
     poster('/backfill/start', { symbols, tf, from_ts: from_ts ?? null, to_ts: to_ts ?? null }),
@@ -87,7 +106,7 @@ export const api = {
   leaderboard: () => fetcher('/leaderboard'),
   riskDashboard: () => fetcher('/risk/dashboard'),
   journal: () => fetcher('/journal'),
-  scanArbitrage: (payload: { exchanges: string[]; symbols: string[]; min_spread_pct?: number; market_type?: 'spot' | 'future' }) =>
+  scanArbitrage: (payload: ArbitrageScanPayload): Promise<ArbitrageScanResponse> =>
     poster('/signals/arbitrage/scan', {
       exchanges: payload.exchanges,
       symbols: payload.symbols,

@@ -1,3 +1,5 @@
+'use client';
+
 import { useAuth } from '../context/AuthContext';
 
 export const FeatureHighlights: React.FC = () => {
