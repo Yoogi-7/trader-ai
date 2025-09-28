@@ -68,10 +68,10 @@ def run_training(params: dict | None = None):
         equity=[eq]; wins=[0,0,0]
         for s in test_sigs:
             risk_map = {"LOW":0.01,"MED":0.02,"HIGH":0.05}
-            risk$ = capital * risk_map.get(risk, 0.01)
+            risk_amount = capital * risk_map.get(risk, 0.01)
             dist = abs(s.entry - s.sl)
             if dist<=0: continue
-            qty = risk$ / dist
+            qty = risk_amount / dist
             fut = [bb for bb in test_bars if bb["ts"] > s.ts]
             if not fut: continue
             trd = simulate_trade(fut, s.dir, s.entry, s.tp or [], s.sl, qty, p)
