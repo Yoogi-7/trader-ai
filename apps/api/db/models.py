@@ -93,10 +93,11 @@ class Signal(Base):
     risk: Mapped[str] = mapped_column(String, nullable=False)  # LOW/MED/HIGH
     margin_mode: Mapped[str] = mapped_column(String, nullable=False, default="ISOLATED")
     expected_net_pct: Mapped[float] = mapped_column(Float, nullable=False)  # musi być >= 0.02
-    confidence: Mapped[float] = mapped_column(Float, nullable=True)  # 0..1
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)  # 0..1
     model_ver: Mapped[str] = mapped_column(String, nullable=True)
     reason_discard: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default="new")  # new/published/cancelled/expired
+    ai_summary: Mapped[str | None] = mapped_column(String, nullable=True)
 
     executions: Mapped[list["Execution"]] = relationship("Execution", back_populates="signal", cascade="all, delete-orphan")
     pnl_rows: Mapped[list["PnL"]] = relationship("PnL", back_populates="signal", cascade="all, delete-orphan")

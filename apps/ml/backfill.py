@@ -198,6 +198,7 @@ def _generate_signal(db: Session, symbol: str) -> None:
             "sl": sig.sl,
             "tp": sig.tp,
             "confidence": sig.confidence,
+            "ai_summary": sig.ai_summary,
         },
     )
     logger.info(

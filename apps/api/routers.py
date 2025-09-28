@@ -13,6 +13,7 @@ from apps.api.db.session import SessionLocal
 from apps.api.db import models
 from apps.api.config import settings
 from apps.api import schemas, crud
+from apps.api.services.signals_service import generate_ai_summary
 from apps.api.security import (create_access_token, get_current_user, get_password_hash, require_admin, verify_password)
 
 from apps.common.celery_app import app as celery_app
@@ -383,7 +384,17 @@ def signals_generate(db: Session = Depends(get_db), _admin: models.User = Depend
         entry=65000.0, tp=[65500.0, 66000.0, 67000.0],
         sl=64000.0, lev=5, risk=0.01, margin_mode="isolated",
         expected_net_pct=0.025, confidence=0.62, model_ver="v0.1",
-        reason_discard=None, status="published"
+        reason_discard=None, status="published",
+        ai_summary=generate_ai_summary(
+            symbol="BTCUSDT",
+            tf_base=settings.base_tf,
+            direction="LONG",
+            entry=65000.0,
+            tp=[65500.0, 66000.0, 67000.0],
+            sl=64000.0,
+            expected_net_pct=0.025,
+            confidence=0.62,
+        )
     )
     db.add(sig); db.commit()
     return {"inserted": sig.id}
@@ -406,6 +417,7 @@ def _signal_to_dict(s: models.Signal) -> dict:
         "margin_mode": s.margin_mode, "expected_net_pct": s.expected_net_pct,
         "confidence": s.confidence, "model_ver": s.model_ver,
         "reason_discard": s.reason_discard, "status": s.status,
+        "ai_summary": s.ai_summary,
     }
 
 # -------- Settings --------

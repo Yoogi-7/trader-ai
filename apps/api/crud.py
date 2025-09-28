@@ -101,6 +101,7 @@ def signal_create(db: Session, payload: Dict[str, Any]) -> models.Signal:
         model_ver=payload.get("model_ver"),
         reason_discard=payload.get("reason_discard"),
         status="published" if payload.get("reason_discard") is None else "cancelled",
+        ai_summary=payload.get("ai_summary"),
     )
     db.add(s)
     db.commit()

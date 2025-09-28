@@ -16,6 +16,38 @@ SLIPPAGE_BPS = float(os.getenv("SLIPPAGE_BPS", "10"))
 MIN_NET = float(os.getenv("MIN_NET_PROFIT", "0.02"))
 CONF_MIN = float(os.getenv("CONFIDENCE_MIN", "0.55"))
 
+
+def _format_pct(value: float) -> str:
+    return f"{value:.1f}%"
+
+
+def generate_ai_summary(
+    *,
+    symbol: str,
+    tf_base: str,
+    direction: str,
+    entry: float,
+    tp: list[float] | None,
+    sl: float,
+    expected_net_pct: float,
+    confidence: float | None,
+) -> str:
+    direction_text = "trend wzrostowy" if direction.upper() == "LONG" else "trend spadkowy"
+    tf_label = tf_base.upper()
+    tp_price = tp[0] if tp else entry
+    tp_pct = ((tp_price - entry) / entry * 100.0) if direction.upper() == "LONG" else ((entry - tp_price) / entry * 100.0)
+    sl_pct = ((entry - sl) / entry * 100.0) if direction.upper() == "LONG" else ((sl - entry) / entry * 100.0)
+    summary_parts = [
+        f"AI znalazło {direction_text} na {tf_label}",
+        f"→ {direction.upper()} {symbol}",
+        f"TP { _format_pct(tp_pct) }",
+        f"SL { _format_pct(abs(sl_pct)) }",
+        f"Net { _format_pct(expected_net_pct * 100.0) }",
+    ]
+    if confidence is not None:
+        summary_parts.append(f"confidence {confidence:.2f}")
+    return " ".join(summary_parts)
+
 def _side_mult(direction: str) -> int:
     return 1 if direction=="LONG" else -1
 
@@ -90,6 +122,17 @@ def evaluate_signal(
         return None, f"net_profit_below_threshold ({net:.4f}<{MIN_NET:.4f})"
 
     # Persist
+    summary_text = generate_ai_summary(
+        symbol=symbol,
+        tf_base=tf_base,
+        direction=direction,
+        entry=lv.entry,
+        tp=lv.tp[:3] if lv.tp else None,
+        sl=lv.sl,
+        expected_net_pct=float(net),
+        confidence=conf,
+    )
+
     sig = models.Signal(
         id=str(uuid.uuid4()),
         symbol=symbol,
@@ -107,6 +150,7 @@ def evaluate_signal(
         model_ver="ensemble-demo",
         reason_discard=None,
         status="published",
+        ai_summary=summary_text,
     )
     db.add(sig); db.commit(); db.refresh(sig)
     return sig, None

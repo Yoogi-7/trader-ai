@@ -121,6 +121,7 @@ class SignalCreateReq(BaseModel):
     confidence: Optional[float] = None
     model_ver: Optional[str] = None
     reason_discard: Optional[str] = None
+    ai_summary: Optional[str] = None
 
     @validator("expected_net_pct")
     def validate_net(cls, v):
@@ -145,6 +146,7 @@ class SignalItem(BaseModel):
     model_ver: Optional[str] = None
     reason_discard: Optional[str] = None
     status: str
+    ai_summary: Optional[str] = None
 
 class SignalsListResp(BaseModel):
     total: int
