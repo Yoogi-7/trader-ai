@@ -1,0 +1,131 @@
+# apps/api/schemas.py
+# PL: Schematy Pydantic do API. EN: Pydantic schemas for API.
+
+from pydantic import BaseModel, Field, conlist, validator
+from typing import Optional, List, Literal, Any, Dict
+
+# -------- Backfill --------
+
+class BackfillStartReq(BaseModel):
+    symbols: conlist(str, min_items=1)
+    tf: Literal["1m", "5m", "15m", "1h", "4h", "1d"] = "15m"
+    from_ts: Optional[int] = None  # epoch ms
+    to_ts: Optional[int] = None    # epoch ms
+
+class BackfillItem(BaseModel):
+    id: int
+    symbol: str
+    tf: str
+    last_ts_completed: Optional[int]
+    chunk_start_ts: Optional[int]
+    chunk_end_ts: Optional[int]
+    retry_count: int
+    status: str
+    updated_at: int
+
+class BackfillStartResp(BaseModel):
+    created: int
+    items: List[BackfillItem]
+
+class BackfillStatusResp(BaseModel):
+    total: int
+    items: List[BackfillItem]
+
+# -------- Train --------
+
+class TrainRunReq(BaseModel):
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+class TrainRunItem(BaseModel):
+    id: int
+    started_at: int
+    finished_at: Optional[int]
+    status: str
+    params_json: Optional[Dict[str, Any]]
+    metrics_json: Optional[Dict[str, Any]]
+
+class TrainRunResp(BaseModel):
+    created_id: int
+
+class TrainStatusResp(BaseModel):
+    total: int
+    items: List[TrainRunItem]
+
+# -------- Backtest --------
+
+class BacktestRunReq(BaseModel):
+    params: Dict[str, Any] = Field(default_factory=dict)
+
+class BacktestItem(BaseModel):
+    id: int
+    started_at: int
+    finished_at: Optional[int]
+    summary_json: Optional[Dict[str, Any]]
+
+class BacktestRunResp(BaseModel):
+    created_id: int
+
+class BacktestResultsResp(BaseModel):
+    total: int
+    items: List[BacktestItem]
+
+# -------- Signals --------
+
+class SignalCreateReq(BaseModel):
+    symbol: str
+    tf_base: Literal["15m", "1h", "4h"]
+    ts: int
+    dir: Literal["LONG", "SHORT"]
+    entry: float
+    tp: Optional[List[float]] = None
+    sl: float
+    lev: float = Field(ge=1)
+    risk: Literal["LOW", "MED", "HIGH"] = "LOW"
+    margin_mode: Literal["ISOLATED", "CROSS"] = "ISOLATED"
+    expected_net_pct: float = Field(..., description=">= 0.02 means 2% net")
+    confidence: Optional[float] = None
+    model_ver: Optional[str] = None
+    reason_discard: Optional[str] = None
+
+    @validator("expected_net_pct")
+    def validate_net(cls, v):
+        if v < 0:
+            raise ValueError("expected_net_pct must be >= 0")
+        return v
+
+class SignalItem(BaseModel):
+    id: str
+    symbol: str
+    tf_base: str
+    ts: int
+    dir: str
+    entry: float
+    tp: Optional[List[float]]
+    sl: float
+    lev: float
+    risk: str
+    margin_mode: str
+    expected_net_pct: float
+    confidence: Optional[float] = None
+    model_ver: Optional[str] = None
+    reason_discard: Optional[str] = None
+    status: str
+
+class SignalsListResp(BaseModel):
+    total: int
+    items: List[SignalItem]
+
+# -------- Settings / Users --------
+
+class UserSettingsReq(BaseModel):
+    user_id: int
+    risk_profile: Literal["LOW", "MED", "HIGH"]
+    capital: float = Field(gt=0)
+    prefs: Dict[str, Any] = Field(default_factory=dict)
+
+class UserCapitalReq(BaseModel):
+    user_id: int
+    capital: float = Field(gt=0)
+
+class OkResp(BaseModel):
+    ok: bool

@@ -1,0 +1,10 @@
+
+FROM python:3.12-slim
+ENV POETRY_VERSION=1.8.3
+RUN pip install --no-cache-dir poetry==$POETRY_VERSION
+
+WORKDIR /app
+COPY pyproject.toml poetry.lock* ./
+RUN poetry config virtualenvs.create false && poetry install --no-interaction --no-ansi
+COPY . .
+CMD ["bash", "-lc", "celery -A apps.ml.worker:app worker -l INFO"]

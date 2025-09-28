@@ -1,0 +1,344 @@
+openapi: 3.0.3
+info:
+  title: Trader AI API
+  version: 0.1.0
+  description: |
+    Trader AI – system generowania sygnałów tradingowych dla krypto futures.
+    Stos: FastAPI, TimescaleDB, Redis, Redpanda (Kafka), Celery, Next.js.
+
+servers:
+  - url: http://localhost:8000
+    description: Local Dev
+
+tags:
+  - name: Backfill
+    description: Pobieranie i uzupełnianie danych OHLCV (1m) z resume i rejestrem luk
+  - name: Training
+    description: Trening modeli ML i rejestr metryk
+  - name: Backtest
+    description: Symulacje strategii w OOS/paper i what-if
+  - name: Signals
+    description: Generowanie i odczyt sygnałów tradingowych
+  - name: Settings
+    description: Ustawienia użytkownika (profil ryzyka, kapitał)
+
+paths:
+  /backfill/start:
+    post:
+      tags: [Backfill]
+      summary: Start backfill job (4y resume/gaps)
+      description: |
+        Uruchamia asynchroniczny backfill danych OHLCV 1m dla wskazanych par lub domyślnych
+        (z .env). Używa CCXT (Binance USDⓈ-M). Obsługuje wznowienie po przerwaniu, rejestr luk,
+        oraz metryki postępu.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartBackfillRequest'
+            example:
+              pairs: ["BTCUSDT","ETHUSDT"]
+              tf: "1m"
+              start_ts_ms: null   # 4 lata wstecz jeśli null
+              end_ts_ms: null     # teraz jeśli null
+              batch_limit: 1000
+      responses:
+        '200':
+          description: Zakolejkowano zadanie
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: queued }
+                  task_id: { type: string }
+                  params:
+                    $ref: '#/components/schemas/StartBackfillRequest'
+
+  /backfill/status:
+    get:
+      tags: [Backfill]
+      summary: Backfill status (postęp/ETA/luki)
+      description: Zwraca stan postępu dla każdej pary/TF, z procentem, licznikami i zidentyfikowanymi lukami.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/BackfillStatusItem'
+
+  /backfill/pause:
+    post:
+      tags: [Backfill]
+      summary: Ustaw status "paused" dla symbolu (soft pause)
+      parameters:
+        - in: query
+          name: symbol
+          required: true
+          schema: { type: string }
+        - in: query
+          name: tf
+          required: false
+          schema: { type: string, default: "1m" }
+      responses:
+        '200': { description: OK }
+        '404': { description: progress not found }
+
+  /backfill/resume:
+    post:
+      tags: [Backfill]
+      summary: Wznów backfill dla symbolu od ostatniego checkpointu
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                symbol: { type: string }
+                tf: { type: string, default: "1m" }
+              required: [symbol]
+      responses:
+        '200':
+          description: Zakolejkowano
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  task_id: { type: string }
+                  symbol: { type: string }
+                  tf: { type: string }
+
+  /backfill/restart:
+    post:
+      tags: [Backfill]
+      summary: Wyczyść checkpoint i uruchom backfill od zera (dla symbolu/TF)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                symbol: { type: string }
+                tf: { type: string, default: "1m" }
+              required: [symbol]
+      responses:
+        '200': { description: Zakolejkowano }
+
+  /train/run:
+    post:
+      tags: [Training]
+      summary: Start treningu modeli (WF/OOS – interfejs)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                params:
+                  type: object
+                  description: Parametry treningu (np. zakresy, Optuna, modele)
+      responses:
+        '200': { description: Zakolejkowano }
+
+  /train/status:
+    get:
+      tags: [Training]
+      summary: Status treningu (stub)
+      responses:
+        '200': { description: OK }
+
+  /backtest/run:
+    post:
+      tags: [Backtest]
+      summary: Start backtestu/symulacji
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                params:
+                  type: object
+                  description: Parametry symulacji (kapitał, koszty, profile, pary)
+      responses:
+        '200': { description: Zakolejkowano }
+
+  /backtest/results:
+    get:
+      tags: [Backtest]
+      summary: Wyniki ostatniego backtestu (stub)
+      responses:
+        '200': { description: OK }
+
+  /signals/generate:
+    post:
+      tags: [Signals]
+      summary: Wygeneruj przykładowy sygnał (demo)
+      responses:
+        '200':
+          description: ID wstawionego sygnału
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inserted: { type: string }
+
+  /signals/live:
+    get:
+      tags: [Signals]
+      summary: Ostatnie sygnały (live feed)
+      responses:
+        '200':
+          description: Lista sygnałów
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signals:
+                    type: array
+                    items: { $ref: '#/components/schemas/Signal' }
+
+  /signals/history:
+    get:
+      tags: [Signals]
+      summary: Historia sygnałów (ostatnie N)
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, default: 100, minimum: 1, maximum: 1000 }
+      responses:
+        '200':
+          description: Lista sygnałów
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  signals:
+                    type: array
+                    items: { $ref: '#/components/schemas/Signal' }
+
+  /settings/profile:
+    post:
+      tags: [Settings]
+      summary: Ustaw profil ryzyka (LOW/MED/HIGH)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                profile: { type: string, enum: ["LOW","MED","HIGH"] }
+              required: [profile]
+      responses:
+        '200': { description: OK }
+
+  /capital:
+    post:
+      tags: [Settings]
+      summary: Ustaw kapitał użytkownika (USD)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                amount: { type: number, minimum: 0 }
+              required: [amount]
+      responses:
+        '200': { description: OK }
+
+components:
+  schemas:
+    StartBackfillRequest:
+      type: object
+      properties:
+        pairs:
+          type: array
+          items: { type: string }
+          description: Lista par do backfillu; jeśli brak – użyje domyślnych z .env (PAIRS)
+        tf:
+          type: string
+          default: "1m"
+          description: Timeframe (1m, 15m, 1h, 4h, 1d)
+        start_ts_ms:
+          type: integer
+          nullable: true
+          description: Timestamp ms (jeśli null – 4 lata wstecz od teraz)
+        end_ts_ms:
+          type: integer
+          nullable: true
+          description: Timestamp ms (jeśli null – teraz)
+        batch_limit:
+          type: integer
+          default: 1000
+          minimum: 10
+          maximum: 1000
+          description: Limit świec w pojedynczej paczce fetchera
+    BackfillStatusItem:
+      type: object
+      properties:
+        symbol: { type: string }
+        tf: { type: string }
+        status:
+          type: string
+          description: idle/running/paused/failed/done
+          example: running
+        last_ts_completed: { type: integer, nullable: true }
+        chunk_start_ts: { type: integer, nullable: true }
+        chunk_end_ts: { type: integer, nullable: true }
+        retry_count: { type: integer, nullable: true }
+        gaps:
+          type: array
+          description: Lista zakresów czasowych braków (start_ts, end_ts)
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items: { type: integer }
+        progress_pct: { type: number, nullable: true, example: 42.5 }
+        done: { type: integer, nullable: true }
+        total: { type: integer, nullable: true }
+        updated_at: { type: string, format: date-time, nullable: true }
+    Signal:
+      type: object
+      properties:
+        id: { type: string }
+        symbol: { type: string }
+        tf_base: { type: string }
+        ts: { type: integer }
+        dir: { type: string, enum: ["long","short"] }
+        entry: { type: number }
+        tp:
+          type: array
+          items: { type: number }
+        sl: { type: number }
+        lev: { type: integer }
+        risk: { type: number }
+        margin_mode: { type: string, enum: ["isolated","cross"] }
+        expected_net_pct: { type: number, description: "Oczekiwany zysk netto po kosztach" }
+        confidence: { type: number, description: "Skalibrowane prawdopodobieństwo (np. conformal)" }
+        model_ver: { type: string }
+        reason_discard: { type: string, nullable: true }
+        status: { type: string, enum: ["new","published","filled","cancelled"] }
+
+externalDocs:
+  description: WebSocket
+  url: ws://localhost:8000/ws/live

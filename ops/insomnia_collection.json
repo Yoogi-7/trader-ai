@@ -1,0 +1,33 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2025-09-23T00:00:00.000Z",
+  "__export_source": "trader-ai",
+  "resources": [
+    {
+      "_id": "wrk_trader_ai",
+      "_type": "workspace",
+      "name": "Trader AI"
+    },
+    {
+      "_id": "req_signals_auto",
+      "_type": "request",
+      "parentId": "wrk_trader_ai",
+      "name": "POST /signals/auto",
+      "method": "POST",
+      "url": "http://localhost:8000/api/signals/auto",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"symbol\": \"BTC/USDT\",\n  \"tf_base\": \"15m\",\n  \"ts\": 1700000000000,\n  \"direction\": \"LONG\",\n  \"close\": 64000,\n  \"atr\": 120,\n  \"risk_profile\": \"MED\",\n  \"capital\": 1000\n}"
+      }
+    },
+    {
+      "_id": "req_signals_history",
+      "_type": "request",
+      "parentId": "wrk_trader_ai",
+      "name": "GET /signals/history",
+      "method": "GET",
+      "url": "http://localhost:8000/api/signals/history?limit=50&offset=0"
+    }
+  ]
+}

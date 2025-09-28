@@ -1,0 +1,33 @@
+{
+  "info": {
+    "name": "Trader AI API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Backfill start",
+      "request": {
+        "method": "POST",
+        "url": "http://localhost:8000/backfill/start",
+        "body": {
+          "mode": "raw",
+          "raw": "{\"pairs\": [\"BTCUSDT\"], \"tf\": \"1m\"}"
+        }
+      }
+    },
+    {
+      "name": "Signals live",
+      "request": {
+        "method": "GET",
+        "url": "http://localhost:8000/signals/live"
+      }
+    },
+    {
+      "name": "Generate signal",
+      "request": {
+        "method": "POST",
+        "url": "http://localhost:8000/signals/generate"
+      }
+    }
+  ]
+}
