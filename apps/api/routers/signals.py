@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from apps.api.db.session import SessionLocal
 from apps.api.db import models
 from apps.api.services.signals_service import evaluate_signal
+from apps.ml.arbitrage import ExchangePriceFetcher
+from apps.api import schemas
 
 router = APIRouter(prefix="/signals", tags=["signals"])
 
@@ -51,6 +53,31 @@ def generate_auto(req: AutoReq, db: Session = Depends(db_dep)):
         "model_ver": sig.model_ver, "status": sig.status
     }
 
+
+@router.post("/arbitrage/scan", response_model=schemas.ArbitrageScanResp)
+def arbitrage_scan(payload: schemas.ArbitrageScanReq):
+    if not payload.symbols:
+        raise HTTPException(status_code=400, detail="symbols_required")
+    if len(payload.exchanges) < 2:
+        raise HTTPException(status_code=400, detail="at_least_two_exchanges")
+    try:
+        fetcher = ExchangePriceFetcher(payload.exchanges, market_type=payload.market_type)
+        opportunities = fetcher.scan(payload.symbols, min_spread_pct=payload.min_spread_pct)
+    except Exception as exc:  # pragma: no cover - network failures
+        raise HTTPException(status_code=500, detail=f"arbitrage_scan_failed: {exc}") from exc
+    return schemas.ArbitrageScanResp(opportunities=[
+        schemas.ArbitrageOpportunity(
+            symbol=o.symbol,
+            buy_exchange=o.buy_exchange,
+            sell_exchange=o.sell_exchange,
+            buy_price=o.buy_price,
+            sell_price=o.sell_price,
+            spread_pct=o.spread_pct,
+            timestamp_ms=o.timestamp_ms,
+        )
+        for o in opportunities
+    ])
+
 @router.get("/history")
 def history(symbol: Optional[str] = None, limit: int = 100, offset: int = 0, db: Session = Depends(db_dep)):
     q = select(models.Signal)
@@ -63,6 +90,9 @@ def history(symbol: Optional[str] = None, limit: int = 100, offset: int = 0, db:
             "id": s.id, "symbol": s.symbol, "tf_base": s.tf_base, "ts": s.ts, "dir": s.dir,
             "entry": s.entry, "tp": s.tp, "sl": s.sl, "lev": s.lev, "risk": s.risk,
             "margin_mode": s.margin_mode, "expected_net_pct": s.expected_net_pct,
-            "confidence": s.confidence, "model_ver": s.model_ver, "status": s.status
+            "confidence": s.confidence,
+            "confidence_rating": int(round(float(s.confidence) * 100.0)) if s.confidence is not None else None,
+            "market_regime": getattr(s, "market_regime", None),
+            "model_ver": s.model_ver, "status": s.status
         } for s in rows
     ]}

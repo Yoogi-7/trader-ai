@@ -196,6 +196,28 @@ class RiskDashboardResp(BaseModel):
     backtest: RiskMetricsBlock
     live: RiskMetricsBlock
 
+# -------- Arbitrage --------
+
+class ArbitrageScanReq(BaseModel):
+    symbols: List[str]
+    exchanges: List[str]
+    min_spread_pct: float = Field(0.3, ge=0.0)
+    market_type: Literal["spot", "future"] = "spot"
+
+
+class ArbitrageOpportunity(BaseModel):
+    symbol: str
+    buy_exchange: str
+    sell_exchange: str
+    buy_price: float
+    sell_price: float
+    spread_pct: float
+    timestamp_ms: int
+
+
+class ArbitrageScanResp(BaseModel):
+    opportunities: List[ArbitrageOpportunity]
+
 # -------- Settings / Users --------
 
 class UserSettingsReq(BaseModel):
