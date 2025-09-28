@@ -1,49 +1,113 @@
+# Trader AI — Production-Ready Monorepo
 
-# Trader AI — monorepo (prod-ready)
+Trader AI is a full-stack cryptocurrency trading research and execution platform. The repository bundles a FastAPI service, an ML/Celery worker, and a Next.js dashboard together with infrastructure tooling (TimescaleDB, Redis, Redpanda/Kafka) so the system can be demonstrated end-to-end: fetch market data, engineer features, train and backtest models, and surface live trading signals.
 
-**Stos:** FastAPI (API), Celery (ML/worker), Next.js (FE), TimescaleDB (PG15), Redis, Redpanda (Kafka),
-Alembic, GitHub Actions, testy (pytest).
+## Highlights
+- **Event-driven architecture:** Redpanda/Kafka glues the API, worker jobs, and auxiliary consumers together.
+- **TimescaleDB-backed history:** Backfill and resumable jobs populate TimescaleDB with candle data and progress metadata.
+- **Feature + labeling pipeline:** Modular feature builders, triple-barrier labeling, and walk-forward training automation (Optuna-ready).
+- **Signal governance:** Net profit filters, confidence thresholds, exposure caps, cooldowns, and funding adjustments baked into the signal engine.
+- **Next.js dashboard:** Separate user/admin views for monitoring backfills, model runs, and portfolio simulations.
+- **Production ergonomics:** Docker images, health checks, Alembic migrations, CI hooks, and pytest coverage for critical logic (net profit filter, backfill resume, basic feature sanity).
 
-## Uruchomienie (Docker Compose)
+## Repository Layout
+- `apps/api` — FastAPI service (routers, CRUD, WebSocket manager, Alembic-powered DB boot).
+- `apps/ml` — Celery/ML code: backfill, backtest, training, risk management, signal engine, feature pipelines.
+- `apps/web` — Next.js front-end (React + Tailwind) built into a standalone Node server.
+- `apps/common` — Shared building blocks (Celery instance, cache helpers, event bus integration).
+- `infra/dockerfiles` & `infra/entrypoints` — Container build definitions and boot scripts.
+- `migrations` — Alembic migrations for the TimescaleDB schema.
+- `tests` — Pytest suite covering backfill resume, feature basics, sizing/liquidation checks, and profitability constraints.
+- `openapi.yaml`, `postman_collection.json` — Snapshot of the HTTP API contract for reference/testing.
 
-1. Skopiuj `.env.example` -> `.env` i dostosuj parametry.
-2. `make up` — podniesie: db, redis, redpanda, api, worker, web.
-3. Migracje: `docker compose exec api alembic upgrade head` (zrobione w CI, lokalnie uruchom ręcznie).
-4. Seed (opcjonalnie): `make seed`.
-5. Panel użytkownika: http://localhost:3000, API: http://localhost:8000.
+## Service Topology (Docker Compose)
+The stack runs the following containers via `docker-compose.yml`:
+- `db` — TimescaleDB (PostgreSQL 15) with persistence; readiness probed before API boot.
+- `redis` — Cache and task queue broker for Celery.
+- `redpanda` — Kafka-compatible event bus for signal/event streaming.
+- `api` — FastAPI app served by Uvicorn; runs Alembic migrations on startup and exposes `/docs`, `/redoc`, and `/ws/live`.
+- `web` — Next.js dashboard served from the production build.
+- `ml-backfill` — Python worker performing continuous CCXT backfills and feature generation.
+- `events-consumer` — Ops utility service that reacts to Kafka events (e.g., to fan-out notifications or internal callbacks).
 
-### Weryfikacja kryteriów
-- **Filtr ≥2% netto** — test: `tests/test_filter_net2pct.py`. W API/ML sygnały muszą spełnić `expected_net_pct>=0.02` (z kosztami: fee+slippage).
-- **Hit‑rate ≥55% (TP1, OOS)** — metryki raportowane w `apps/ml/jobs/train.py` (stub losowy dla demo) i prezentowane w panelu admina. W realu: dodać walk‑forward + Optuna, zapisać metryki w `training_runs`.
-- **Resume backfill** — tabela `backfill_progress` i zadanie `run_backfill` (demonstracyjnie wpisuje postęp). Test: `tests/test_backfill_resume.py`.
-- **Symulacja od 100$** — FE ma sekcję symulatora, API dostarczy endpointy; można rozszerzyć backtester w `apps/ml/jobs/backtest.py`.
+## Prerequisites
+- Docker 24+
+- Docker Compose plugin (v2)
+- GNU Make
 
-### Endpoints (skrót)
-- `POST /backfill/start`, `GET /backfill/status`
-- `POST /train/run`, `GET /train/status`
-- `POST /backtest/run`, `GET /backtest/results`
-- `POST /signals/generate`, `GET /signals/live`, `GET /signals/history`
-- `POST /settings/profile`, `POST /capital`
-- WebSocket: `/ws/live`
+## Quick Start (Docker Compose)
+1. Duplicate environment defaults: `cp .env.example .env` and review secrets/URLs.
+2. Launch the full stack: `make up` (builds images and starts all services in the background).
+3. Confirm the health checks:
+   - API docs: http://localhost:8000/docs
+   - Web dashboard: http://localhost:3000
+4. (Optional) Apply the latest migrations manually if you run the API outside of Docker: `docker compose exec api alembic upgrade head`.
+5. (Optional) Seed demo data: `make seed`.
 
-## Architektura folderów
-- `apps/api` — FastAPI, modele SQLAlchemy, routery.
-- `apps/ml` — Celery worker, zadania: backfill/train/backtest.
-- `apps/web` — Next.js (User/Admin).
-- `migrations` — Alembic (schemat SQL).
-- `ops/github` — CI.
-- `tests` — testy krytycznych logik.
-- Dockerfiles + compose na poziomie repo.
+Useful maintenance commands:
+- Tail logs: `make logs`
+- Stop and clean volumes: `make down`
+- Drop into an API shell: `make api`
+- Run the pytest suite: `make tests`
+- Lint/format with Ruff: `make lint`, `make fmt`
 
-## Maker-first, cooldown, korelacje, kill-switch (noty)
-- Maker-first: w realnej integracji z giełdą — post-only, fallback taker z capem poślizgu (logika do dodania w module egzekucji).
-- Cooldown/kill-switch: można dodać licznik strat i globalny przełącznik (feature flag) — hook w generatorze sygnałów.
-- Korelacyjny cap: w module sizingu, sprawdzaj łączną ekspozycję BTC/ETH względem `CORRELATION_CAP_BTC_ETH_PCT`.
+## Local Development Without Docker
+```bash
+poetry install
+poetry run alembic upgrade head
+poetry run uvicorn apps.api.main:app --reload
+```
 
-## Development (lokalnie)
-- `poetry install`
-- `alembic upgrade head`
-- `uvicorn apps.api.main:app --reload`
+Run background workers locally as needed:
+```bash
+# Celery worker (re-uses apps.common.celery_app)
+poetry run celery -A apps.common.celery_app worker -l info
 
-## Licencja
-MIT
+# Continuous backfill loop
+poetry run python -m apps.ml.backfill
+
+# Fire a training or backtest job manually
+poetry run python -m apps.ml.jobs.train
+poetry run python -m apps.ml.jobs.backtest
+```
+
+Frontend development mode:
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+Point `NEXT_PUBLIC_API_URL` in `.env.local` (or `.env`) at your API instance.
+
+## Configuration
+All runtime configuration is sourced from `.env`. Key sections in `.env.example` include:
+- **Core services:** `DATABASE_URL`, `REDIS_URL`, `KAFKA_BROKERS`, `API_PREFIX`.
+- **Backfill controls:** Exchange, symbol list, chunk sizing, and retry/backoff knobs.
+- **Feature & labeling:** `FEATURES_VERSION`, triple-barrier parameters, walk-forward purge/embargo.
+- **Signal engine:** Net profit thresholds, fee/slippage, exposure caps, cooldown switches.
+- **User defaults:** Risk profiles and base capital for simulations.
+- **Frontend:** `NEXT_PUBLIC_API_URL` for the Next.js app.
+
+## API Surface
+FastAPI automatically publishes the OpenAPI schema at `/openapi.json`. Notable routes:
+- Backfill orchestration: `POST /backfill/start`, `GET /backfill/status`
+- Model lifecycle: `POST /train/run`, `GET /train/status`, `POST /backtest/run`, `GET /backtest/results`
+- Signal endpoints: `POST /signals/generate`, `GET /signals/live`, `GET /signals/history`
+- Portfolio controls: `POST /settings/profile`, `POST /capital`
+- Live updates: WebSocket at `/ws/live`
+
+See `openapi.yaml` or import `postman_collection.json` into Postman for a ready-made collection.
+
+## Testing & Quality Gates
+- **Unit tests:** `make tests` (or `docker compose exec api pytest -q`).
+- **Static analysis:** `make lint` / `ruff check .`.
+- **Formatting:** `make fmt` / `ruff format .`.
+- **CI/CD:** GitHub Actions workflows in `ops/github` run lint + tests and can be extended with build/publish jobs.
+
+## Operational Notes
+- API entrypoint waits for PostgreSQL, runs `alembic upgrade head`, then starts Uvicorn (`infra/entrypoints/api.sh`).
+- ML images default to executing the backfill loop; override the command to launch Celery workers or ad-hoc jobs.
+- TimescaleDB and Redpanda volumes (`dbdata`, `redpandadata`) persist across restarts. Use `make down` to remove them locally.
+
+## License
+Released under the MIT License.
