@@ -468,3 +468,15 @@ def leaderboard(current_user: models.User = Depends(get_current_user), db: Sessi
         for row in user_rows
     ]
     return schemas.LeaderboardResp(overall=overall, users=users)
+
+
+# -------- Risk Dashboard --------
+
+@router.get("/risk/dashboard", response_model=schemas.RiskDashboardResp)
+def risk_dashboard(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    backtest = crud.risk_metrics_backtest_latest(db)
+    live = crud.risk_metrics_live(db)
+    return schemas.RiskDashboardResp(
+        backtest=schemas.RiskMetricsBlock(**backtest),
+        live=schemas.RiskMetricsBlock(**live),
+    )

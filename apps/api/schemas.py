@@ -175,6 +175,24 @@ class LeaderboardResp(BaseModel):
     overall: LeaderboardOverall
     users: List[LeaderboardUserEntry]
 
+# -------- Risk Dashboard --------
+
+class RiskMetricsBlock(BaseModel):
+    source: Literal["backtest", "live"]
+    max_drawdown: Optional[float]
+    max_drawdown_pct: Optional[float]
+    avg_profit_per_trade: Optional[float]
+    win_rate: Optional[float]
+    trades: int
+    pnl_total: Optional[float]
+    capital: Optional[float]
+    last_updated_ms: Optional[int]
+
+
+class RiskDashboardResp(BaseModel):
+    backtest: RiskMetricsBlock
+    live: RiskMetricsBlock
+
 # -------- Settings / Users --------
 
 class UserSettingsReq(BaseModel):

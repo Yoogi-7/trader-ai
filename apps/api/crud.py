@@ -8,6 +8,30 @@ from apps.api.db import models
 import time
 import uuid
 
+
+def _to_epoch_ms(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if hasattr(value, "timestamp"):
+        return int(value.timestamp() * 1000)
+    return None
+
+
+def _max_drawdown(equity_curve: List[float]) -> float:
+    if not equity_curve:
+        return 0.0
+    peak = equity_curve[0]
+    max_dd = 0.0
+    for value in equity_curve:
+        if value > peak:
+            peak = value
+        drawdown = peak - value
+        if drawdown > max_dd:
+            max_dd = drawdown
+    return float(max_dd)
+
 # -------- Backfill --------
 
 def backfill_start(db: Session, symbols: List[str], tf: str, from_ts: Optional[int], to_ts: Optional[int]) -> List[models.BackfillProgress]:
@@ -159,6 +183,164 @@ def leaderboard_users(db: Session, limit: int = 10) -> List[Dict[str, Any]]:
             }
         )
     return leaderboard
+
+# -------- Risk Dashboard --------
+
+def risk_metrics_backtest_latest(db: Session) -> Dict[str, Any]:
+    row = (
+        db.execute(
+            select(models.Backtest)
+            .where(models.Backtest.summary_json != None)  # noqa: E711
+            .order_by(desc(models.Backtest.finished_at), desc(models.Backtest.started_at))
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+
+    base = {
+        "source": "backtest",
+        "max_drawdown": None,
+        "max_drawdown_pct": None,
+        "avg_profit_per_trade": None,
+        "win_rate": None,
+        "trades": 0,
+        "pnl_total": None,
+        "capital": None,
+        "last_updated_ms": None,
+    }
+
+    if row is None or not row.summary_json:
+        return base
+
+    summary = row.summary_json or {}
+    metrics = summary.get("metrics") if isinstance(summary, dict) else None
+    if metrics is None:
+        metrics = summary if isinstance(summary, dict) else {}
+
+    params = summary.get("params") if isinstance(summary, dict) else {}
+    if not isinstance(params, dict):
+        params = {}
+
+    capital = params.get("capital")
+    if capital is None and isinstance(row.params_json, dict):
+        capital = row.params_json.get("capital")
+
+    trades = metrics.get("trades") or metrics.get("trade_count") or metrics.get("n_trades") or 0
+    try:
+        trades_int = int(trades)
+    except Exception:
+        trades_int = 0
+
+    pnl_total_raw = metrics.get("pnl_total")
+    pnl_total = float(pnl_total_raw) if pnl_total_raw is not None else None
+    avg_profit = float(pnl_total / trades_int) if pnl_total is not None and trades_int > 0 else None
+
+    max_dd = metrics.get("max_dd")
+    if max_dd is None:
+        equity_curve = summary.get("equity_curve") or metrics.get("equity_curve")
+        if isinstance(equity_curve, list):
+            numeric_curve = [float(v) for v in equity_curve if isinstance(v, (int, float))]
+            if numeric_curve:
+                max_dd = _max_drawdown(numeric_curve)
+    max_dd_val = float(max_dd) if max_dd is not None else None
+
+    max_dd_pct = metrics.get("max_dd_pct")
+    if max_dd_pct is None and max_dd_val is not None and capital:
+        try:
+            capital_val = float(capital)
+        except Exception:
+            capital_val = None
+        else:
+            if capital_val > 0:
+                max_dd_pct = max_dd_val / capital_val
+    max_dd_pct_val = float(max_dd_pct) if max_dd_pct is not None else None
+
+    win_rate = metrics.get("win_rate")
+    if win_rate is None:
+        win_rate = metrics.get("hit_rate_tp1")
+    win_rate_val = float(win_rate) if win_rate is not None else None
+
+    capital_val = None
+    if capital is not None:
+        try:
+            capital_val = float(capital)
+        except Exception:
+            capital_val = None
+
+    base.update(
+        {
+            "max_drawdown": max_dd_val,
+            "max_drawdown_pct": max_dd_pct_val,
+            "avg_profit_per_trade": avg_profit,
+            "win_rate": win_rate_val,
+            "trades": trades_int,
+            "pnl_total": pnl_total,
+            "capital": capital_val,
+            "last_updated_ms": _to_epoch_ms(row.finished_at) or _to_epoch_ms(row.started_at),
+        }
+    )
+    return base
+
+
+def risk_metrics_live(db: Session) -> Dict[str, Any]:
+    rows = (
+        db.execute(
+            select(models.Signal.ts, models.PnL.realized)
+            .join(models.PnL, models.PnL.signal_id == models.Signal.id)
+            .where(models.PnL.realized != None)  # noqa: E711
+            .order_by(models.Signal.ts.asc())
+        )
+        .all()
+    )
+
+    base = {
+        "source": "live",
+        "max_drawdown": None,
+        "max_drawdown_pct": None,
+        "avg_profit_per_trade": None,
+        "win_rate": None,
+        "trades": 0,
+        "pnl_total": None,
+        "capital": None,
+        "last_updated_ms": None,
+    }
+
+    if not rows:
+        return base
+
+    profits = [float(r.realized) for r in rows if r.realized is not None]
+    if not profits:
+        return base
+
+    trades = len(profits)
+    pnl_total = sum(profits)
+    avg_profit = pnl_total / trades if trades > 0 else None
+    wins = sum(1 for p in profits if p > 0)
+    win_rate = wins / trades if trades > 0 else None
+
+    equity = []
+    running = 0.0
+    for p in profits:
+        running += p
+        equity.append(running)
+    equity_curve = [0.0] + equity
+    max_dd = _max_drawdown(equity_curve)
+    peak = max(equity_curve) if equity_curve else 0.0
+    max_dd_pct = (max_dd / peak) if peak > 0 else None
+
+    base.update(
+        {
+            "max_drawdown": float(max_dd),
+            "max_drawdown_pct": float(max_dd_pct) if max_dd_pct is not None else None,
+            "avg_profit_per_trade": float(avg_profit) if avg_profit is not None else None,
+            "win_rate": float(win_rate) if win_rate is not None else None,
+            "trades": trades,
+            "pnl_total": float(pnl_total),
+            "last_updated_ms": _to_epoch_ms(rows[-1].ts),
+        }
+    )
+    return base
 
 # -------- Users / Settings --------
 
