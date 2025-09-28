@@ -1,15 +1,38 @@
 import Head from 'next/head';
 import useSWR from 'swr';
-import { useState } from 'react';
-import { api, fetcher } from '../src/api';
+import { useEffect } from 'react';
+import { useRouter } from 'next/router';
+import { fetcher } from '../src/api';
+import { useAuth } from '../src/context/AuthContext';
 import { SignalsLive } from '../src/components/SignalsLive';
 import { HistoryTable } from '../src/components/HistoryTable';
 import { Simulator } from '../src/components/Simulator';
 import { RiskForm } from '../src/components/RiskForm';
 
 export default function Home() {
-  const [userId, setUserId] = useState<number>(1);
-  const { data: history } = useSWR(() => `/signals/history?limit=100&offset=0`, fetcher, { refreshInterval: 5000 });
+  const router = useRouter();
+  const { user, loading } = useAuth();
+  const { data: history } = useSWR(() => (user ? '/signals/history?limit=100&offset=0' : null), fetcher, {
+    refreshInterval: 5000,
+  });
+
+  useEffect(() => {
+    if (!loading) {
+      if (!user) {
+        router.replace('/login');
+      } else if (user.role === 'ADMIN') {
+        router.replace('/admin');
+      }
+    }
+  }, [user, loading, router]);
+
+  if (loading || !user || user.role !== 'USER') {
+    return (
+      <main className="min-h-screen flex items-center justify-center bg-slate-50">
+        <p className="text-slate-600">Ładowanie…</p>
+      </main>
+    );
+  }
 
   return (
     <>
@@ -29,18 +52,14 @@ export default function Home() {
 
               <div className="bg-white rounded-2xl shadow p-4">
                 <h2 className="font-semibold mb-2">Historia sygnałów</h2>
-                <HistoryTable rows={history?.items ?? []} />
+                <HistoryTable rows={history?.signals ?? []} />
               </div>
             </div>
 
             <div className="col-span-1 space-y-4">
               <div className="bg-white rounded-2xl shadow p-4">
                 <h2 className="font-semibold mb-3">Ustawienia profilu</h2>
-                <RiskForm
-                  userId={userId}
-                  onUserChange={setUserId}
-                  onSaved={() => {}}
-                />
+                <RiskForm onSaved={() => {}} />
               </div>
 
               <div className="bg-white rounded-2xl shadow p-4">

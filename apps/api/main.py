@@ -4,6 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.api.config import settings
 from apps.api.ws import ws_manager
+from apps.api.security import ensure_default_admin
+from apps.api.db.session import SessionLocal
 
 from apps.api import routers as routes
 
@@ -30,6 +32,12 @@ if prefix:
     app.include_router(routes.router, prefix=prefix)
 else:
     app.include_router(routes.router)
+
+
+@app.on_event("startup")
+def ensure_admin_account() -> None:
+    with SessionLocal() as db:
+        ensure_default_admin(db)
 
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):

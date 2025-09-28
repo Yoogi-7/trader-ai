@@ -37,6 +37,10 @@ class Settings(BaseModel):
     pairs: List[str] = Field(
         default_factory=lambda: _coerce_pairs(os.getenv("PAIRS", DEFAULT_PAIRS))
     )
+    jwt_secret: str = Field(default=os.getenv("JWT_SECRET", "change-me"))
+    jwt_exp_minutes: int = Field(default=int(os.getenv("JWT_EXP_MINUTES", "60")))
+    admin_email: str = Field(default=os.getenv("ADMIN_EMAIL", "admin@example.com"))
+    admin_password: str = Field(default=os.getenv("ADMIN_PASSWORD", "admin123"))
 
     @field_validator("pairs", mode="before")
     @classmethod

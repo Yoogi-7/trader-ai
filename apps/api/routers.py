@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from apps.api.db.session import SessionLocal
 from apps.api.db import models
 from apps.api.config import settings
+from apps.api import schemas, crud
+from apps.api.security import (create_access_token, get_current_user, get_password_hash, require_admin, verify_password)
 
 from apps.common.celery_app import app as celery_app
 
@@ -24,10 +26,56 @@ def get_db():
     finally:
         db.close()
 
+# -------- Auth --------
+
+@router.post("/auth/login", response_model=schemas.AuthResponse)
+def auth_login(payload: schemas.AuthLoginReq, db: Session = Depends(get_db)):
+    user = crud.user_get_by_email(db, payload.email.strip().lower())
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_access_token({"sub": user.id, "role": user.role})
+    return schemas.AuthResponse(access_token=token, user=schemas.UserInfo.model_validate(user))
+
+@router.get("/auth/me", response_model=schemas.UserInfo)
+def auth_me(current_user: models.User = Depends(get_current_user)):
+    return schemas.UserInfo.model_validate(current_user)
+
+@router.get("/users", response_model=List[schemas.UserInfo])
+def users_list(_admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
+    users = crud.user_list(db)
+    return [schemas.UserInfo.model_validate(u) for u in users]
+
+@router.post("/users", response_model=schemas.UserInfo)
+def users_create(payload: schemas.UserCreateReq, _admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
+    if crud.user_get_by_email(db, payload.email.strip().lower()):
+        raise HTTPException(status_code=400, detail="User already exists")
+    password_hash = get_password_hash(payload.password)
+    user = crud.user_create(db, payload.email.strip().lower(), password_hash, role=payload.role, risk_profile=payload.risk_profile, capital=payload.capital, prefs=payload.prefs)
+    return schemas.UserInfo.model_validate(user)
+
+@router.patch("/users/{user_id}", response_model=schemas.UserInfo)
+def users_update(user_id: int, payload: schemas.UserUpdateReq, _admin: models.User = Depends(require_admin), db: Session = Depends(get_db)):
+    user = db.get(models.User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    fields = {}
+    if payload.role is not None:
+        fields['role'] = payload.role
+    if payload.password:
+        fields['password_hash'] = get_password_hash(payload.password)
+    if payload.risk_profile is not None:
+        fields['risk_profile'] = payload.risk_profile
+    if payload.capital is not None:
+        fields['capital'] = payload.capital
+    if payload.prefs is not None:
+        fields['prefs'] = payload.prefs
+    user = crud.user_update(db, user, **fields)
+    return schemas.UserInfo.model_validate(user)
+
 # -------- Backfill --------
 
 @router.post("/backfill/start")
-def backfill_start(payload: dict = Body(default={})):
+def backfill_start(payload: dict = Body(default={}), _admin: models.User = Depends(require_admin)):
     pairs: Optional[List[str]] = payload.get("pairs")
     tf: str = payload.get("tf", "1m")
     start_ts_ms: Optional[int] = payload.get("start_ts_ms")
@@ -57,7 +105,7 @@ def _to_iso(value):
 
 
 @router.get("/backfill/status")
-def backfill_status(db: Session = Depends(get_db)):
+def backfill_status(db: Session = Depends(get_db), _admin: models.User = Depends(require_admin)):
     rows = db.execute(select(models.BackfillProgress)).scalars().all()
     out = []
     for r in rows:
@@ -78,7 +126,7 @@ def backfill_status(db: Session = Depends(get_db)):
     return {"items": out}
 
 @router.post("/backfill/pause")
-def backfill_pause(symbol: str, tf: str = "1m", db: Session = Depends(get_db)):
+def backfill_pause(symbol: str, tf: str = "1m", db: Session = Depends(get_db), _admin: models.User = Depends(require_admin)):
     row = db.execute(
         select(models.BackfillProgress).where(
             models.BackfillProgress.symbol == symbol,
@@ -92,7 +140,7 @@ def backfill_pause(symbol: str, tf: str = "1m", db: Session = Depends(get_db)):
     return {"ok": True}
 
 @router.post("/backfill/resume")
-def backfill_resume(payload: dict = Body(...)):
+def backfill_resume(payload: dict = Body(...), _admin: models.User = Depends(require_admin)):
     symbol: str = payload.get("symbol")
     tf: str = payload.get("tf", "1m")
     if not symbol:
@@ -104,7 +152,7 @@ def backfill_resume(payload: dict = Body(...)):
     return {"status": "queued", "task_id": async_result.id, "symbol": symbol, "tf": tf}
 
 @router.post("/backfill/restart")
-def backfill_restart(payload: dict = Body(...), db: Session = Depends(get_db)):
+def backfill_restart(payload: dict = Body(...), db: Session = Depends(get_db), _admin: models.User = Depends(require_admin)):
     symbol: str = payload.get("symbol")
     tf: str = payload.get("tf", "1m")
     if not symbol:
@@ -131,7 +179,7 @@ def backfill_restart(payload: dict = Body(...), db: Session = Depends(get_db)):
     return {"status": "queued", "task_id": async_result.id, "symbol": symbol, "tf": tf}
 
 @router.get("/admin/summary")
-def admin_summary(db: Session = Depends(get_db)):
+def admin_summary(db: Session = Depends(get_db), _admin: models.User = Depends(require_admin)):
     backfills = db.execute(
         select(models.BackfillProgress)
         .order_by(desc(models.BackfillProgress.updated_at))
@@ -230,7 +278,7 @@ def admin_summary(db: Session = Depends(get_db)):
 # -------- Resampling --------
 
 @router.get("/resample/info")
-def resample_info(db: Session = Depends(get_db)):
+def resample_info(db: Session = Depends(get_db), _admin: models.User = Depends(require_admin)):
     out = {}
     for view in ["ohlcv_15m","ohlcv_1h","ohlcv_4h","ohlcv_1d"]:
         row = db.execute(
@@ -248,6 +296,7 @@ def resample_refresh(
     start_iso: Optional[str] = Body(None, embed=True),
     end_iso: Optional[str] = Body(None, embed=True),
     db: Session = Depends(get_db),
+    _admin: models.User = Depends(require_admin),
 ):
     if view not in {"ohlcv_15m","ohlcv_1h","ohlcv_4h","ohlcv_1d"}:
         raise HTTPException(status_code=400, detail="invalid view")
@@ -261,7 +310,7 @@ def resample_refresh(
 # -------- Feature Engineering --------
 
 @router.post("/features/run")
-def features_run(payload: dict = Body(default={})):
+def features_run(payload: dict = Body(default={}), _admin: models.User = Depends(require_admin)):
     symbols: Optional[List[str]] = payload.get("symbols")
     tf: str = payload.get("tf", "15m")
     start_iso: Optional[str] = payload.get("start_iso")
@@ -280,7 +329,8 @@ def features_run(payload: dict = Body(default={})):
 def features_status(
     tf: str = "15m",
     version: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _admin: models.User = Depends(require_admin)
 ):
     if version:
         sql = """
@@ -308,25 +358,25 @@ def features_status(
 # -------- Training / Backtest (stubs) --------
 
 @router.post("/train/run")
-def train_run(payload: dict = Body(default={})):
+def train_run(payload: dict = Body(default={}), _admin: models.User = Depends(require_admin)):
     return {"status": "queued", "params": payload.get("params", {})}
 
 @router.get("/train/status")
-def train_status():
+def train_status(_admin: models.User = Depends(require_admin)):
     return {"status": "stub"}
 
 @router.post("/backtest/run")
-def backtest_run(payload: dict = Body(default={})):
+def backtest_run(payload: dict = Body(default={}), _admin: models.User = Depends(require_admin)):
     return {"status": "queued", "params": payload.get("params", {})}
 
 @router.get("/backtest/results")
-def backtest_results():
+def backtest_results(_admin: models.User = Depends(require_admin)):
     return {"status": "stub"}
 
 # -------- Signals --------
 
 @router.post("/signals/generate")
-def signals_generate(db: Session = Depends(get_db)):
+def signals_generate(db: Session = Depends(get_db), _admin: models.User = Depends(require_admin)):
     sig = models.Signal(
         id=str(uuid.uuid4()), symbol="BTCUSDT", tf_base=settings.base_tf,
         ts=int(time.time()*1000), dir="long",
@@ -339,12 +389,12 @@ def signals_generate(db: Session = Depends(get_db)):
     return {"inserted": sig.id}
 
 @router.get("/signals/live")
-def signals_live(db: Session = Depends(get_db)):
+def signals_live(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     q = db.query(models.Signal).order_by(models.Signal.ts.desc()).limit(20).all()
     return {"signals": [_signal_to_dict(s) for s in q]}
 
 @router.get("/signals/history")
-def signals_history(limit: int = 100, db: Session = Depends(get_db)):
+def signals_history(limit: int = 100, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     limit = max(1, min(limit, 1000))
     q = db.query(models.Signal).order_by(models.Signal.ts.desc()).limit(limit).all()
     return {"signals": [_signal_to_dict(s) for s in q]}
@@ -361,14 +411,20 @@ def _signal_to_dict(s: models.Signal) -> dict:
 # -------- Settings --------
 
 @router.post("/settings/profile")
-def settings_profile(profile: str = Body(..., embed=True)):
-    profile = profile.upper()
-    if profile not in {"LOW","MED","HIGH"}:
-        raise HTTPException(status_code=400, detail="profile must be LOW/MED/HIGH")
-    return {"ok": True, "profile": profile}
+def settings_profile(payload: schemas.UserSettingsReq, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    target_user = current_user
+    if payload.user_id and payload.user_id != current_user.id:
+        if current_user.role != "ADMIN":
+            raise HTTPException(status_code=403, detail="Forbidden")
+        target_user = db.get(models.User, payload.user_id)
+        if target_user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+    crud.user_update_settings(db, target_user, payload.risk_profile, payload.capital, payload.prefs)
+    return {"ok": True}
 
 @router.post("/capital")
-def capital_set(amount: float = Body(..., embed=True)):
+def capital_set(amount: float = Body(..., embed=True), current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
     if amount < 0:
         raise HTTPException(status_code=400, detail="amount must be >= 0")
+    crud.user_update_settings(db, current_user, current_user.risk_profile, amount, current_user.prefs or {})
     return {"ok": True, "capital": amount}

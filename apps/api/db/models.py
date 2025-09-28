@@ -3,6 +3,7 @@
 # EN: Complete model set per spec + indexes.
 
 import os
+import time
 from sqlalchemy import (
     Column, String, Integer, Float, JSON, BigInteger, Boolean, ForeignKey, Index, UniqueConstraint
 )
@@ -23,6 +24,9 @@ else:
         return ARRAY(Float)
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from apps.api.db.base import Base
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 # --------- Core market/time-series ---------
 
@@ -192,9 +196,15 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     risk_profile: Mapped[str] = mapped_column(String, default="LOW")
     capital: Mapped[float] = mapped_column(Float, default=100.0)
+    email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(String, nullable=False)
+    role: Mapped[str] = mapped_column(String, nullable=False, default="USER")
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, default=_now_ms)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False, default=_now_ms, onupdate=_now_ms)
     prefs: Mapped[dict | None] = mapped_column(JSONField, nullable=True)
     api_connected: Mapped[bool] = mapped_column(Boolean, default=False)
 
     __table_args__ = (
+        UniqueConstraint("email", name="uq_users_email"),
         Index("ix_users_risk", "risk_profile"),
     )

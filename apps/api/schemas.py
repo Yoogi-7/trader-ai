@@ -1,10 +1,45 @@
 # apps/api/schemas.py
 # PL: Schematy Pydantic do API. EN: Pydantic schemas for API.
 
-from pydantic import BaseModel, Field, conlist, validator
+from pydantic import BaseModel, Field, conlist, validator, ConfigDict
 from typing import Optional, List, Literal, Any, Dict
 
 # -------- Backfill --------
+
+# -------- Auth / Users --------
+
+class AuthLoginReq(BaseModel):
+    email: str
+    password: str
+
+class UserInfo(BaseModel):
+    id: int
+    email: str
+    role: Literal['ADMIN', 'USER']
+    risk_profile: str
+    capital: float
+
+    model_config = ConfigDict(from_attributes=True)
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = 'bearer'
+    user: UserInfo
+
+class UserCreateReq(BaseModel):
+    email: str
+    password: str
+    role: Literal['ADMIN', 'USER'] = 'USER'
+    risk_profile: Literal['LOW', 'MED', 'HIGH'] = 'LOW'
+    capital: float = 100.0
+    prefs: Dict[str, Any] | None = None
+
+class UserUpdateReq(BaseModel):
+    role: Literal['ADMIN', 'USER'] | None = None
+    password: Optional[str] = None
+    risk_profile: Literal['LOW', 'MED', 'HIGH'] | None = None
+    capital: Optional[float] = None
+    prefs: Optional[Dict[str, Any]] = None
 
 class BackfillStartReq(BaseModel):
     symbols: conlist(str, min_items=1)
@@ -118,9 +153,9 @@ class SignalsListResp(BaseModel):
 # -------- Settings / Users --------
 
 class UserSettingsReq(BaseModel):
-    user_id: int
-    risk_profile: Literal["LOW", "MED", "HIGH"]
-    capital: float = Field(gt=0)
+    user_id: Optional[int] = None
+    risk_profile: Literal["LOW", "MED", "HIGH"] = "LOW"
+    capital: float = Field(gt=0, default=100.0)
     prefs: Dict[str, Any] = Field(default_factory=dict)
 
 class UserCapitalReq(BaseModel):

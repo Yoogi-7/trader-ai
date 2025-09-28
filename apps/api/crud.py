@@ -120,15 +120,10 @@ def signals_list(db: Session, symbol: Optional[str], status: Optional[str], limi
 # -------- Users / Settings --------
 
 def user_upsert_settings(db: Session, user_id: int, risk_profile: str, capital: float, prefs: Dict[str, Any]) -> bool:
-    u = db.get(models.User, user_id)
-    if u is None:
-        u = models.User(id=user_id, risk_profile=risk_profile, capital=capital, prefs=prefs, api_connected=False)
-        db.add(u)
-    else:
-        u.risk_profile = risk_profile
-        u.capital = capital
-        u.prefs = prefs
-    db.commit()
+    user = db.get(models.User, user_id)
+    if user is None:
+        raise ValueError('user not found')
+    user_update_settings(db, user, risk_profile, capital, prefs)
     return True
 
 def user_set_capital(db: Session, user_id: int, capital: float) -> bool:
@@ -140,3 +135,49 @@ def user_set_capital(db: Session, user_id: int, capital: float) -> bool:
         u.capital = capital
     db.commit()
     return True
+
+# -------- Users / Auth --------
+
+def user_get_by_email(db: Session, email: str) -> Optional[models.User]:
+    return db.execute(select(models.User).where(models.User.email == email.lower())).scalars().first()
+
+def user_list(db: Session) -> List[models.User]:
+    return db.execute(select(models.User).order_by(models.User.id)).scalars().all()
+
+def user_create(db: Session, email: str, password_hash: str, role: str = 'USER', risk_profile: str = 'LOW', capital: float = 100.0, prefs: Dict[str, Any] | None = None) -> models.User:
+    now_ms = int(time.time() * 1000)
+    user = models.User(
+        email=email.lower(),
+        password_hash=password_hash,
+        role=role,
+        risk_profile=risk_profile,
+        capital=capital,
+        prefs=prefs,
+        created_at=now_ms,
+        updated_at=now_ms,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+def user_update(db: Session, user: models.User, **fields) -> models.User:
+    for key, value in fields.items():
+        if value is None:
+            continue
+        setattr(user, key, value)
+    user.updated_at = int(time.time() * 1000)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+def user_update_settings(db: Session, user: models.User, risk_profile: str, capital: float, prefs: Dict[str, Any]) -> models.User:
+    user.risk_profile = risk_profile
+    user.capital = capital
+    user.prefs = prefs
+    user.updated_at = int(time.time() * 1000)
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
