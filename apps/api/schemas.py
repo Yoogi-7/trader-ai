@@ -146,6 +146,7 @@ class SignalItem(BaseModel):
     confidence: Optional[float] = None
     confidence_rating: Optional[int] = None
     market_regime: Optional[str] = None
+    sentiment_rating: Optional[int] = None
     model_ver: Optional[str] = None
     reason_discard: Optional[str] = None
     status: str

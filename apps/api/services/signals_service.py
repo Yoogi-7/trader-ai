@@ -18,6 +18,7 @@ from apps.ml.market_regime import (
 from apps.ml.feature_pipeline import build_mtf_context, multi_tf_confirm
 from apps.ml.models.stacking import StackingEnsemble
 from apps.ml.models.conformal import InductiveConformal
+from apps.ml.sentiment_plugin import load_provider as load_sentiment_provider
 
 FEE_MAKER = float(os.getenv("FEE_MAKER", "0.0002"))
 FEE_TAKER = float(os.getenv("FEE_TAKER", "0.0005"))
@@ -41,6 +42,7 @@ def generate_ai_summary(
     expected_net_pct: float,
     confidence_rating: int | None,
     market_regime: str,
+    sentiment_rating: int | None,
 ) -> str:
     direction_text = "trend wzrostowy" if direction.upper() == "LONG" else "trend spadkowy"
     tf_label = tf_base.upper()
@@ -57,6 +59,8 @@ def generate_ai_summary(
     if confidence_rating is not None:
         summary_parts.append(f"rating {confidence_rating}/100")
     summary_parts.append(f"regime {market_regime}")
+    if sentiment_rating is not None:
+        summary_parts.append(f"sentiment {sentiment_rating}/100")
     return " ".join(summary_parts)
 
 def _side_mult(direction: str) -> int:
@@ -155,6 +159,25 @@ def evaluate_signal(
     tp_scale = _regime_tp_scale(market_regime, direction)
     lv.tp = _scale_targets(lv.entry, lv.tp[:3] if lv.tp else [], tp_scale)
 
+    # Sentiment bridge
+    sentiment_provider = load_sentiment_provider()
+    sentiment_score = sentiment_provider.get_score(symbol, ts)
+    sentiment_rating = int(round((sentiment_score + 1.0) * 50.0))
+    sentiment_rating = max(0, min(100, sentiment_rating))
+    sentiment_multiplier = 1.0
+    if sentiment_score >= 0.5 and direction == "LONG":
+        sentiment_multiplier = 1.1
+    elif sentiment_score <= -0.5 and direction == "SHORT":
+        sentiment_multiplier = 1.1
+    elif sentiment_score <= -0.5 and direction == "LONG":
+        sentiment_multiplier = 0.75
+    elif sentiment_score >= 0.5 and direction == "SHORT":
+        sentiment_multiplier = 0.75
+    dynamic_fraction *= sentiment_multiplier
+    if max_fraction is not None:
+        dynamic_fraction = min(dynamic_fraction, max_fraction)
+    dynamic_fraction = max(dynamic_fraction, base_fraction * 0.25)
+
     qty, risk_usd = position_size(
         capital,
         risk_profile,
@@ -200,6 +223,7 @@ def evaluate_signal(
         expected_net_pct=float(net),
         confidence_rating=confidence_rating,
         market_regime=market_regime,
+        sentiment_rating=sentiment_rating,
     )
 
     sig = models.Signal(
@@ -225,4 +249,5 @@ def evaluate_signal(
     if confidence_rating is not None:
         sig.__dict__["confidence_rating"] = confidence_rating  # type: ignore[attr-defined]
     sig.__dict__["market_regime"] = market_regime  # type: ignore[attr-defined]
+    sig.__dict__["sentiment_rating"] = sentiment_rating  # type: ignore[attr-defined]
     return sig, None

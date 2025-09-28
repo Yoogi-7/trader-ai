@@ -456,7 +456,9 @@ def _signal_to_dict(s: models.Signal) -> dict:
         "id": s.id, "symbol": s.symbol, "tf_base": s.tf_base, "ts": s.ts, "dir": s.dir,
         "entry": s.entry, "tp": s.tp, "sl": s.sl, "lev": s.lev, "risk": s.risk,
         "margin_mode": s.margin_mode, "expected_net_pct": s.expected_net_pct,
-        "confidence": s.confidence, "confidence_rating": rating, "market_regime": regime, "model_ver": s.model_ver,
+        "confidence": s.confidence, "confidence_rating": rating, "market_regime": regime,
+        "sentiment_rating": getattr(s, "sentiment_rating", None),
+        "model_ver": s.model_ver,
         "reason_discard": s.reason_discard, "status": s.status,
         "ai_summary": s.ai_summary,
     }

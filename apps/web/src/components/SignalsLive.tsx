@@ -36,6 +36,9 @@ export const SignalsLive: React.FC = () => {
             {m.market_regime && (
               <div className="text-xs text-teal-600">regime: {m.market_regime}</div>
             )}
+            {typeof m.sentiment_rating === 'number' && (
+              <div className="text-xs text-rose-600">sentiment: {m.sentiment_rating}/100</div>
+            )}
             {m.ai_summary && <div className="text-xs text-emerald-700">{m.ai_summary}</div>}
           </li>
         ))}

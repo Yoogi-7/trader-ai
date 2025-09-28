@@ -202,6 +202,7 @@ def _generate_signal(db: Session, symbol: str) -> None:
             "confidence": sig.confidence,
             "confidence_rating": int(round(float(sig.confidence) * 100.0)) if sig.confidence is not None else None,
             "market_regime": getattr(sig, "market_regime", None),
+            "sentiment_rating": getattr(sig, "sentiment_rating", None),
             "ai_summary": sig.ai_summary,
         },
     )

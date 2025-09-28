@@ -50,6 +50,7 @@ def generate_auto(req: AutoReq, db: Session = Depends(db_dep)):
         "confidence": sig.confidence,
         "confidence_rating": int(round(float(sig.confidence) * 100.0)) if sig.confidence is not None else None,
         "market_regime": getattr(sig, "market_regime", None),
+        "sentiment_rating": getattr(sig, "sentiment_rating", None),
         "model_ver": sig.model_ver, "status": sig.status
     }
 
@@ -93,6 +94,7 @@ def history(symbol: Optional[str] = None, limit: int = 100, offset: int = 0, db:
             "confidence": s.confidence,
             "confidence_rating": int(round(float(s.confidence) * 100.0)) if s.confidence is not None else None,
             "market_regime": getattr(s, "market_regime", None),
+            "sentiment_rating": getattr(s, "sentiment_rating", None),
             "model_ver": s.model_ver, "status": s.status
         } for s in rows
     ]}

@@ -7,6 +7,7 @@ type Signal = {
   ai_summary?: string | null;
   confidence_rating?: number | null;
   market_regime?: string | null;
+  sentiment_rating?: number | null;
 };
 
 export const HistoryTable: React.FC<{ rows: Signal[] }> = ({ rows }) => {
@@ -28,6 +29,11 @@ export const HistoryTable: React.FC<{ rows: Signal[] }> = ({ rows }) => {
       } },
     { header: 'Regime', accessorKey: 'market_regime',
       cell: info => info.getValue<string | null | undefined>() || '—' },
+    { header: 'Sentiment', accessorKey: 'sentiment_rating',
+      cell: info => {
+        const value = info.getValue<number | null | undefined>();
+        return value != null ? `${value}/100` : '—';
+      } },
     { header: 'Status', accessorKey: 'status' },
     { header: 'Opis AI', accessorKey: 'ai_summary', cell: info => info.getValue<string | null>() || '—' },
   ], []);
