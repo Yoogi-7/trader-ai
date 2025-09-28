@@ -233,3 +233,51 @@ class UserCapitalReq(BaseModel):
 
 class OkResp(BaseModel):
     ok: bool
+
+
+# -------- Trading Journal --------
+
+class JournalEquityPoint(BaseModel):
+    ts: int
+    equity: float
+
+
+class JournalTradeRef(BaseModel):
+    symbol: str
+    ts: int
+    pnl: float
+    direction: str
+    market_regime: Optional[str] = None
+    sentiment_rating: Optional[int] = None
+    ai_summary: Optional[str] = None
+
+
+class JournalMetrics(BaseModel):
+    total_trades: int
+    win_rate: float
+    avg_pnl: float
+    max_drawdown: float
+    cumulative_pnl: float
+    best_trade: Optional[JournalTradeRef]
+    worst_trade: Optional[JournalTradeRef]
+
+
+class JournalRegimeEntry(BaseModel):
+    regime: str
+    trades: int
+    win_rate: float
+    pnl: float
+
+
+class JournalSentimentSummary(BaseModel):
+    avg_rating: Optional[float]
+    positive_share: Optional[float]
+    negative_share: Optional[float]
+
+
+class TradingJournalResp(BaseModel):
+    equity_curve: List[JournalEquityPoint]
+    metrics: JournalMetrics
+    recent_mistakes: List[JournalTradeRef]
+    regime_breakdown: List[JournalRegimeEntry]
+    sentiment_summary: JournalSentimentSummary

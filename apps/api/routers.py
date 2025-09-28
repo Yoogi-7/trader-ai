@@ -513,6 +513,12 @@ def leaderboard(current_user: models.User = Depends(get_current_user), db: Sessi
     return schemas.LeaderboardResp(overall=overall, users=users)
 
 
+@router.get("/journal", response_model=schemas.TradingJournalResp)
+def trading_journal(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    summary = crud.trading_journal_summary(db)
+    return schemas.TradingJournalResp.model_validate(summary)
+
+
 # -------- Risk Dashboard --------
 
 @router.get("/risk/dashboard", response_model=schemas.RiskDashboardResp)

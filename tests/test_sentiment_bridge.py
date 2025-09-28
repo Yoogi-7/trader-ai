@@ -11,7 +11,7 @@ class FakeSentiment:
         return self._score
 
 
-def test_sentiment_multiplier_positive(monkeypatch, session):
+def test_sentiment_multiplier_positive(monkeypatch):
     monkeypatch.setattr(signals_service, 'load_sentiment_provider', lambda: FakeSentiment(0.8))
     # Additional setup for evaluate_signal would be complex; ensure provider loads and summary includes rating.
     provider = signals_service.load_sentiment_provider()

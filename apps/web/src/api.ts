@@ -86,6 +86,7 @@ export const api = {
   updateUser: (userId: number, payload: any) => poster(`/users/${userId}`, payload),
   leaderboard: () => fetcher('/leaderboard'),
   riskDashboard: () => fetcher('/risk/dashboard'),
+  journal: () => fetcher('/journal'),
 };
 
 export { getToken };

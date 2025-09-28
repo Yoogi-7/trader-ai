@@ -184,6 +184,132 @@ def leaderboard_users(db: Session, limit: int = 10) -> List[Dict[str, Any]]:
         )
     return leaderboard
 
+
+# -------- Trading Journal --------
+
+def trading_journal_summary(db: Session) -> Dict[str, Any]:
+    rows = (
+        db.execute(
+            select(models.PnL, models.Signal)
+            .join(models.Signal, models.PnL.signal_id == models.Signal.id)
+            .order_by(models.Signal.ts.asc())
+        )
+        .all()
+    )
+
+    equity_curve = []
+    cum = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    total = 0
+    wins = 0
+    sum_pnl = 0.0
+    best_trade = None
+    worst_trade = None
+    regime_stats: Dict[str, Dict[str, float]] = {}
+    sentiments = []
+
+    for pnl_row, sig in rows:
+        realized = float(pnl_row.realized or 0.0)
+        total += 1
+        sum_pnl += realized
+        if realized > 0:
+            wins += 1
+
+        if best_trade is None or realized > best_trade["pnl"]:
+            best_trade = {
+                "symbol": sig.symbol,
+                "ts": sig.ts,
+                "pnl": realized,
+                "direction": sig.dir,
+            }
+        if worst_trade is None or realized < worst_trade["pnl"]:
+            worst_trade = {
+                "symbol": sig.symbol,
+                "ts": sig.ts,
+                "pnl": realized,
+                "direction": sig.dir,
+            }
+
+        cum += realized
+        peak = max(peak, cum)
+        max_dd = max(max_dd, peak - cum)
+        equity_curve.append({"ts": sig.ts, "equity": cum})
+
+        regime = getattr(sig, "market_regime", None) or "unknown"
+        stat = regime_stats.setdefault(regime, {"trades": 0.0, "wins": 0.0, "pnl": 0.0})
+        stat["trades"] += 1
+        stat["pnl"] += realized
+        if realized > 0:
+            stat["wins"] += 1
+
+        sentiment_rating = getattr(sig, "sentiment_rating", None)
+        if isinstance(sentiment_rating, (int, float)):
+            sentiments.append(float(sentiment_rating))
+
+    win_rate = (wins / total) if total > 0 else 0.0
+    avg_pnl = (sum_pnl / total) if total > 0 else 0.0
+
+    regime_breakdown = []
+    for regime, stat in regime_stats.items():
+        trades = int(stat["trades"])
+        regime_breakdown.append(
+            {
+                "regime": regime,
+                "trades": trades,
+                "win_rate": (stat["wins"] / trades) if trades > 0 else 0.0,
+                "pnl": stat["pnl"],
+            }
+        )
+    regime_breakdown.sort(key=lambda x: x["pnl"], reverse=True)
+
+    losses = [
+        (pnl_row, sig)
+        for pnl_row, sig in rows
+        if (pnl_row.realized or 0.0) < 0
+    ]
+    losses.sort(key=lambda item: item[0].realized or 0.0)
+    recent_mistakes = [
+        {
+            "symbol": sig.symbol,
+            "ts": sig.ts,
+            "pnl": float(pnl_row.realized or 0.0),
+            "direction": sig.dir,
+            "market_regime": getattr(sig, "market_regime", None),
+            "sentiment_rating": getattr(sig, "sentiment_rating", None),
+            "ai_summary": sig.ai_summary,
+        }
+        for pnl_row, sig in losses[:3]
+    ]
+
+    sentiment_summary = {
+        "avg_rating": (sum(sentiments) / len(sentiments)) if sentiments else None,
+        "positive_share": (
+            sum(1 for s in sentiments if s >= 60) / len(sentiments)
+            if sentiments else None
+        ),
+        "negative_share": (
+            sum(1 for s in sentiments if s <= 40) / len(sentiments)
+            if sentiments else None
+        ),
+    }
+
+    return {
+        "equity_curve": equity_curve,
+        "metrics": {
+            "total_trades": total,
+            "win_rate": win_rate,
+            "avg_pnl": avg_pnl,
+            "max_drawdown": max_dd,
+            "best_trade": best_trade,
+            "worst_trade": worst_trade,
+            "cumulative_pnl": sum_pnl,
+        },
+        "recent_mistakes": recent_mistakes,
+        "regime_breakdown": regime_breakdown,
+        "sentiment_summary": sentiment_summary,
+    }
+
 # -------- Risk Dashboard --------
 
 def risk_metrics_backtest_latest(db: Session) -> Dict[str, Any]:

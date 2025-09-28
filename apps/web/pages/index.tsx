@@ -10,6 +10,7 @@ import { Simulator } from '../src/components/Simulator';
 import { RiskForm } from '../src/components/RiskForm';
 import { Leaderboard } from '../src/components/Leaderboard';
 import { RiskDashboard } from '../src/components/RiskDashboard';
+import { TradingJournal } from '../src/components/TradingJournal';
 
 export default function Home() {
   const router = useRouter();
@@ -76,6 +77,10 @@ export default function Home() {
             </div>
 
             <div className="col-span-1 space-y-4">
+              <div className="bg-white rounded-2xl shadow p-4">
+                <h2 className="font-semibold mb-3">Trading journal</h2>
+                <TradingJournal />
+              </div>
               <div className="bg-white rounded-2xl shadow p-4">
                 <h2 className="font-semibold mb-3">Risk dashboard</h2>
                 <RiskDashboard />
