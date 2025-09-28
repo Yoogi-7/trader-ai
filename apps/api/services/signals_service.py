@@ -33,12 +33,12 @@ def _expected_net_pct(direction: str, entry: float, tp: list[float], sl: float, 
     return float((pnl - fee - slip - funding)/margin)
 
 def _position_size(capital: float, risk_per_trade: float, entry: float, sl: float, min_notional: float=5.0) -> tuple[float,float]:
-    risk$ = capital * risk_per_trade
-    if risk$<=0 or abs(entry-sl)<=0: return 0.0, 0.0
-    qty = risk$ / abs(entry-sl)
+    risk_usd = capital * risk_per_trade
+    if risk_usd<=0 or abs(entry-sl)<=0: return 0.0, 0.0
+    qty = risk_usd / abs(entry-sl)
     if entry*qty < min_notional:
         qty = min_notional/entry
-    return float(qty), float(risk$)
+    return float(qty), float(risk_usd)
 
 def evaluate_signal(
     db: Session,
@@ -64,7 +64,7 @@ def evaluate_signal(
 
     # Sizing
     risk_map = {"LOW":0.01, "MED":0.02, "HIGH":0.05}
-    qty, risk$ = _position_size(capital, risk_map[risk_profile], lv.entry, lv.sl)
+    qty, risk_usd = _position_size(capital, risk_map[risk_profile], lv.entry, lv.sl)
     if qty<=0: return None, "invalid_sizing"
 
     # Ensemble + confidence (tu: przykładowa ekstrakcja cech – do faktycznego feeder'a pod modele)
