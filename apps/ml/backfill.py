@@ -7,7 +7,8 @@ import time
 import math
 from typing import List, Dict, Optional, Tuple
 
-from sqlalchemy import select
+import pandas as pd
+from sqlalchemy import select, desc
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -18,6 +19,9 @@ from apps.api.db import models
 from apps.ml.ccxt_client import CcxtClient
 from apps.ml.resample import resample_candles
 from apps.common.event_bus import publish
+from apps.ml.features import compute_and_store_features
+from apps.ml.ta_utils import ema as ta_ema, atr as ta_atr, fibonacci_levels
+from apps.api.services.signals_service import evaluate_signal
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,173 @@ RETRY_MAX = int(os.getenv("RETRY_MAX", "5"))
 RETRY_BASE_SEC = float(os.getenv("RETRY_BASE_SEC", "1.0"))
 PRINT_PROGRESS_EVERY = int(os.getenv("PRINT_PROGRESS_EVERY", "20000"))
 MS_IN_MIN = 60_000
+
+FEATURE_TFS = [tf.strip() for tf in os.getenv("AUTO_FEATURE_TFS", "15m,1h").split(",") if tf.strip()]
+FEATURE_LOOKBACK_MIN = int(os.getenv("AUTO_FEATURE_LOOKBACK_MIN", "1440"))
+
+SIGNAL_TF = os.getenv("AUTO_SIGNAL_TF", "15m")
+SIGNAL_LOOKBACK_BARS = int(os.getenv("AUTO_SIGNAL_LOOKBACK_BARS", "240"))
+SIGNAL_EMA_FAST = int(os.getenv("AUTO_SIGNAL_EMA_FAST", "21"))
+SIGNAL_EMA_SLOW = int(os.getenv("AUTO_SIGNAL_EMA_SLOW", "55"))
+SIGNAL_MIN_ATR = float(os.getenv("AUTO_SIGNAL_MIN_ATR", "0.0"))
+SIGNAL_RISK_PROFILE = os.getenv("AUTO_SIGNAL_RISK", "MED")
+SIGNAL_CAPITAL = float(os.getenv("AUTO_SIGNAL_CAPITAL", "1000"))
+SIGNAL_FUNDING_RATE = float(os.getenv("AUTO_SIGNAL_FUNDING_RATE", "0.0"))
+SIGNAL_COOLDOWN_MIN = int(os.getenv("AUTO_SIGNAL_COOLDOWN_MIN", "120"))
+
+
+def _recent_start_ts(minutes: int) -> int:
+    return now_ms() - minutes * MS_IN_MIN
+
+
+def _compute_recent_features(symbol: str) -> None:
+    if not FEATURE_TFS:
+        return
+    start_ts = _recent_start_ts(FEATURE_LOOKBACK_MIN)
+    for tf in FEATURE_TFS:
+        try:
+            rows = compute_and_store_features(symbol, tf, start_ts, None)
+            logger.debug("features computed symbol=%s tf=%s rows=%s", symbol, tf, rows)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("feature computation failed for %s %s: %s", symbol, tf, exc)
+
+
+def _load_recent_bars(db: Session, symbol: str, tf: str, limit: int) -> pd.DataFrame:
+    rows = (
+        db.execute(
+            select(models.OHLCV)
+            .where(models.OHLCV.symbol == symbol, models.OHLCV.tf == tf)
+            .order_by(desc(models.OHLCV.ts))
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return pd.DataFrame()
+    data = {
+        "ts": [r.ts for r in reversed(rows)],
+        "open": [r.o for r in reversed(rows)],
+        "high": [r.h for r in reversed(rows)],
+        "low": [r.l for r in reversed(rows)],
+        "close": [r.c for r in reversed(rows)],
+        "volume": [r.v for r in reversed(rows)],
+    }
+    return pd.DataFrame(data)
+
+
+def _recent_signal_allowed(db: Session, symbol: str, ts: int) -> bool:
+    last = (
+        db.execute(
+            select(models.Signal)
+            .where(models.Signal.symbol == symbol)
+            .order_by(models.Signal.ts.desc())
+            .limit(1)
+        )
+        .scalars()
+        .first()
+    )
+    if last is None:
+        return True
+    if ts <= last.ts:
+        return False
+    return (ts - last.ts) >= SIGNAL_COOLDOWN_MIN * MS_IN_MIN
+
+
+def _generate_signal(db: Session, symbol: str) -> None:
+    df = _load_recent_bars(db, symbol, SIGNAL_TF, SIGNAL_LOOKBACK_BARS)
+    if df.empty or len(df) < max(SIGNAL_EMA_FAST, SIGNAL_EMA_SLOW) + 2:
+        return
+
+    ta_df = df[["open", "high", "low", "close", "volume"]].copy()
+    ta_ema(ta_df, SIGNAL_EMA_FAST, out="ema_fast")
+    ta_ema(ta_df, SIGNAL_EMA_SLOW, out="ema_slow")
+    ta_atr(ta_df, 14, out="atr")
+    fibonacci_levels(ta_df, lookback=min(len(ta_df), 120))
+
+    ema_fast = ta_df["ema_fast"]
+    ema_slow = ta_df["ema_slow"]
+    if ema_fast.isna().any() or ema_slow.isna().any():
+        ema_fast = ema_fast.fillna(method="bfill")
+        ema_slow = ema_slow.fillna(method="bfill")
+
+    if len(ema_fast) < 2 or len(ema_slow) < 2:
+        return
+
+    cross_up = ema_fast.iloc[-1] > ema_slow.iloc[-1] and ema_fast.iloc[-2] <= ema_slow.iloc[-2]
+    cross_down = ema_fast.iloc[-1] < ema_slow.iloc[-1] and ema_fast.iloc[-2] >= ema_slow.iloc[-2]
+
+    direction: Optional[str] = None
+    if cross_up:
+        direction = "LONG"
+    elif cross_down:
+        direction = "SHORT"
+    else:
+        return
+
+    atr_raw = ta_df["atr"].iloc[-1]
+    if pd.isna(atr_raw):
+        logger.debug("skip signal symbol=%s reason=atr_nan", symbol)
+        return
+    atr_val = float(atr_raw)
+    if atr_val <= SIGNAL_MIN_ATR:
+        logger.debug("skip signal symbol=%s reason=atr_too_low", symbol)
+        return
+
+    ts = int(df["ts"].iloc[-1])
+    if not _recent_signal_allowed(db, symbol, ts):
+        return
+
+    if db.execute(
+        select(models.Signal).where(models.Signal.symbol == symbol, models.Signal.ts == ts)
+    ).scalars().first():
+        return
+
+    fibo_cols = {
+        k: float(v)
+        for k, v in ta_df.iloc[-1].items()
+        if isinstance(k, str) and k.startswith("fibo_") and pd.notna(v)
+    }
+    fibo_payload = fibo_cols or None
+
+    sig, reason = evaluate_signal(
+        db=db,
+        symbol=symbol,
+        tf_base=SIGNAL_TF,
+        ts=ts,
+        direction=direction,
+        close=float(df["close"].iloc[-1]),
+        atr=atr_val,
+        fibo=fibo_payload,
+        risk_profile=SIGNAL_RISK_PROFILE,
+        capital=SIGNAL_CAPITAL,
+        funding_rate_hourly=SIGNAL_FUNDING_RATE,
+    )
+    if sig is None:
+        logger.debug("signal rejected symbol=%s reason=%s", symbol, reason)
+        return
+
+    publish(
+        "signal_published",
+        {
+            "id": sig.id,
+            "symbol": sig.symbol,
+            "tf": sig.tf_base,
+            "dir": sig.dir,
+            "entry": sig.entry,
+            "sl": sig.sl,
+            "tp": sig.tp,
+            "confidence": sig.confidence,
+        },
+    )
+    logger.info(
+        "auto signal created symbol=%s dir=%s entry=%.4f conf=%.2f",
+        sig.symbol,
+        sig.dir,
+        sig.entry,
+        sig.confidence or 0.0,
+    )
+
 
 def now_ms() -> int:
     return int(time.time() * 1000)
@@ -199,6 +370,11 @@ def run_once(symbols: Optional[List[str]] = None, tf: str = BASE_TF, from_ts: Op
                 logger.info("Backfill start symbol=%s tf=%s", sym, tf)
                 backfill_symbol(db, client, sym, tf, from_ts, to_ts)
                 logger.info("Backfill done symbol=%s", sym)
+                _compute_recent_features(sym)
+                try:
+                    _generate_signal(db, sym)
+                except Exception as exc:
+                    logger.warning("signal generation failed for %s: %s", sym, exc)
             except Exception:
                 logger.exception("Backfill failed for %s", sym)
     finally:
