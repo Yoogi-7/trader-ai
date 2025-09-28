@@ -32,7 +32,7 @@ services:
       DATABASE_URL: postgresql+psycopg2://trader:traderpass@db:5432/traderai
       REDIS_URL: redis://redis:6379/0
       API_PREFIX: /api
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_API_URL: /api
     depends_on:
       db:
         condition: service_healthy
@@ -55,7 +55,9 @@ services:
       dockerfile: infra/dockerfiles/web.Dockerfile
     env_file: ./.env
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_API_URL: /api
+      API_PROXY_URL: http://api:8000/api
+      NEXT_PUBLIC_API_PREFIX: ""
     depends_on:
       api:
         condition: service_healthy
