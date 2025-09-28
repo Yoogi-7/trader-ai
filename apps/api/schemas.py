@@ -152,6 +152,29 @@ class SignalsListResp(BaseModel):
     total: int
     items: List[SignalItem]
 
+
+# -------- Leaderboard --------
+
+class LeaderboardOverall(BaseModel):
+    win_rate: float
+    total_trades: int
+    wins: int
+    period_start_ms: int
+    period_end_ms: int
+
+
+class LeaderboardUserEntry(BaseModel):
+    rank: int
+    user_id: int
+    email: str
+    capital: float
+    risk_profile: str
+
+
+class LeaderboardResp(BaseModel):
+    overall: LeaderboardOverall
+    users: List[LeaderboardUserEntry]
+
 # -------- Settings / Users --------
 
 class UserSettingsReq(BaseModel):

@@ -8,6 +8,7 @@ import { SignalsLive } from '../src/components/SignalsLive';
 import { HistoryTable } from '../src/components/HistoryTable';
 import { Simulator } from '../src/components/Simulator';
 import { RiskForm } from '../src/components/RiskForm';
+import { Leaderboard } from '../src/components/Leaderboard';
 
 export default function Home() {
   const router = useRouter();
@@ -54,6 +55,10 @@ export default function Home() {
                 Wróć do panelu administratora
               </button>
             )}
+          </div>
+
+          <div className="mb-6">
+            <Leaderboard />
           </div>
 
           <section className="grid md:grid-cols-3 gap-4">

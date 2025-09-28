@@ -84,6 +84,7 @@ export const api = {
   createUser: (payload: { email: string; password: string; role: 'ADMIN' | 'USER'; risk_profile?: string; capital?: number; prefs?: any }) =>
     poster('/users', payload),
   updateUser: (userId: number, payload: any) => poster(`/users/${userId}`, payload),
+  leaderboard: () => fetcher('/leaderboard'),
 };
 
 export { getToken };

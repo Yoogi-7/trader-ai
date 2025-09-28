@@ -3,7 +3,7 @@
 
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, case
 from apps.api.db import models
 import time
 import uuid
@@ -118,6 +118,48 @@ def signals_list(db: Session, symbol: Optional[str], status: Optional[str], limi
     rows = db.execute(stmt.order_by(desc(models.Signal.ts)).limit(limit).offset(offset)).scalars().all()
     return total, rows
 
+
+def leaderboard_overall(db: Session, cutoff_ts_ms: int) -> Dict[str, Any]:
+    stmt = (
+        select(
+            func.coalesce(func.count(models.PnL.id), 0).label("total"),
+            func.coalesce(
+                func.sum(
+                    case((models.PnL.realized > 0.0, 1), else_=0)
+                ),
+                0,
+            ).label("wins"),
+        )
+        .select_from(models.PnL)
+        .join(models.Signal, models.PnL.signal_id == models.Signal.id)
+        .where(models.Signal.ts >= cutoff_ts_ms)
+    )
+    result = db.execute(stmt).mappings().first()
+    total = int(result["total"]) if result and result["total"] is not None else 0
+    wins = int(result["wins"]) if result and result["wins"] is not None else 0
+    win_rate = float(wins / total) if total > 0 else 0.0
+    return {"win_rate": win_rate, "wins": wins, "total": total}
+
+
+def leaderboard_users(db: Session, limit: int = 10) -> List[Dict[str, Any]]:
+    users = (
+        db.execute(select(models.User).order_by(models.User.capital.desc(), models.User.id).limit(limit))
+        .scalars()
+        .all()
+    )
+    leaderboard = []
+    for idx, user in enumerate(users, start=1):
+        leaderboard.append(
+            {
+                "rank": idx,
+                "user_id": user.id,
+                "email": user.email,
+                "capital": float(user.capital),
+                "risk_profile": user.risk_profile,
+            }
+        )
+    return leaderboard
+
 # -------- Users / Settings --------
 
 def user_upsert_settings(db: Session, user_id: int, risk_profile: str, capital: float, prefs: Dict[str, Any]) -> bool:
@@ -163,6 +205,7 @@ def user_create(db: Session, email: str, password_hash: str, role: str = 'USER',
     return user
 
 def user_update(db: Session, user: models.User, **fields) -> models.User:
+    user = db.merge(user)
     for key, value in fields.items():
         if value is None:
             continue
@@ -174,6 +217,7 @@ def user_update(db: Session, user: models.User, **fields) -> models.User:
     return user
 
 def user_update_settings(db: Session, user: models.User, risk_profile: str, capital: float, prefs: Dict[str, Any]) -> models.User:
+    user = db.merge(user)
     user.risk_profile = risk_profile
     user.capital = capital
     user.prefs = prefs

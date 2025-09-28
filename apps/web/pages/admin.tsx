@@ -9,6 +9,7 @@ import { RegistryPanel } from '../src/components/admin/RegistryPanel';
 import { DriftPanel } from '../src/components/admin/DriftPanel';
 import { UserManagementPanel } from '../src/components/admin/UserManagementPanel';
 import { useAuth } from '../src/context/AuthContext';
+import { Leaderboard } from '../src/components/Leaderboard';
 
 export default function Admin() {
   const router = useRouter();
@@ -48,6 +49,8 @@ export default function Admin() {
               Przejdź do panelu sygnałów
             </button>
           </div>
+
+          <Leaderboard />
 
           <SystemStatusPanel />
           <BackfillPanel />

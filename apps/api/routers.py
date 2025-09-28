@@ -440,3 +440,31 @@ def capital_set(amount: float = Body(..., embed=True), current_user: models.User
         raise HTTPException(status_code=400, detail="amount must be >= 0")
     crud.user_update_settings(db, current_user, current_user.risk_profile, amount, current_user.prefs or {})
     return {"ok": True, "capital": amount}
+
+
+# -------- Leaderboard --------
+
+@router.get("/leaderboard", response_model=schemas.LeaderboardResp)
+def leaderboard(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    now_ms = int(time.time() * 1000)
+    cutoff_ms = now_ms - 30 * 24 * 60 * 60 * 1000
+    overall_raw = crud.leaderboard_overall(db, cutoff_ms)
+    overall = schemas.LeaderboardOverall(
+        win_rate=overall_raw["win_rate"],
+        total_trades=overall_raw["total"],
+        wins=overall_raw["wins"],
+        period_start_ms=cutoff_ms,
+        period_end_ms=now_ms,
+    )
+    user_rows = crud.leaderboard_users(db)
+    users = [
+        schemas.LeaderboardUserEntry(
+            rank=row["rank"],
+            user_id=row["user_id"],
+            email=row["email"],
+            capital=row["capital"],
+            risk_profile=row["risk_profile"],
+        )
+        for row in user_rows
+    ]
+    return schemas.LeaderboardResp(overall=overall, users=users)
