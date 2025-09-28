@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   db:
     image: timescale/timescaledb:2.14.2-pg15
@@ -55,8 +53,13 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_healthy
+    ports: ["8000:8000"]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8000/healthz"]
+      test:
+        [
+          "CMD-SHELL",
+          "python - <<'PY'\nimport urllib.request,sys; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3); sys.exit(0)\nPY",
+        ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -73,7 +76,11 @@ services:
         condition: service_healthy
     ports: ["3000:3000"]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000"]
+      test:
+        [
+          "CMD-SHELL",
+          "python - <<'PY'\nimport urllib.request,sys; urllib.request.urlopen('http://localhost:3000', timeout=3); sys.exit(0)\nPY",
+        ]
       interval: 15s
       timeout: 5s
       retries: 5

@@ -1,5 +1,7 @@
 
 FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends wget \
+    && rm -rf /var/lib/apt/lists/*
 
 ENV POETRY_VERSION=1.8.3
 RUN pip install --no-cache-dir poetry==$POETRY_VERSION
