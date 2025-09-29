@@ -1,4 +1,5 @@
-export const API_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+const RAW_URL = process.env.NEXT_PUBLIC_API_URL;
+export const API_URL = RAW_URL ? RAW_URL.replace(/\/$/, '') : '';
 const RAW_PREFIX = process.env.NEXT_PUBLIC_API_PREFIX ?? '/api';
 const API_PREFIX = RAW_PREFIX ? (RAW_PREFIX.startsWith('/') ? RAW_PREFIX : `/${RAW_PREFIX}`) : '';
 

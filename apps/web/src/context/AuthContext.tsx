@@ -36,18 +36,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
 
   async function loadUser(currentToken: string | null) {
-    if (!currentToken) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
+    setLoading(true);
     try {
       const me = await api.me();
       setUser(me);
     } catch (error) {
       console.warn('auth me failed', error);
-      window.localStorage.removeItem(TOKEN_KEY);
-      setToken(null);
+      if (currentToken) {
+        window.localStorage.removeItem(TOKEN_KEY);
+        setToken(null);
+      }
       setUser(null);
     } finally {
       setLoading(false);
@@ -58,11 +56,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const stored = getStoredToken();
     if (stored) {
       setToken(stored);
-      setLoading(true);
-      loadUser(stored);
-    } else {
-      setLoading(false);
     }
+    loadUser(stored);
   }, []);
 
   const login = async (email: string, password: string) => {
@@ -82,7 +77,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     window.localStorage.removeItem(TOKEN_KEY);
     setToken(null);
     setUser(null);
-    router.replace('/login');
+    void loadUser(null);
+    router.replace('/');
   };
 
   const refresh = async () => {
