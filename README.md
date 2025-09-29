@@ -79,6 +79,14 @@ npm run dev
 ```
 Point `NEXT_PUBLIC_API_URL` in `.env.local` (or `.env`) at your API instance.
 
+### Lightweight test environment
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements-test.txt
+python -m pytest
+```
+
 ## Configuration
 All runtime configuration is sourced from `.env`. Key sections in `.env.example` include:
 - **Core services:** `DATABASE_URL`, `REDIS_URL`, `API_PREFIX`.

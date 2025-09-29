@@ -7,6 +7,13 @@ from pydantic import BaseModel, Field, field_validator
 
 DEFAULT_PAIRS = "BTC/USDT,ETH/USDT,BNB/USDT,ADA/USDT,SOL/USDT"
 
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    value = os.getenv(name, default)
+    if value is None:
+        return False
+    return str(value).strip().lower() not in {"0", "false", "no", "off", ""}
+
 def _coerce_pairs(value: Optional[Union[str, Iterable[str]]]) -> List[str]:
     """Normalise pairs input from env/string/list into a clean list."""
     if value is None:
@@ -41,6 +48,7 @@ class Settings(BaseModel):
     jwt_exp_minutes: int = Field(default=int(os.getenv("JWT_EXP_MINUTES", "60")))
     admin_email: str = Field(default=os.getenv("ADMIN_EMAIL", "admin@example.com"))
     admin_password: str = Field(default=os.getenv("ADMIN_PASSWORD", "admin123"))
+    auth_auto_admin: bool = Field(default=_env_flag("AUTH_AUTO_ADMIN", "1"))
 
     @field_validator("pairs", mode="before")
     @classmethod

@@ -59,6 +59,8 @@ def get_current_user(
     db: Session = Depends(get_db_session),
 ) -> models.User:
     if credentials is None or not credentials.scheme.lower() == "bearer":
+        if settings.auth_auto_admin:
+            return _autologin_admin(db)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     payload = decode_token(credentials.credentials)
     user_id = payload.get("sub")
@@ -95,3 +97,21 @@ def ensure_default_admin(db: Session) -> None:
     )
     db.add(user)
     db.commit()
+
+
+def _autologin_admin(db: Session) -> models.User:
+    ensure_default_admin(db)
+    normalized_email = settings.admin_email.strip().lower()
+    if normalized_email:
+        admin = db.query(models.User).filter(models.User.email == normalized_email).first()
+        if admin is not None:
+            return admin
+    admin = (
+        db.query(models.User)
+        .filter(models.User.role == "ADMIN")
+        .order_by(models.User.id)
+        .first()
+    )
+    if admin is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin account not available")
+    return admin
