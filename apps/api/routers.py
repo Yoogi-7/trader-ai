@@ -14,6 +14,7 @@ from apps.api.db import models
 from apps.api.config import settings
 from apps.api import schemas, crud
 from apps.api.services.signals_service import generate_ai_summary
+from apps.api.services.signal_accuracy import SignalAccuracyEvaluator, infer_market_regime
 from apps.api.security import (create_access_token, get_current_user, get_password_hash, require_admin, verify_password)
 
 from apps.common.celery_app import app as celery_app
@@ -393,7 +394,11 @@ def signals_generate(db: Session = Depends(get_db), _admin: models.User = Depend
             tp=[65500.0, 66000.0, 67000.0],
             sl=64000.0,
             expected_net_pct=0.025,
-            confidence=0.62,
+            confidence_rating=int(round(0.62 * 100)),
+            market_regime="trend_up",
+            sentiment_rating=70,
+            potential_accuracy_score=68,
+            potential_accuracy_label="medium",
         )
     )
     db.add(sig); db.commit()
@@ -406,7 +411,8 @@ def signals_live(db: Session = Depends(get_db), current_user: models.User = Depe
     if min_conf is not None:
         query = query.filter(models.Signal.confidence >= min_conf / 100.0)
     q = query.order_by(models.Signal.ts.desc()).limit(20).all()
-    return {"signals": [_signal_to_dict(s) for s in q]}
+    evaluator = SignalAccuracyEvaluator(db)
+    return {"signals": [_signal_to_dict(s, evaluator) for s in q]}
 
 @router.get("/signals/history")
 def signals_history(limit: int = 100, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -416,7 +422,8 @@ def signals_history(limit: int = 100, db: Session = Depends(get_db), current_use
     if min_conf is not None:
         query = query.filter(models.Signal.confidence >= min_conf / 100.0)
     q = query.order_by(models.Signal.ts.desc()).limit(limit).all()
-    return {"signals": [_signal_to_dict(s) for s in q]}
+    evaluator = SignalAccuracyEvaluator(db)
+    return {"signals": [_signal_to_dict(s, evaluator) for s in q]}
 
 def _min_confidence_rating(user: models.User) -> Optional[float]:
     prefs = getattr(user, "prefs", None) or {}
@@ -431,27 +438,13 @@ def _min_confidence_rating(user: models.User) -> Optional[float]:
     return rating
 
 
-def _extract_market_regime(s: models.Signal) -> Optional[str]:
-    attr = getattr(s, "market_regime", None)
-    if isinstance(attr, str) and attr:
-        return attr
-    if isinstance(s.model_ver, str) and "|" in s.model_ver:
-        suffix = s.model_ver.split("|", 1)[1]
-        if suffix:
-            return suffix
-    summary = s.ai_summary or ""
-    tokens = summary.split()
-    for idx, token in enumerate(tokens):
-        if token.lower() == "regime" and idx + 1 < len(tokens):
-            return tokens[idx + 1]
-    return None
-
-def _signal_to_dict(s: models.Signal) -> dict:
+def _signal_to_dict(s: models.Signal, evaluator: SignalAccuracyEvaluator) -> dict:
     rating = None
     if s.confidence is not None:
         rating = int(round(float(s.confidence) * 100.0))
         rating = max(0, min(100, rating))
-    regime = _extract_market_regime(s)
+    regime = infer_market_regime(s)
+    potential_accuracy = evaluator.score_existing_signal(s)
     return {
         "id": s.id, "symbol": s.symbol, "tf_base": s.tf_base, "ts": s.ts, "dir": s.dir,
         "entry": s.entry, "tp": s.tp, "sl": s.sl, "lev": s.lev, "risk": s.risk,
@@ -461,6 +454,7 @@ def _signal_to_dict(s: models.Signal) -> dict:
         "model_ver": s.model_ver,
         "reason_discard": s.reason_discard, "status": s.status,
         "ai_summary": s.ai_summary,
+        "potential_accuracy": potential_accuracy.as_dict(),
     }
 
 # -------- Settings --------

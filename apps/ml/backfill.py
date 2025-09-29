@@ -189,6 +189,11 @@ def _generate_signal(db: Session, symbol: str) -> None:
         logger.debug("signal rejected symbol=%s reason=%s", symbol, reason)
         return
 
+    potential_accuracy = getattr(sig, "potential_accuracy", None)
+    acc_score = getattr(sig, "potential_accuracy_score", None)
+    if acc_score is None and isinstance(potential_accuracy, dict):
+        acc_score = potential_accuracy.get("score")
+
     publish(
         "signal_published",
         {
@@ -204,16 +209,18 @@ def _generate_signal(db: Session, symbol: str) -> None:
             "market_regime": getattr(sig, "market_regime", None),
             "sentiment_rating": getattr(sig, "sentiment_rating", None),
             "ai_summary": sig.ai_summary,
+            "potential_accuracy": potential_accuracy,
         },
     )
     logger.info(
-        "auto signal created symbol=%s dir=%s entry=%.4f conf=%.2f rating=%s regime=%s",
+        "auto signal created symbol=%s dir=%s entry=%.4f conf=%.2f rating=%s regime=%s acc=%s",
         sig.symbol,
         sig.dir,
         sig.entry,
         sig.confidence or 0.0,
         getattr(sig, "confidence_rating", None) or int(round((sig.confidence or 0.0) * 100)),
         getattr(sig, "market_regime", None),
+        acc_score,
     )
 
 

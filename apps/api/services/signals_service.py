@@ -19,6 +19,7 @@ from apps.ml.feature_pipeline import build_mtf_context, multi_tf_confirm
 from apps.ml.models.stacking import StackingEnsemble
 from apps.ml.models.conformal import InductiveConformal
 from apps.ml.sentiment_plugin import load_provider as load_sentiment_provider
+from apps.api.services.signal_accuracy import SignalAccuracyEvaluator
 
 FEE_MAKER = float(os.getenv("FEE_MAKER", "0.0002"))
 FEE_TAKER = float(os.getenv("FEE_TAKER", "0.0005"))
@@ -43,6 +44,8 @@ def generate_ai_summary(
     confidence_rating: int | None,
     market_regime: str,
     sentiment_rating: int | None,
+    potential_accuracy_score: int | None = None,
+    potential_accuracy_label: str | None = None,
 ) -> str:
     direction_text = "trend wzrostowy" if direction.upper() == "LONG" else "trend spadkowy"
     tf_label = tf_base.upper()
@@ -61,6 +64,11 @@ def generate_ai_summary(
     summary_parts.append(f"regime {market_regime}")
     if sentiment_rating is not None:
         summary_parts.append(f"sentiment {sentiment_rating}/100")
+    if potential_accuracy_score is not None:
+        if potential_accuracy_label:
+            summary_parts.append(f"acc {potential_accuracy_score}/100 {potential_accuracy_label}")
+        else:
+            summary_parts.append(f"acc {potential_accuracy_score}/100")
     return " ".join(summary_parts)
 
 def _side_mult(direction: str) -> int:
@@ -212,6 +220,16 @@ def evaluate_signal(
     if net < MIN_NET:
         return None, f"net_profit_below_threshold ({net:.4f}<{MIN_NET:.4f})"
 
+    accuracy_evaluator = SignalAccuracyEvaluator(db)
+    potential_accuracy = accuracy_evaluator.score_signal(
+        symbol=symbol,
+        direction=direction,
+        market_regime=market_regime,
+        confidence=conf,
+        expected_net_pct=float(net),
+    )
+    potential_accuracy_dict = potential_accuracy.as_dict()
+
     # Persist
     summary_text = generate_ai_summary(
         symbol=symbol,
@@ -224,6 +242,8 @@ def evaluate_signal(
         confidence_rating=confidence_rating,
         market_regime=market_regime,
         sentiment_rating=sentiment_rating,
+        potential_accuracy_score=potential_accuracy_dict["score"],
+        potential_accuracy_label=potential_accuracy_dict["label"],
     )
 
     sig = models.Signal(
@@ -250,4 +270,6 @@ def evaluate_signal(
         sig.__dict__["confidence_rating"] = confidence_rating  # type: ignore[attr-defined]
     sig.__dict__["market_regime"] = market_regime  # type: ignore[attr-defined]
     sig.__dict__["sentiment_rating"] = sentiment_rating  # type: ignore[attr-defined]
+    sig.__dict__["potential_accuracy"] = potential_accuracy_dict  # type: ignore[attr-defined]
+    sig.__dict__["potential_accuracy_score"] = potential_accuracy_dict["score"]  # type: ignore[attr-defined]
     return sig, None

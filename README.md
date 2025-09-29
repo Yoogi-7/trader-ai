@@ -8,6 +8,7 @@ Trader AI is a full-stack cryptocurrency trading research and execution platform
 - **TimescaleDB-backed history:** Backfill and resumable jobs populate TimescaleDB with candle data and progress metadata.
 - **Feature + labeling pipeline:** Modular feature builders, triple-barrier labeling, and walk-forward training automation (Optuna-ready).
 - **Signal governance:** Net profit filters, confidence thresholds, exposure caps, cooldowns, and funding adjustments baked into the signal engine.
+- **Accuracy scoring:** Każdy sygnał otrzymuje rating potencjalnej trafności wyliczony z historycznych wyników PnL, dominującego reżimu rynku i oczekiwanego zysku netto.
 - **Next.js dashboard:** Separate user/admin views for monitoring backfills, model runs, and portfolio simulations.
 - **Production ergonomics:** Docker images, health checks, Alembic migrations, CI hooks, and pytest coverage for critical logic (net profit filter, backfill resume, basic feature sanity).
 
@@ -91,7 +92,7 @@ All runtime configuration is sourced from `.env`. Key sections in `.env.example`
 FastAPI automatically publishes the OpenAPI schema at `/openapi.json`. Notable routes:
 - Backfill orchestration: `POST /backfill/start`, `GET /backfill/status`
 - Model lifecycle: `POST /train/run`, `GET /train/status`, `POST /backtest/run`, `GET /backtest/results`
-- Signal endpoints: `POST /signals/generate`, `GET /signals/live`, `GET /signals/history`
+- Signal endpoints: `POST /signals/generate`, `GET /signals/live`, `GET /signals/history` (odpowiedzi zawierają metrykę `potential_accuracy` z oceną i składowymi).
 - Portfolio controls: `POST /settings/profile`, `POST /capital`
 - Live updates: WebSocket at `/ws/live`
 

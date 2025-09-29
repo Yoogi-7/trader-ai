@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from apps.api.db.session import SessionLocal
 from apps.api.db import models
 from apps.api.services.signals_service import evaluate_signal
+from apps.api.services.signal_accuracy import SignalAccuracyEvaluator
 from apps.ml.arbitrage import ExchangePriceFetcher
 from apps.api import schemas
 
@@ -43,6 +44,7 @@ def generate_auto(req: AutoReq, db: Session = Depends(db_dep)):
     )
     if sig is None:
         raise HTTPException(status_code=400, detail={"reason": reason})
+    potential_accuracy = getattr(sig, "potential_accuracy", None)
     return {
         "id": sig.id, "symbol": sig.symbol, "tf_base": sig.tf_base, "ts": sig.ts, "dir": sig.dir,
         "entry": sig.entry, "tp": sig.tp, "sl": sig.sl, "lev": sig.lev, "risk": sig.risk,
@@ -51,7 +53,8 @@ def generate_auto(req: AutoReq, db: Session = Depends(db_dep)):
         "confidence_rating": int(round(float(sig.confidence) * 100.0)) if sig.confidence is not None else None,
         "market_regime": getattr(sig, "market_regime", None),
         "sentiment_rating": getattr(sig, "sentiment_rating", None),
-        "model_ver": sig.model_ver, "status": sig.status
+        "model_ver": sig.model_ver, "status": sig.status,
+        "potential_accuracy": potential_accuracy,
     }
 
 
@@ -86,15 +89,31 @@ def history(symbol: Optional[str] = None, limit: int = 100, offset: int = 0, db:
         q = q.where(models.Signal.symbol == symbol)
     q = q.order_by(desc(models.Signal.ts)).limit(limit).offset(offset)
     rows = db.execute(q).scalars().all()
-    return {"total": len(rows), "items": [
-        {
-            "id": s.id, "symbol": s.symbol, "tf_base": s.tf_base, "ts": s.ts, "dir": s.dir,
-            "entry": s.entry, "tp": s.tp, "sl": s.sl, "lev": s.lev, "risk": s.risk,
-            "margin_mode": s.margin_mode, "expected_net_pct": s.expected_net_pct,
+    evaluator = SignalAccuracyEvaluator(db)
+    items = []
+    for s in rows:
+        potential_accuracy = getattr(s, "potential_accuracy", None)
+        if potential_accuracy is None:
+            potential_accuracy = evaluator.score_existing_signal(s).as_dict()
+        items.append({
+            "id": s.id,
+            "symbol": s.symbol,
+            "tf_base": s.tf_base,
+            "ts": s.ts,
+            "dir": s.dir,
+            "entry": s.entry,
+            "tp": s.tp,
+            "sl": s.sl,
+            "lev": s.lev,
+            "risk": s.risk,
+            "margin_mode": s.margin_mode,
+            "expected_net_pct": s.expected_net_pct,
             "confidence": s.confidence,
             "confidence_rating": int(round(float(s.confidence) * 100.0)) if s.confidence is not None else None,
             "market_regime": getattr(s, "market_regime", None),
             "sentiment_rating": getattr(s, "sentiment_rating", None),
-            "model_ver": s.model_ver, "status": s.status
-        } for s in rows
-    ]}
+            "model_ver": s.model_ver,
+            "status": s.status,
+            "potential_accuracy": potential_accuracy,
+        })
+    return {"total": len(rows), "items": items}
