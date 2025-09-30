@@ -129,8 +129,8 @@ def _generate_signal(db: Session, symbol: str) -> None:
     ema_fast = ta_df["ema_fast"]
     ema_slow = ta_df["ema_slow"]
     if ema_fast.isna().any() or ema_slow.isna().any():
-        ema_fast = ema_fast.fillna(method="bfill")
-        ema_slow = ema_slow.fillna(method="bfill")
+        ema_fast = ema_fast.bfill().ffill()
+        ema_slow = ema_slow.bfill().ffill()
 
     if len(ema_fast) < 2 or len(ema_slow) < 2:
         return
@@ -439,12 +439,12 @@ def main() -> None:
     if not logging.getLogger().handlers:
         logging.basicConfig(level=os.getenv("BACKFILL_LOG_LEVEL", "INFO").upper())
     mode = os.getenv("BACKFILL_MODE", "once").strip().lower() or "once"
-    sleep_seconds_raw = os.getenv("BACKFILL_SLEEP_SECONDS", "900")
+    sleep_seconds_raw = os.getenv("BACKFILL_SLEEP_SECONDS", "300")
     try:
         sleep_seconds = int(sleep_seconds_raw)
     except ValueError:
-        logger.warning("Invalid BACKFILL_SLEEP_SECONDS=%r, defaulting to 900", sleep_seconds_raw)
-        sleep_seconds = 900
+        logger.warning("Invalid BACKFILL_SLEEP_SECONDS=%r, defaulting to 300", sleep_seconds_raw)
+        sleep_seconds = 300
     from_ts = _parse_optional_int_env("BACKFILL_FROM_TS")
     to_ts = _parse_optional_int_env("BACKFILL_TO_TS")
 

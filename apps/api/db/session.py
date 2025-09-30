@@ -18,7 +18,9 @@ else:
 
 if DATABASE_URL.startswith("sqlite:///./"):
     path = DATABASE_URL.replace("sqlite:///./", "")
-    if os.path.exists(path):
+    reset_flag = os.getenv("RESET_SQLITE_DB", "0")
+    should_reset = bool(os.getenv("PYTEST_CURRENT_TEST")) or str(reset_flag).strip().lower() in {"1", "true", "yes", "on"}
+    if should_reset and os.path.exists(path):
         os.remove(path)
 
 if DATABASE_URL.startswith("sqlite"):

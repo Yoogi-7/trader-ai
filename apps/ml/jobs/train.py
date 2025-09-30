@@ -3,7 +3,6 @@ from __future__ import annotations
 from celery import shared_task
 from apps.api.db.session import SessionLocal
 from apps.api.db.models import TrainingRun, Signal, OHLCV
-from datetime import datetime
 from sqlalchemy import select
 from typing import Dict, Any, List
 import time
@@ -11,6 +10,10 @@ import numpy as np
 
 from apps.ml.drift import psi as psi_metric, ks as ks_metric
 from apps.ml.backtest import BTParams, simulate_trade
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 def _load_bars(db, symbol: str, tf: str, start_ts: int, end_ts: int) -> List[dict]:
     q = (select(OHLCV)
@@ -33,7 +36,7 @@ def _wf_splits(n:int, folds:int=5) -> List[tuple[int,int,int,int]]:
 def run_training(params: dict | None = None):
     params = params or {}
     db = SessionLocal()
-    tr = TrainingRun(started_at=datetime.utcnow(), status="running", params_json=params)
+    tr = TrainingRun(started_at=_now_ms(), status="running", params_json=params)
     db.add(tr); db.commit(); db.refresh(tr)
 
     symbol = params.get("symbol","BTC/USDT")
@@ -45,7 +48,9 @@ def run_training(params: dict | None = None):
 
     bars = _load_bars(db, symbol, tf, start_ts, end_ts)
     if not bars:
-        tr.status="error"; tr.finished_at=datetime.utcnow(); db.commit()
+        tr.status = "error"
+        tr.finished_at = _now_ms()
+        db.commit()
         return {"id": tr.id, "error":"no_bars"}
 
     ts_list = [b["ts"] for b in bars]
@@ -100,6 +105,7 @@ def run_training(params: dict | None = None):
         "drift": {"psi": psi_val, "ks": ks_val},
     }
     tr.metrics_json = metrics
-    tr.status = "done"; tr.finished_at = datetime.utcnow()
+    tr.status = "done"
+    tr.finished_at = _now_ms()
     db.commit()
     return {"id": tr.id, "metrics": metrics}

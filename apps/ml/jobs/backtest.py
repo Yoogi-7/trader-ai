@@ -3,11 +3,14 @@ from __future__ import annotations
 from celery import shared_task
 from apps.api.db.session import SessionLocal
 from apps.api.db.models import Backtest, BacktestTrade, Signal, OHLCV
-from datetime import datetime
 from typing import Dict, Any, List
 from sqlalchemy import select
 from apps.ml.backtest import BTParams, simulate_trade
 import time
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 def _load_bars(db, symbol: str, tf: str, start_ts: int, end_ts: int) -> List[dict]:
     q = (select(OHLCV)
@@ -20,7 +23,7 @@ def _load_bars(db, symbol: str, tf: str, start_ts: int, end_ts: int) -> List[dic
 def run_backtest(params: dict | None = None):
     params = params or {}
     db = SessionLocal()
-    bt = Backtest(started_at=datetime.utcnow(), status="running", params_json=params)
+    bt = Backtest(started_at=_now_ms(), status="running", params_json=params)
     db.add(bt); db.commit(); db.refresh(bt)
 
     symbol = params.get("symbol","BTC/USDT")
@@ -41,7 +44,9 @@ def run_backtest(params: dict | None = None):
            .order_by(Signal.ts.asc()))
     signals = list(db.execute(s_q).scalars().all())
     if not signals:
-        bt.status="error"; bt.finished_at=datetime.utcnow(); db.commit()
+        bt.status = "error"
+        bt.finished_at = _now_ms()
+        db.commit()
         return {"id": bt.id, "error": "no_signals_in_range"}
 
     bars = _load_bars(db, symbol, tf, start_ts, end_ts)
@@ -114,6 +119,7 @@ def run_backtest(params: dict | None = None):
         "hit_rate_tp1": hr1, "hit_rate_tp2": hr2, "hit_rate_tp3": hr3,
         "trades": trades_n,
     }
-    bt.finished_at = datetime.utcnow(); bt.status="done"
+    bt.finished_at = _now_ms()
+    bt.status = "done"
     db.commit()
     return {"id": bt.id, "summary": bt.summary_json}
