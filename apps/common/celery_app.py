@@ -46,6 +46,7 @@ def _build_real_celery() -> Optional[Any]:
         accept_content=ACCEPT_CONTENT,
         timezone=TIMEZONE,
         enable_utc=True,
+        broker_connection_retry_on_startup=True,
         task_always_eager=os.getenv("CELERY_TASK_ALWAYS_EAGER", "false").lower()
         in ("1", "true", "yes"),
     )

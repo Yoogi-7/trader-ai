@@ -1,15 +1,18 @@
 # apps/ml/ccxt_client.py
-# PL: Wrapper na ccxt z trybem offline generującym syntetyczne dane.
-# EN: ccxt wrapper with offline synthetic data fallback.
+# PL: Wrapper na ccxt (bez trybu demo).
+# EN: ccxt wrapper without demo/synthetic fallbacks.
 
 import logging
 import os
 import time
 from typing import List, Optional
 
-import ccxt  # type: ignore
-
-from apps.ml.sample_data import generate_ohlcv
+try:
+    import ccxt  # type: ignore
+except Exception as exc:  # pragma: no cover - import guard
+    raise RuntimeError(
+        "Package 'ccxt' is required for market data fetching. Install it to run Trader AI."
+    ) from exc
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +25,12 @@ RETRY_BASE_SEC = float(os.getenv("RETRY_BASE_SEC", "1.0"))
 
 class CcxtClient:
     def __init__(self):
-        self._offline = False
         try:
             ex_name = DEFAULT_EXCHANGE
             ex_cls = getattr(ccxt, ex_name)
+        except AttributeError as exc:  # pragma: no cover - config error
+            raise RuntimeError(f"Exchange '{DEFAULT_EXCHANGE}' is not available in ccxt.") from exc
+        try:
             self.ex = ex_cls(
                 {
                     "enableRateLimit": True,
@@ -35,11 +40,9 @@ class CcxtClient:
                 }
             )
         except Exception as exc:
-            logger.warning(
-                "ccxt exchange init failed (%s); using synthetic OHLCV generator", exc
-            )
-            self.ex = None
-            self._offline = True
+            raise RuntimeError(
+                f"Failed to initialise ccxt exchange '{DEFAULT_EXCHANGE}': {exc}"
+            ) from exc
 
     def _sleep_backoff(self, attempt: int) -> None:
         delay = RETRY_BASE_SEC * (2 ** attempt)
@@ -99,23 +102,30 @@ class CcxtClient:
         self, symbol: str, timeframe: str, since_ms: Optional[int], until_ms: Optional[int]
     ) -> List[List[float]]:
         """
-        Retrieves OHLCV data from ccxt or synthetic generator when offline.
-        Returns list of [ts_ms, o, h, l, c, v].
+        Retrieves OHLCV data via ccxt. Returns list of [ts_ms, o, h, l, c, v].
         """
-        if self._offline or self.ex is None:
-            return generate_ohlcv(symbol, timeframe, since_ms, until_ms, CCXT_LIMIT)
+        if self.ex is None:  # pragma: no cover - defensive
+            raise RuntimeError("ccxt exchange instance is not initialised")
 
         try:
             rows = self._fetch_with_ccxt(symbol, timeframe, since_ms, until_ms)
-            if not rows:
-                raise RuntimeError("empty_remote_response")
-            return rows
         except Exception as exc:
-            logger.warning(
-                "ccxt fetch_ohlcv failed for %s %s (%s); switching to synthetic data",
+            logger.error(
+                "ccxt fetch_ohlcv failed for %s %s: %s",
                 symbol,
                 timeframe,
                 exc,
             )
-            self._offline = True
-            return generate_ohlcv(symbol, timeframe, since_ms, until_ms, CCXT_LIMIT)
+            raise RuntimeError(f"ccxt fetch_ohlcv failed for {symbol} {timeframe}") from exc
+
+        if not rows:
+            logger.debug(
+                "ccxt fetch returned no rows symbol=%s tf=%s since=%s until=%s",
+                symbol,
+                timeframe,
+                since_ms,
+                until_ms,
+            )
+            return []
+
+        return rows

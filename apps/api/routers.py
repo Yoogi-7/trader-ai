@@ -16,10 +16,12 @@ from apps.api import schemas, crud
 from apps.api.services.signals_service import generate_ai_summary
 from apps.api.services.signal_accuracy import SignalAccuracyEvaluator, infer_market_regime
 from apps.api.security import (create_access_token, get_current_user, get_password_hash, require_admin, verify_password)
+from apps.api.routers.internal import router as internal_router
 
 from apps.common.celery_app import app as celery_app
 
 router = APIRouter()
+router.include_router(internal_router)
 
 def get_db():
     db = SessionLocal()
