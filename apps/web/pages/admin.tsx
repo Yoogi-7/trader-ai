@@ -25,11 +25,48 @@ interface TrainingStatus {
   hit_rate_tp1?: number
 }
 
+interface HistoricalSignal {
+  signal_id: string
+  symbol: string
+  side: string
+  entry_price: number
+  timestamp: string
+  confidence: number
+  expected_net_profit_pct: number
+  actual_net_pnl_pct?: number
+  actual_net_pnl_usd?: number
+  final_status?: string
+  duration_minutes?: number
+  was_profitable?: boolean
+}
+
 export default function Admin() {
   const [backfillJobs, setBackfillJobs] = useState<BackfillStatus[]>([])
   const [trainingJobs, setTrainingJobs] = useState<TrainingStatus[]>([])
+  const [historicalSignals, setHistoricalSignals] = useState<HistoricalSignal[]>([])
   const [activeBackfillId, setActiveBackfillId] = useState<string | null>(null)
   const [activeTrainingId, setActiveTrainingId] = useState<string | null>(null)
+  const [showHistoricalSignals, setShowHistoricalSignals] = useState(false)
+
+  // Load existing jobs on mount
+  useEffect(() => {
+    const loadJobs = async () => {
+      try {
+        const response = await axios.get(`${API_URL}/api/v1/backfill/jobs`)
+        const jobs: BackfillStatus[] = response.data
+        setBackfillJobs(jobs)
+
+        // Set active job if any is running
+        const runningJob = jobs.find(j => j.status === 'running')
+        if (runningJob) {
+          setActiveBackfillId(runningJob.job_id)
+        }
+      } catch (error) {
+        console.error('Error loading jobs:', error)
+      }
+    }
+    loadJobs()
+  }, [])
 
   // Poll for backfill status
   useEffect(() => {
@@ -125,6 +162,38 @@ export default function Admin() {
       console.error('Error starting training:', error)
       console.error('Error details:', error.response?.data)
       alert(`Error starting training: ${error.message}`)
+    }
+  }
+
+  const generateHistoricalSignals = async () => {
+    try {
+      const endDate = new Date()
+      const startDate = new Date()
+      startDate.setDate(startDate.getDate() - 30)
+
+      const response = await axios.post(`${API_URL}/api/v1/signals/historical/generate`, {
+        symbol: 'BTC/USDT',
+        start_date: startDate.toISOString(),
+        end_date: endDate.toISOString(),
+        timeframe: '15m'
+      })
+      alert(`Historical signal generation started: ${response.data.message}`)
+
+      // Load historical signals after a delay
+      setTimeout(loadHistoricalSignals, 5000)
+    } catch (error: any) {
+      console.error('Error generating historical signals:', error)
+      alert(`Error: ${error.message}`)
+    }
+  }
+
+  const loadHistoricalSignals = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/v1/signals/historical/results?symbol=BTC/USDT&limit=50`)
+      setHistoricalSignals(response.data)
+      setShowHistoricalSignals(true)
+    } catch (error) {
+      console.error('Error loading historical signals:', error)
     }
   }
 
@@ -272,6 +341,96 @@ export default function Admin() {
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Historical Signals Generation */}
+        <div className="bg-gray-800 rounded-lg p-6 mb-8">
+          <h2 className="text-2xl font-bold mb-4">Historical Signal Analysis</h2>
+          <p className="text-gray-400 mb-4">
+            Generate and analyze historical signals to validate strategy performance.
+          </p>
+          <div className="flex gap-4">
+            <button
+              onClick={generateHistoricalSignals}
+              className="bg-purple-600 hover:bg-purple-700 px-6 py-2 rounded font-medium"
+            >
+              Generate Historical Signals (Last 30 days)
+            </button>
+            <button
+              onClick={loadHistoricalSignals}
+              className="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded font-medium"
+            >
+              View Historical Signals
+            </button>
+          </div>
+
+          {/* Historical Signals Table */}
+          {showHistoricalSignals && historicalSignals.length > 0 && (
+            <div className="mt-6 overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-700">
+                    <th className="text-left p-2">Time</th>
+                    <th className="text-left p-2">Symbol</th>
+                    <th className="text-left p-2">Side</th>
+                    <th className="text-right p-2">Entry</th>
+                    <th className="text-right p-2">Expected %</th>
+                    <th className="text-right p-2">Actual %</th>
+                    <th className="text-right p-2">Actual $</th>
+                    <th className="text-center p-2">Status</th>
+                    <th className="text-right p-2">Duration</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historicalSignals.map((signal) => (
+                    <tr key={signal.signal_id} className="border-b border-gray-700 hover:bg-gray-750">
+                      <td className="p-2">{new Date(signal.timestamp).toLocaleString()}</td>
+                      <td className="p-2">{signal.symbol}</td>
+                      <td className="p-2">
+                        <span className={`px-2 py-1 rounded text-xs ${
+                          signal.side === 'LONG' ? 'bg-green-600' : 'bg-red-600'
+                        }`}>
+                          {signal.side}
+                        </span>
+                      </td>
+                      <td className="p-2 text-right">${signal.entry_price.toFixed(2)}</td>
+                      <td className="p-2 text-right text-gray-400">{signal.expected_net_profit_pct.toFixed(2)}%</td>
+                      <td className={`p-2 text-right font-bold ${
+                        signal.was_profitable === true ? 'text-green-400' :
+                        signal.was_profitable === false ? 'text-red-400' : 'text-gray-400'
+                      }`}>
+                        {signal.actual_net_pnl_pct !== null && signal.actual_net_pnl_pct !== undefined
+                          ? `${signal.actual_net_pnl_pct.toFixed(2)}%`
+                          : 'N/A'}
+                      </td>
+                      <td className={`p-2 text-right font-bold ${
+                        signal.was_profitable === true ? 'text-green-400' :
+                        signal.was_profitable === false ? 'text-red-400' : 'text-gray-400'
+                      }`}>
+                        {signal.actual_net_pnl_usd !== null && signal.actual_net_pnl_usd !== undefined
+                          ? `$${signal.actual_net_pnl_usd.toFixed(2)}`
+                          : 'N/A'}
+                      </td>
+                      <td className="p-2 text-center">
+                        {signal.final_status && (
+                          <span className={`px-2 py-1 rounded text-xs ${
+                            signal.final_status.includes('tp') ? 'bg-green-600' :
+                            signal.final_status === 'sl_hit' ? 'bg-red-600' :
+                            'bg-gray-600'
+                          }`}>
+                            {signal.final_status}
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-2 text-right text-gray-400">
+                        {signal.duration_minutes ? `${signal.duration_minutes}m` : 'N/A'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
 
         {/* System Status */}

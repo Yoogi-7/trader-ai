@@ -70,3 +70,17 @@ async def get_backfill_status(
         raise HTTPException(status_code=404, detail="Job not found")
 
     return status
+
+
+@router.get("/jobs", response_model=list[BackfillStatus])
+async def list_backfill_jobs(
+    db: Session = Depends(get_db),
+    limit: int = 10
+):
+    """List recent backfill jobs"""
+    from apps.api.db.models import BackfillJob
+
+    jobs = db.query(BackfillJob).order_by(BackfillJob.created_at.desc()).limit(limit).all()
+
+    service = BackfillService(db)
+    return [service.get_job_status(job.job_id) for job in jobs if service.get_job_status(job.job_id)]

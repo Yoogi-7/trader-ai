@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy.orm import Session
+from sqlalchemy import select, and_, desc
 from typing import List, Optional
 from datetime import datetime, timedelta
-from apps.api.db import get_async_db
-from apps.api.db.models import Signal, RiskProfile, SignalStatus
+from apps.api.db import get_async_db, get_db
+from apps.api.db.models import Signal, RiskProfile, SignalStatus, TradeResult
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -29,6 +30,38 @@ class SignalResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class HistoricalSignalResponse(BaseModel):
+    signal_id: str
+    symbol: str
+    side: str
+    entry_price: float
+    tp1_price: float
+    tp2_price: float
+    tp3_price: float
+    sl_price: float
+    timestamp: datetime
+    status: str
+    confidence: float
+    expected_net_profit_pct: float
+
+    # Actual results
+    actual_net_pnl_pct: Optional[float] = None
+    actual_net_pnl_usd: Optional[float] = None
+    final_status: Optional[str] = None
+    duration_minutes: Optional[int] = None
+    was_profitable: Optional[bool] = None
+
+    class Config:
+        from_attributes = True
+
+
+class GenerateHistoricalSignalsRequest(BaseModel):
+    symbol: str
+    start_date: str
+    end_date: str
+    timeframe: str = "15m"
 
 
 @router.get("/live", response_model=List[SignalResponse])
@@ -91,3 +124,71 @@ async def get_signal(
         raise HTTPException(status_code=404, detail="Signal not found")
 
     return signal
+
+
+@router.post("/historical/generate")
+async def generate_historical_signals(
+    request: GenerateHistoricalSignalsRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """Generate historical signals and backtest them"""
+    from apps.ml.worker import celery_app
+
+    task = celery_app.send_task(
+        'signals.generate_historical',
+        kwargs={
+            'symbol': request.symbol,
+            'start_date': request.start_date,
+            'end_date': request.end_date,
+            'timeframe': request.timeframe
+        }
+    )
+
+    return {
+        "task_id": task.id,
+        "status": "started",
+        "message": f"Generating historical signals for {request.symbol} from {request.start_date} to {request.end_date}"
+    }
+
+
+@router.get("/historical/results", response_model=List[HistoricalSignalResponse])
+def get_historical_signals(
+    symbol: Optional[str] = Query(None),
+    limit: int = Query(100, le=500),
+    db: Session = Depends(get_db)
+):
+    """Get historical signals with their actual results"""
+    query = db.query(Signal).outerjoin(TradeResult, Signal.signal_id == TradeResult.signal_id)
+
+    if symbol:
+        query = query.filter(Signal.symbol == symbol)
+
+    query = query.order_by(desc(Signal.timestamp)).limit(limit)
+    signals = query.all()
+
+    results = []
+    for signal in signals:
+        trade_result = signal.trade_results[0] if signal.trade_results else None
+
+        results.append(HistoricalSignalResponse(
+            signal_id=signal.signal_id,
+            symbol=signal.symbol,
+            side=signal.side.value,
+            entry_price=signal.entry_price,
+            tp1_price=signal.tp1_price,
+            tp2_price=signal.tp2_price,
+            tp3_price=signal.tp3_price,
+            sl_price=signal.sl_price,
+            timestamp=signal.timestamp,
+            status=signal.status.value,
+            confidence=signal.confidence or 0.0,
+            expected_net_profit_pct=signal.expected_net_profit_pct,
+            actual_net_pnl_pct=trade_result.net_pnl_pct if trade_result else None,
+            actual_net_pnl_usd=trade_result.net_pnl_usd if trade_result else None,
+            final_status=trade_result.final_status.value if trade_result and trade_result.final_status else None,
+            duration_minutes=trade_result.duration_minutes if trade_result else None,
+            was_profitable=trade_result.net_pnl_usd > 0 if trade_result and trade_result.net_pnl_usd is not None else None
+        ))
+
+    return results
