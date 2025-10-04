@@ -43,8 +43,15 @@ async def start_backfill(
     """Start a backfill job"""
     service = BackfillService(db)
 
-    start_date = datetime.fromisoformat(request.start_date)
-    end_date = datetime.fromisoformat(request.end_date)
+    # Parse dates and remove timezone info to make them naive (UTC assumed)
+    start_date = datetime.fromisoformat(request.start_date.replace('Z', '+00:00'))
+    end_date = datetime.fromisoformat(request.end_date.replace('Z', '+00:00'))
+
+    # Convert to naive datetime (remove timezone)
+    if start_date.tzinfo is not None:
+        start_date = start_date.replace(tzinfo=None)
+    if end_date.tzinfo is not None:
+        end_date = end_date.replace(tzinfo=None)
 
     job = service.create_backfill_job(
         symbol=request.symbol,

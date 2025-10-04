@@ -55,6 +55,14 @@ interface SystemStatus {
   win_rate?: number
 }
 
+interface CandleInfo {
+  symbol: string
+  timeframe: string
+  total_candles: number
+  first_candle?: string
+  last_candle?: string
+}
+
 export default function Admin() {
   const [backfillJobs, setBackfillJobs] = useState<BackfillStatus[]>([])
   const [trainingJobs, setTrainingJobs] = useState<TrainingStatus[]>([])
@@ -63,6 +71,7 @@ export default function Admin() {
   const [activeTrainingId, setActiveTrainingId] = useState<string | null>(null)
   const [showHistoricalSignals, setShowHistoricalSignals] = useState(false)
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
+  const [candlesInfo, setCandlesInfo] = useState<CandleInfo[]>([])
 
   // Load existing jobs on mount
   useEffect(() => {
@@ -95,6 +104,7 @@ export default function Admin() {
     }
     loadJobs()
     loadSystemStatus()
+    loadCandlesInfo()
   }, [])
 
   // Load system status
@@ -107,9 +117,22 @@ export default function Admin() {
     }
   }
 
+  // Load candles info
+  const loadCandlesInfo = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/v1/system/candles`)
+      setCandlesInfo(response.data)
+    } catch (error) {
+      console.error('Error loading candles info:', error)
+    }
+  }
+
   // Poll system status every 10 seconds
   useEffect(() => {
-    const interval = setInterval(loadSystemStatus, 10000)
+    const interval = setInterval(() => {
+      loadSystemStatus()
+      loadCandlesInfo()
+    }, 10000)
     return () => clearInterval(interval)
   }, [])
 
@@ -524,14 +547,50 @@ export default function Admin() {
           )}
         </div>
 
+        {/* Database Candles Info */}
+        <div className="bg-gray-800 rounded-lg p-6 mb-8">
+          <h2 className="text-2xl font-bold mb-4">Database Status - Trading Pairs</h2>
+          <div className="grid grid-cols-2 gap-4">
+            {candlesInfo.map((info) => (
+              <div key={info.symbol} className="bg-gray-700 rounded-lg p-4">
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="text-lg font-bold">{info.symbol}</h3>
+                  <span className="text-sm text-gray-400">{info.timeframe}</span>
+                </div>
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-gray-400">Total Candles:</span>
+                    <span className="font-bold text-blue-400">{info.total_candles.toLocaleString()}</span>
+                  </div>
+                  {info.first_candle && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">First:</span>
+                      <span className="text-gray-300">{new Date(info.first_candle).toLocaleDateString()}</span>
+                    </div>
+                  )}
+                  {info.last_candle && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-400">Last:</span>
+                      <span className="text-gray-300">{new Date(info.last_candle).toLocaleDateString()}</span>
+                    </div>
+                  )}
+                  {!info.first_candle && !info.last_candle && (
+                    <div className="text-gray-500 text-center">No data</div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
         {/* System Status */}
         <div className="bg-gray-800 rounded-lg p-6">
-          <h2 className="text-2xl font-bold mb-4">System Status</h2>
+          <h2 className="text-2xl font-bold mb-4">System Metrics</h2>
           <div className="grid grid-cols-3 gap-4 mb-4">
             <div className="bg-gray-700 p-4 rounded">
               <p className="text-gray-400 text-sm">Hit Rate (TP1)</p>
               <p className="text-3xl font-bold text-green-400">
-                {systemStatus?.hit_rate_tp1 !== null && systemStatus?.hit_rate_tp1 !== undefined
+                {systemStatus && systemStatus.hit_rate_tp1 !== null && systemStatus.hit_rate_tp1 !== undefined
                   ? `${(systemStatus.hit_rate_tp1 * 100).toFixed(1)}%`
                   : 'N/A'}
               </p>
@@ -539,7 +598,7 @@ export default function Admin() {
             <div className="bg-gray-700 p-4 rounded">
               <p className="text-gray-400 text-sm">Avg Net Profit</p>
               <p className="text-3xl font-bold text-green-400">
-                {systemStatus?.avg_net_profit_pct !== null && systemStatus?.avg_net_profit_pct !== undefined
+                {systemStatus && systemStatus.avg_net_profit_pct !== null && systemStatus.avg_net_profit_pct !== undefined
                   ? `${systemStatus.avg_net_profit_pct.toFixed(1)}%`
                   : 'N/A'}
               </p>
@@ -561,7 +620,7 @@ export default function Admin() {
             <div className="bg-gray-700 p-4 rounded">
               <p className="text-gray-400 text-sm">Win Rate</p>
               <p className="text-2xl font-bold text-green-400">
-                {systemStatus?.win_rate !== null && systemStatus?.win_rate !== undefined
+                {systemStatus && systemStatus.win_rate !== null && systemStatus.win_rate !== undefined
                   ? `${(systemStatus.win_rate * 100).toFixed(1)}%`
                   : 'N/A'}
               </p>

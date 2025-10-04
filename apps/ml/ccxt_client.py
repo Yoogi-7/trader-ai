@@ -219,7 +219,7 @@ class CCXTClient:
             timeframe: Timeframe (e.g., '15m')
 
         Returns:
-            Earliest available datetime or None if unable to fetch
+            Earliest available datetime (UTC, timezone-naive) or None if unable to fetch
         """
         try:
             # Try fetching from a very early timestamp (2010-01-01)
@@ -230,7 +230,8 @@ class CCXTClient:
 
             if candles and len(candles) > 0:
                 earliest_ts_ms = candles[0][0]
-                earliest_dt = datetime.fromtimestamp(earliest_ts_ms / 1000)
+                # Use utcfromtimestamp to get timezone-naive UTC datetime
+                earliest_dt = datetime.utcfromtimestamp(earliest_ts_ms / 1000)
                 logger.info(f"Earliest available data for {symbol} {timeframe}: {earliest_dt}")
                 return earliest_dt
             else:

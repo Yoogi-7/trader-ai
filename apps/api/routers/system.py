@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, and_
 from apps.api.db import get_db
-from apps.api.db.models import ModelRegistry, TradeResult, Signal
+from apps.api.db.models import ModelRegistry, TradeResult, Signal, OHLCV, TimeFrame
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 router = APIRouter()
 
@@ -16,6 +16,14 @@ class SystemStatusResponse(BaseModel):
     total_signals: int = 0
     total_trades: int = 0
     win_rate: Optional[float] = None
+
+
+class CandleInfo(BaseModel):
+    symbol: str
+    timeframe: str
+    total_candles: int
+    first_candle: Optional[str] = None
+    last_candle: Optional[str] = None
 
 
 @router.get("/status", response_model=SystemStatusResponse)
@@ -66,3 +74,51 @@ async def get_system_status(db: Session = Depends(get_db)):
         total_trades=total_trades,
         win_rate=win_rate
     )
+
+
+@router.get("/candles", response_model=List[CandleInfo])
+async def get_candles_info(db: Session = Depends(get_db)):
+    """Get candle database info for all tracked trading pairs"""
+
+    # List of tracked pairs (same as in worker.py)
+    TRACKED_PAIRS = [
+        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT',
+        'ADA/USDT', 'SOL/USDT', 'DOGE/USDT', 'MATIC/USDT',
+        'DOT/USDT', 'AVAX/USDT', 'LINK/USDT', 'UNI/USDT'
+    ]
+
+    result = []
+
+    for symbol in TRACKED_PAIRS:
+        # Get candle count
+        count = db.query(OHLCV).filter(
+            and_(
+                OHLCV.symbol == symbol,
+                OHLCV.timeframe == TimeFrame.M15
+            )
+        ).count()
+
+        # Get first and last candle timestamps
+        first_candle = db.query(OHLCV.timestamp).filter(
+            and_(
+                OHLCV.symbol == symbol,
+                OHLCV.timeframe == TimeFrame.M15
+            )
+        ).order_by(OHLCV.timestamp.asc()).first()
+
+        last_candle = db.query(OHLCV.timestamp).filter(
+            and_(
+                OHLCV.symbol == symbol,
+                OHLCV.timeframe == TimeFrame.M15
+            )
+        ).order_by(OHLCV.timestamp.desc()).first()
+
+        result.append(CandleInfo(
+            symbol=symbol,
+            timeframe='15m',
+            total_candles=count,
+            first_candle=first_candle[0].isoformat() if first_candle else None,
+            last_candle=last_candle[0].isoformat() if last_candle else None
+        ))
+
+    return result
