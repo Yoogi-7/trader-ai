@@ -33,6 +33,7 @@ interface HistoricalSignal {
   timestamp: string
   confidence: number
   expected_net_profit_pct: number
+  ai_summary?: string
   actual_net_pnl_pct?: number
   actual_net_pnl_usd?: number
   final_status?: string
@@ -366,69 +367,85 @@ export default function Admin() {
 
           {/* Historical Signals Table */}
           {showHistoricalSignals && historicalSignals.length > 0 && (
-            <div className="mt-6 overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-gray-700">
-                    <th className="text-left p-2">Time</th>
-                    <th className="text-left p-2">Symbol</th>
-                    <th className="text-left p-2">Side</th>
-                    <th className="text-right p-2">Entry</th>
-                    <th className="text-right p-2">Expected %</th>
-                    <th className="text-right p-2">Actual %</th>
-                    <th className="text-right p-2">Actual $</th>
-                    <th className="text-center p-2">Status</th>
-                    <th className="text-right p-2">Duration</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {historicalSignals.map((signal) => (
-                    <tr key={signal.signal_id} className="border-b border-gray-700 hover:bg-gray-750">
-                      <td className="p-2">{new Date(signal.timestamp).toLocaleString()}</td>
-                      <td className="p-2">{signal.symbol}</td>
-                      <td className="p-2">
+            <div className="mt-6 space-y-4">
+              {historicalSignals.map((signal) => (
+                <div key={signal.signal_id} className="bg-gray-700 rounded-lg p-4">
+                  <div className="grid grid-cols-5 gap-4 mb-3">
+                    <div>
+                      <p className="text-xs text-gray-400">Time</p>
+                      <p className="text-sm">{new Date(signal.timestamp).toLocaleString()}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400">Symbol</p>
+                      <p className="text-sm font-bold">{signal.symbol}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400">Side</p>
+                      <span className={`px-2 py-1 rounded text-xs ${
+                        signal.side === 'LONG' ? 'bg-green-600' : 'bg-red-600'
+                      }`}>
+                        {signal.side}
+                      </span>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400">Entry</p>
+                      <p className="text-sm">${signal.entry_price.toFixed(2)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400">Status</p>
+                      {signal.final_status && (
                         <span className={`px-2 py-1 rounded text-xs ${
-                          signal.side === 'LONG' ? 'bg-green-600' : 'bg-red-600'
+                          signal.final_status.includes('tp') ? 'bg-green-600' :
+                          signal.final_status === 'sl_hit' ? 'bg-red-600' :
+                          'bg-gray-600'
                         }`}>
-                          {signal.side}
+                          {signal.final_status}
                         </span>
-                      </td>
-                      <td className="p-2 text-right">${signal.entry_price.toFixed(2)}</td>
-                      <td className="p-2 text-right text-gray-400">{signal.expected_net_profit_pct.toFixed(2)}%</td>
-                      <td className={`p-2 text-right font-bold ${
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-4 mb-3 text-sm">
+                    <div>
+                      <p className="text-xs text-gray-400">Expected Profit</p>
+                      <p className="text-gray-300">{signal.expected_net_profit_pct.toFixed(2)}%</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400">Actual %</p>
+                      <p className={`font-bold ${
                         signal.was_profitable === true ? 'text-green-400' :
                         signal.was_profitable === false ? 'text-red-400' : 'text-gray-400'
                       }`}>
                         {signal.actual_net_pnl_pct !== null && signal.actual_net_pnl_pct !== undefined
                           ? `${signal.actual_net_pnl_pct.toFixed(2)}%`
                           : 'N/A'}
-                      </td>
-                      <td className={`p-2 text-right font-bold ${
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400">Actual $</p>
+                      <p className={`font-bold ${
                         signal.was_profitable === true ? 'text-green-400' :
                         signal.was_profitable === false ? 'text-red-400' : 'text-gray-400'
                       }`}>
                         {signal.actual_net_pnl_usd !== null && signal.actual_net_pnl_usd !== undefined
                           ? `$${signal.actual_net_pnl_usd.toFixed(2)}`
                           : 'N/A'}
-                      </td>
-                      <td className="p-2 text-center">
-                        {signal.final_status && (
-                          <span className={`px-2 py-1 rounded text-xs ${
-                            signal.final_status.includes('tp') ? 'bg-green-600' :
-                            signal.final_status === 'sl_hit' ? 'bg-red-600' :
-                            'bg-gray-600'
-                          }`}>
-                            {signal.final_status}
-                          </span>
-                        )}
-                      </td>
-                      <td className="p-2 text-right text-gray-400">
-                        {signal.duration_minutes ? `${signal.duration_minutes}m` : 'N/A'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400">Duration</p>
+                      <p className="text-gray-300">{signal.duration_minutes ? `${signal.duration_minutes}m` : 'N/A'}</p>
+                    </div>
+                  </div>
+
+                  {signal.ai_summary && (
+                    <div className="mt-3 p-3 bg-gray-800 rounded border-l-4 border-blue-500">
+                      <p className="text-xs text-blue-400 font-semibold mb-1">🤖 AI Analysis</p>
+                      <p className="text-sm text-gray-300">{signal.ai_summary}</p>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
           )}
         </div>

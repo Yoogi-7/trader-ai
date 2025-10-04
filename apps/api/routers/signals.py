@@ -27,6 +27,7 @@ class SignalResponse(BaseModel):
     risk_profile: str
     timestamp: datetime
     valid_until: datetime
+    ai_summary: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -45,6 +46,7 @@ class HistoricalSignalResponse(BaseModel):
     status: str
     confidence: float
     expected_net_profit_pct: float
+    ai_summary: Optional[str] = None
 
     # Actual results
     actual_net_pnl_pct: Optional[float] = None
@@ -184,6 +186,7 @@ def get_historical_signals(
             status=signal.status.value,
             confidence=signal.confidence or 0.0,
             expected_net_profit_pct=signal.expected_net_profit_pct,
+            ai_summary=signal.ai_summary,
             actual_net_pnl_pct=trade_result.net_pnl_pct if trade_result else None,
             actual_net_pnl_usd=trade_result.net_pnl_usd if trade_result else None,
             final_status=trade_result.final_status.value if trade_result and trade_result.final_status else None,

@@ -75,41 +75,62 @@ def update_latest_candles_task():
         from apps.api.db.models import TimeFrame
         from datetime import datetime, timedelta
 
+        # List of trading pairs to track
+        TRACKED_PAIRS = [
+            'BTC/USDT',
+            'ETH/USDT',
+            'BNB/USDT',
+            'XRP/USDT',
+            'ADA/USDT',
+            'SOL/USDT',
+            'DOGE/USDT',
+            'MATIC/USDT',
+            'DOT/USDT',
+            'AVAX/USDT',
+            'LINK/USDT',
+            'UNI/USDT'
+        ]
+
         service = BackfillService(db)
+        total_updated = 0
 
-        # Get latest timestamp from database for BTC/USDT 15m
-        latest_candle = db.query(OHLCV).filter(
-            and_(
-                OHLCV.symbol == 'BTC/USDT',
-                OHLCV.timeframe == TimeFrame.M15
-            )
-        ).order_by(OHLCV.timestamp.desc()).first()
+        for symbol in TRACKED_PAIRS:
+            try:
+                # Get latest timestamp from database for this symbol
+                latest_candle = db.query(OHLCV).filter(
+                    and_(
+                        OHLCV.symbol == symbol,
+                        OHLCV.timeframe == TimeFrame.M15
+                    )
+                ).order_by(OHLCV.timestamp.desc()).first()
 
-        if latest_candle:
-            # Fetch candles from latest timestamp to now
-            start_date = latest_candle.timestamp
-            end_date = datetime.utcnow()
+                if latest_candle:
+                    # Fetch candles from latest timestamp to now
+                    start_date = latest_candle.timestamp
+                    end_date = datetime.utcnow()
 
-            logger.info(f"Updating candles from {start_date} to {end_date}")
+                    logger.info(f"Updating {symbol} candles from {start_date} to {end_date}")
 
-            df = service.client.fetch_ohlcv_range(
-                symbol='BTC/USDT',
-                timeframe='15m',
-                start_date=start_date,
-                end_date=end_date,
-                limit=100
-            )
+                    df = service.client.fetch_ohlcv_range(
+                        symbol=symbol,
+                        timeframe='15m',
+                        start_date=start_date,
+                        end_date=end_date,
+                        limit=100
+                    )
 
-            if not df.empty:
-                service._upsert_ohlcv('BTC/USDT', TimeFrame.M15, df)
-                logger.info(f"Updated {len(df)} latest candles for BTC/USDT 15m")
-                return {"status": "completed", "candles_updated": len(df)}
-            else:
-                logger.info("No new candles to update")
-                return {"status": "completed", "candles_updated": 0}
-        else:
-            logger.warning("No existing candles found, skipping update")
-            return {"status": "completed", "candles_updated": 0}
+                    if not df.empty:
+                        service._upsert_ohlcv(symbol, TimeFrame.M15, df)
+                        logger.info(f"Updated {len(df)} latest candles for {symbol} 15m")
+                        total_updated += len(df)
+                else:
+                    logger.info(f"No existing candles for {symbol}, skipping update (use backfill first)")
+
+            except Exception as e:
+                logger.error(f"Error updating {symbol}: {e}")
+                continue
+
+        return {"status": "completed", "candles_updated": total_updated, "pairs_tracked": len(TRACKED_PAIRS)}
 
     except Exception as e:
         logger.error(f"Update latest candles task failed: {e}")

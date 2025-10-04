@@ -296,6 +296,9 @@ class Signal(Base):
     # Risk profile
     risk_profile = Column(Enum(RiskProfile), nullable=False, index=True)
 
+    # AI-generated summary explaining why this signal is good
+    ai_summary = Column(Text)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     published_at = Column(DateTime)
 
