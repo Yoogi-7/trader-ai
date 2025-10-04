@@ -1,27 +1,11 @@
-# ====== Builder ======
-FROM node:20-alpine AS builder
+FROM node:18-alpine
+
 WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1
 
-# 1) deps
-COPY apps/web/package*.json ./apps/web/
-RUN cd apps/web && npm install --no-audit --no-fund
+COPY apps/web/package*.json ./
 
-# 2) źródła + build
-COPY apps/web ./apps/web
-RUN cd apps/web && npm run build
+RUN npm install
 
-# ====== Runner ======
-FROM node:20-alpine
-WORKDIR /app
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
+COPY apps/web/ ./
 
-# Next standalone output:
-# - .next/standalone zawiera server.js i node_modules wymagane w runtime
-# - .next/static to assety
-COPY --from=builder /app/apps/web/.next/standalone ./apps/web
-COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
-# (USUNIĘTO linię COPY public, bo katalog nie istnieje w buildzie)
-
-EXPOSE 3000
-CMD ["node", "apps/web/server.js"]
+CMD ["npm", "run", "dev"]

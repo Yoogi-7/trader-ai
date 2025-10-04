@@ -1,61 +1,59 @@
-# apps/api/config.py
-
-import os
-from typing import Iterable, List, Optional, Union
-
-from pydantic import BaseModel, Field, field_validator
-
-DEFAULT_PAIRS = "BTC/USDT,ETH/USDT,BNB/USDT,ADA/USDT,SOL/USDT"
+from pydantic import PostgresDsn, RedisDsn
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _env_flag(name: str, default: str = "0") -> bool:
-    value = os.getenv(name, default)
-    if value is None:
-        return False
-    return str(value).strip().lower() not in {"0", "false", "no", "off", ""}
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
-def _coerce_pairs(value: Optional[Union[str, Iterable[str]]]) -> List[str]:
-    """Normalise pairs input from env/string/list into a clean list."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        items = value.split(",")
-    else:
-        items = list(value)
-    cleaned: List[str] = []
-    for item in items:
-        text = str(item).strip()
-        if text:
-            cleaned.append(text)
-    return cleaned
+    # Database
+    DATABASE_URL: PostgresDsn
+    ASYNC_DATABASE_URL: PostgresDsn
 
-class Settings(BaseModel):
-    app_name: str = Field(default=os.getenv("APP_NAME", "Trader AI API"))
-    version: str = Field(default=os.getenv("APP_VERSION", "0.1.0"))
-    database_url: str = Field(
-        default=os.getenv(
-            "DATABASE_URL",
-            "postgresql+psycopg2://trader:traderpass@db:5432/traderai",
-        )
-    )
-    api_prefix: str = Field(default=os.getenv("API_PREFIX", ""))
-    default_page_size: int = Field(default=int(os.getenv("DEFAULT_PAGE_SIZE", "50")))
-    max_page_size: int = Field(default=int(os.getenv("MAX_PAGE_SIZE", "500")))
-    pairs: List[str] = Field(
-        default_factory=lambda: _coerce_pairs(os.getenv("PAIRS", DEFAULT_PAIRS))
-    )
-    jwt_secret: str = Field(default=os.getenv("JWT_SECRET", "change-me"))
-    jwt_exp_minutes: int = Field(default=int(os.getenv("JWT_EXP_MINUTES", "60")))
-    admin_email: str = Field(default=os.getenv("ADMIN_EMAIL", "admin@example.com"))
-    admin_password: str = Field(default=os.getenv("ADMIN_PASSWORD", "admin123"))
-    auth_auto_admin: bool = Field(default=_env_flag("AUTH_AUTO_ADMIN", "1"))
+    # Redis
+    REDIS_URL: RedisDsn
 
-    @field_validator("pairs", mode="before")
-    @classmethod
-    def _parse_pairs(cls, value: Optional[Union[str, Iterable[str]]]) -> List[str]:
-        parsed = _coerce_pairs(value)
-        if not parsed:
-            return _coerce_pairs(DEFAULT_PAIRS.split(","))
-        return parsed
+    # Celery
+    CELERY_BROKER_URL: RedisDsn
+    CELERY_RESULT_BACKEND: RedisDsn
+
+    # API
+    API_V1_PREFIX: str = "/api/v1"
+    SECRET_KEY: str
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080
+
+    # Exchange
+    EXCHANGE_ID: str = "binance"
+    EXCHANGE_SANDBOX: bool = False
+    EXCHANGE_API_KEY: str = ""
+    EXCHANGE_SECRET: str = ""
+
+    # ML
+    MIN_CONFIDENCE_THRESHOLD: float = 0.55
+    MIN_NET_PROFIT_PCT: float = 2.0
+    DEFAULT_LOOKBACK_YEARS: int = 4
+
+    # Costs
+    MAKER_FEE_BPS: float = 2.0
+    TAKER_FEE_BPS: float = 5.0
+    SLIPPAGE_BPS: float = 3.0
+    FUNDING_RATE_HOURLY_BPS: float = 1.0
+
+    # Risk Profiles
+    LOW_RISK_PER_TRADE: float = 0.01
+    MED_RISK_PER_TRADE: float = 0.02
+    HIGH_RISK_PER_TRADE: float = 0.03
+    LOW_MAX_LEV: int = 5
+    MED_MAX_LEV: int = 10
+    HIGH_MAX_LEV: int = 20
+    LOW_MAX_POSITIONS: int = 2
+    MED_MAX_POSITIONS: int = 4
+    HIGH_MAX_POSITIONS: int = 6
+
+    # Monitoring
+    DRIFT_PSI_THRESHOLD: float = 0.15
+    DRIFT_KS_THRESHOLD: float = 0.1
+    MAX_CONSECUTIVE_LOSSES: int = 5
+
 
 settings = Settings()

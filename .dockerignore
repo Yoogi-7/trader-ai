@@ -19,7 +19,6 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
 
 # Virtual environments
 venv/
@@ -33,9 +32,20 @@ env/
 *.swp
 *.swo
 
-# Env files
-.env
-.env.local
+# Git
+.git/
+.gitignore
+.github/
+
+# Docs
+*.md
+ARCHITECTURE.md
+LICENSE
+
+# Node
+node_modules/
+.next/
+out/
 
 # Database
 *.db
@@ -43,13 +53,20 @@ env/
 
 # Logs
 *.log
-
-# Node
-node_modules/
-.next/
-out/
-dist/
+logs/
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Test files
+tests/
+htmlcov/
+.coverage
+coverage.xml
+.pytest_cache/
+
+# Docker
+docker-compose.yml
+.dockerignore
+Dockerfile*

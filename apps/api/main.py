@@ -1,55 +1,77 @@
-# apps/api/main.py
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-
 from apps.api.config import settings
-from apps.api.ws import ws_manager
-from apps.api.security import ensure_default_admin
-from apps.api.db.session import SessionLocal
+from apps.api.routers import signals, backtest, backfill, train, settings as settings_router
+import logging
 
-from apps.api import routers as routes
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
-    title=settings.app_name,
-    version=settings.version,
-    openapi_url="/openapi.json",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    title="TraderAI API",
+    description="AI-powered crypto futures trading signal system",
+    version="1.0.0"
 )
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-prefix = settings.api_prefix.strip()
-if prefix:
-    if not prefix.startswith("/"):
-        prefix = f"/{prefix}"
-    app.include_router(routes.router, prefix=prefix)
-else:
-    app.include_router(routes.router)
+# Include routers
+app.include_router(signals.router, prefix=f"{settings.API_V1_PREFIX}/signals", tags=["Signals"])
+app.include_router(backtest.router, prefix=f"{settings.API_V1_PREFIX}/backtest", tags=["Backtest"])
+app.include_router(backfill.router, prefix=f"{settings.API_V1_PREFIX}/backfill", tags=["Backfill"])
+app.include_router(train.router, prefix=f"{settings.API_V1_PREFIX}/train", tags=["Training"])
+app.include_router(settings_router.router, prefix=f"{settings.API_V1_PREFIX}/settings", tags=["Settings"])
 
 
-@app.on_event("startup")
-def ensure_admin_account() -> None:
-    with SessionLocal() as db:
-        ensure_default_admin(db)
+# WebSocket connection manager for live signals
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
 
-@app.websocket("/ws/live")
-async def ws_live(ws: WebSocket):
-    await ws_manager.connect(ws)
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except:
+                pass
+
+
+manager = ConnectionManager()
+
+
+@app.websocket("/ws/signals")
+async def websocket_signals(websocket: WebSocket):
+    await manager.connect(websocket)
     try:
         while True:
-            msg = await ws.receive_text()
-            if msg == "ping":
-                await ws.send_text("pong")
+            await websocket.receive_text()
     except WebSocketDisconnect:
-        ws_manager.disconnect(ws)
+        manager.disconnect(websocket)
 
-@app.get("/healthz")
-def health():
-    return {"ok": True, "name": settings.app_name, "version": settings.version}
+
+@app.get("/")
+async def root():
+    return {
+        "service": "TraderAI API",
+        "version": "1.0.0",
+        "status": "operational"
+    }
+
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}

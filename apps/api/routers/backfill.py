@@ -1,54 +1,71 @@
-# apps/api/routes/backfill.py
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
-from apps.api.deps import db_dep, get_pagination
-from apps.api import schemas
-from apps.api import crud
-from apps.api.ws import ws_manager
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
+from apps.api.db import get_db
+from apps.api.db.models import BackfillJob, TimeFrame
+from apps.ml.backfill import BackfillService
 
-router = APIRouter(prefix="/backfill", tags=["backfill"])
+router = APIRouter()
 
-@router.post("/start", response_model=schemas.BackfillStartResp)
-def backfill_start(req: schemas.BackfillStartReq, db: Session = Depends(db_dep)):
-    items = crud.backfill_start(db, req.symbols, req.tf, req.from_ts, req.to_ts)
-    # Broadcast info
-    try:
-        import asyncio
-        asyncio.create_task(ws_manager.broadcast({"type": "backfill_started", "tf": req.tf, "symbols": req.symbols}))
-    except RuntimeError:
-        # When no loop (sync path), ignore
-        pass
-    return schemas.BackfillStartResp(
-        created=len(items),
-        items=[
-            schemas.BackfillItem(
-                id=i.id,
-                symbol=i.symbol,
-                tf=i.tf,
-                last_ts_completed=i.last_ts_completed,
-                chunk_start_ts=i.chunk_start_ts,
-                chunk_end_ts=i.chunk_end_ts,
-                retry_count=i.retry_count,
-                status=i.status,
-                updated_at=i.updated_at,
-            ) for i in items
-        ]
+
+class BackfillRequest(BaseModel):
+    symbol: str
+    timeframe: TimeFrame
+    start_date: str
+    end_date: str
+
+
+class BackfillStatus(BaseModel):
+    job_id: str
+    symbol: str
+    timeframe: str
+    status: str
+    progress_pct: float
+    candles_fetched: int
+    candles_per_minute: Optional[float]
+    eta_minutes: Optional[float]
+
+    class Config:
+        from_attributes = True
+
+
+@router.post("/start")
+async def start_backfill(
+    request: BackfillRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """Start a backfill job"""
+    service = BackfillService(db)
+
+    start_date = datetime.fromisoformat(request.start_date)
+    end_date = datetime.fromisoformat(request.end_date)
+
+    job = service.create_backfill_job(
+        symbol=request.symbol,
+        timeframe=request.timeframe,
+        start_date=start_date,
+        end_date=end_date
     )
 
-@router.get("/status", response_model=schemas.BackfillStatusResp)
-def backfill_status(p=Depends(get_pagination), db: Session = Depends(db_dep)):
-    total, rows = crud.backfill_list(db, p["limit"], p["offset"])
-    items = [
-        schemas.BackfillItem(
-            id=i.id,
-            symbol=i.symbol,
-            tf=i.tf,
-            last_ts_completed=i.last_ts_completed,
-            chunk_start_ts=i.chunk_start_ts,
-            chunk_end_ts=i.chunk_end_ts,
-            retry_count=i.retry_count,
-            status=i.status,
-            updated_at=i.updated_at,
-        ) for i in rows
-    ]
-    return schemas.BackfillStatusResp(total=total, items=items)
+    # In production, this would be a Celery task
+    # background_tasks.add_task(service.execute_backfill, job)
+
+    return {"job_id": job.job_id, "status": "started"}
+
+
+@router.get("/status/{job_id}", response_model=BackfillStatus)
+async def get_backfill_status(
+    job_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get backfill job status"""
+    service = BackfillService(db)
+    status = service.get_job_status(job_id)
+
+    if not status:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return status

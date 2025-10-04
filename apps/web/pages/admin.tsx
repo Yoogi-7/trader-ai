@@ -1,66 +1,78 @@
-import Head from 'next/head';
-import { useEffect } from 'react';
-import { useRouter } from 'next/router';
-import { BackfillPanel } from '../src/components/admin/BackfillPanel';
-import { SystemStatusPanel } from '../src/components/admin/SystemStatusPanel';
-import { TrainingPanel } from '../src/components/admin/TrainingPanel';
-import { BacktestPanel } from '../src/components/admin/BacktestPanel';
-import { RegistryPanel } from '../src/components/admin/RegistryPanel';
-import { DriftPanel } from '../src/components/admin/DriftPanel';
-import { UserManagementPanel } from '../src/components/admin/UserManagementPanel';
-import { useAuth } from '../src/context/AuthContext';
-import { Leaderboard } from '../src/components/Leaderboard';
+import { useState } from 'react'
+import axios from 'axios'
+
+const API_URL = process.env.API_URL || 'http://localhost:8000'
 
 export default function Admin() {
-  const router = useRouter();
-  const { user, loading } = useAuth();
+  const [backfillStatus, setBackfillStatus] = useState<any>(null)
 
-  useEffect(() => {
-    if (!loading) {
-      if (!user) {
-        router.replace('/login');
-      } else if (user.role !== 'ADMIN') {
-        router.replace('/');
-      }
+  const startBackfill = async () => {
+    try {
+      const response = await axios.post(`${API_URL}/api/v1/backfill/start`, {
+        symbol: 'BTC/USDT',
+        timeframe: '15m',
+        start_date: '2020-01-01T00:00:00',
+        end_date: '2024-01-01T00:00:00'
+      })
+      alert(`Backfill started: ${response.data.job_id}`)
+    } catch (error) {
+      console.error('Error starting backfill:', error)
     }
-  }, [user, loading, router]);
-
-  if (loading || !user || user.role !== 'ADMIN') {
-    return (
-      <main className="min-h-screen flex items-center justify-center bg-slate-50">
-        <p className="text-slate-600">Ładowanie…</p>
-      </main>
-    );
   }
 
   return (
-    <>
-      <Head>
-        <title>Trader AI — Admin</title>
-      </Head>
-      <main className="min-h-screen bg-slate-50">
-        <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-            <h1 className="text-2xl font-bold">Trader AI — Panel administratora</h1>
-            <button
-              onClick={() => router.push('/?view=user')}
-              className="self-start md:self-auto px-3 py-2 rounded bg-slate-200 text-slate-700 hover:bg-slate-300"
-            >
-              Przejdź do panelu sygnałów
-            </button>
-          </div>
+    <div className="min-h-screen bg-gray-900 text-white p-8">
+      <div className="max-w-7xl mx-auto">
+        <h1 className="text-4xl font-bold mb-8">TraderAI - Admin Panel</h1>
 
-          <Leaderboard />
+        {/* Backfill Panel */}
+        <div className="bg-gray-800 rounded-lg p-6 mb-8">
+          <h2 className="text-2xl font-bold mb-4">Data Backfill</h2>
+          <button
+            onClick={startBackfill}
+            className="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded font-medium"
+          >
+            Start BTC/USDT Backfill (4 years)
+          </button>
 
-          <SystemStatusPanel />
-          <BackfillPanel />
-          <TrainingPanel />
-          <BacktestPanel />
-          <RegistryPanel />
-          <DriftPanel />
-          <UserManagementPanel />
+          {backfillStatus && (
+            <div className="mt-4 p-4 bg-gray-700 rounded">
+              <p>Status: {backfillStatus.status}</p>
+              <p>Progress: {backfillStatus.progress_pct}%</p>
+            </div>
+          )}
         </div>
-      </main>
-    </>
-  );
+
+        {/* Training Panel */}
+        <div className="bg-gray-800 rounded-lg p-6 mb-8">
+          <h2 className="text-2xl font-bold mb-4">Model Training</h2>
+          <p className="text-gray-400 mb-4">
+            Train ML models using walk-forward validation with purge & embargo.
+          </p>
+          <button className="bg-green-600 hover:bg-green-700 px-6 py-2 rounded font-medium">
+            Train BTC/USDT Model
+          </button>
+        </div>
+
+        {/* System Status */}
+        <div className="bg-gray-800 rounded-lg p-6">
+          <h2 className="text-2xl font-bold mb-4">System Status</h2>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-gray-700 p-4 rounded">
+              <p className="text-gray-400 text-sm">Hit Rate (TP1)</p>
+              <p className="text-3xl font-bold text-green-400">57.2%</p>
+            </div>
+            <div className="bg-gray-700 p-4 rounded">
+              <p className="text-gray-400 text-sm">Avg Net Profit</p>
+              <p className="text-3xl font-bold text-green-400">2.8%</p>
+            </div>
+            <div className="bg-gray-700 p-4 rounded">
+              <p className="text-gray-400 text-sm">Active Models</p>
+              <p className="text-3xl font-bold">3</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }

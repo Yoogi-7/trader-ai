@@ -1,131 +1,211 @@
-# apps/ml/ccxt_client.py
-# PL: Wrapper na ccxt (bez trybu demo).
-# EN: ccxt wrapper without demo/synthetic fallbacks.
-
+import ccxt
+import pandas as pd
+from datetime import datetime, timedelta
+from typing import List, Optional, Tuple
+import asyncio
 import logging
-import os
-import time
-from typing import List, Optional
-
-try:
-    import ccxt  # type: ignore
-except Exception as exc:  # pragma: no cover - import guard
-    raise RuntimeError(
-        "Package 'ccxt' is required for market data fetching. Install it to run Trader AI."
-    ) from exc
+from apps.api.config import settings
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EXCHANGE = os.getenv("EXCHANGE", "binance")
-DEFAULT_MARKET_TYPE = os.getenv("MARKET_TYPE", "future")
-CCXT_LIMIT = int(os.getenv("CCXT_LIMIT", "1500"))
-RETRY_MAX = int(os.getenv("RETRY_MAX", "5"))
-RETRY_BASE_SEC = float(os.getenv("RETRY_BASE_SEC", "1.0"))
 
+class CCXTClient:
+    """
+    CCXT client for fetching OHLCV data with resumable backfill support.
+    """
 
-class CcxtClient:
-    def __init__(self):
-        try:
-            ex_name = DEFAULT_EXCHANGE
-            ex_cls = getattr(ccxt, ex_name)
-        except AttributeError as exc:  # pragma: no cover - config error
-            raise RuntimeError(f"Exchange '{DEFAULT_EXCHANGE}' is not available in ccxt.") from exc
-        try:
-            self.ex = ex_cls(
-                {
-                    "enableRateLimit": True,
-                    "options": {
-                        "defaultType": DEFAULT_MARKET_TYPE,
-                    },
-                }
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to initialise ccxt exchange '{DEFAULT_EXCHANGE}': {exc}"
-            ) from exc
+    def __init__(self, exchange_id: str = None):
+        self.exchange_id = exchange_id or settings.EXCHANGE_ID
+        self.exchange = self._initialize_exchange()
 
-    def _sleep_backoff(self, attempt: int) -> None:
-        delay = RETRY_BASE_SEC * (2 ** attempt)
-        time.sleep(delay)
+    def _initialize_exchange(self):
+        """Initialize CCXT exchange instance"""
+        exchange_class = getattr(ccxt, self.exchange_id)
 
-    def _fetch_with_ccxt(
-        self, symbol: str, timeframe: str, since_ms: Optional[int], until_ms: Optional[int]
-    ) -> List[List[float]]:
-        tf = timeframe
-        out: List[List[float]] = []
-        ms = since_ms
+        config = {
+            'enableRateLimit': True,
+            'options': {'defaultType': 'future'}
+        }
 
-        while True:
-            attempt = 0
-            while True:
-                try:
-                    rows = self.ex.fetch_ohlcv(symbol, timeframe=tf, since=ms, limit=CCXT_LIMIT)
-                    break
-                except Exception as exc:
-                    if attempt >= RETRY_MAX:
-                        raise exc
-                    self._sleep_backoff(attempt)
-                    attempt += 1
+        if settings.EXCHANGE_API_KEY and settings.EXCHANGE_SECRET:
+            config['apiKey'] = settings.EXCHANGE_API_KEY
+            config['secret'] = settings.EXCHANGE_SECRET
 
-            if not rows:
-                break
+        if settings.EXCHANGE_SANDBOX:
+            config['sandbox'] = True
 
-            if until_ms is not None:
-                rows = [r for r in rows if r[0] < until_ms]
-                if not rows:
-                    break
+        exchange = exchange_class(config)
+        exchange.load_markets()
 
-            out.extend(rows)
-
-            last_ts = rows[-1][0]
-            if tf == "1m":
-                ms = last_ts + 60_000
-            elif tf == "5m":
-                ms = last_ts + 5 * 60_000
-            elif tf == "15m":
-                ms = last_ts + 15 * 60_000
-            elif tf == "1h":
-                ms = last_ts + 60 * 60_000
-            elif tf == "4h":
-                ms = last_ts + 4 * 60 * 60_000
-            elif tf == "1d":
-                ms = last_ts + 24 * 60 * 60_000
-            else:
-                ms = last_ts + 60_000
-
-            if until_ms is not None and ms >= until_ms:
-                break
-
-        return out
+        logger.info(f"Initialized {self.exchange_id} exchange (sandbox={settings.EXCHANGE_SANDBOX})")
+        return exchange
 
     def fetch_ohlcv(
-        self, symbol: str, timeframe: str, since_ms: Optional[int], until_ms: Optional[int]
-    ) -> List[List[float]]:
+        self,
+        symbol: str,
+        timeframe: str,
+        since: Optional[int] = None,
+        limit: int = 1000
+    ) -> List[List]:
         """
-        Retrieves OHLCV data via ccxt. Returns list of [ts_ms, o, h, l, c, v].
-        """
-        if self.ex is None:  # pragma: no cover - defensive
-            raise RuntimeError("ccxt exchange instance is not initialised")
+        Fetch OHLCV data from exchange.
 
+        Args:
+            symbol: Trading pair (e.g., 'BTC/USDT')
+            timeframe: Timeframe (e.g., '1m', '5m', '15m', '1h', '4h', '1d')
+            since: Timestamp in milliseconds
+            limit: Number of candles to fetch
+
+        Returns:
+            List of [timestamp, open, high, low, close, volume]
+        """
         try:
-            rows = self._fetch_with_ccxt(symbol, timeframe, since_ms, until_ms)
-        except Exception as exc:
-            logger.error(
-                "ccxt fetch_ohlcv failed for %s %s: %s",
-                symbol,
-                timeframe,
-                exc,
-            )
-            raise RuntimeError(f"ccxt fetch_ohlcv failed for {symbol} {timeframe}") from exc
+            ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
+            return ohlcv
+        except ccxt.NetworkError as e:
+            logger.error(f"Network error fetching {symbol} {timeframe}: {e}")
+            raise
+        except ccxt.ExchangeError as e:
+            logger.error(f"Exchange error fetching {symbol} {timeframe}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error fetching {symbol} {timeframe}: {e}")
+            raise
 
-        if not rows:
-            logger.debug(
-                "ccxt fetch returned no rows symbol=%s tf=%s since=%s until=%s",
-                symbol,
-                timeframe,
-                since_ms,
-                until_ms,
-            )
+    def fetch_ohlcv_range(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_date: datetime,
+        end_date: datetime,
+        limit: int = 1000
+    ) -> pd.DataFrame:
+        """
+        Fetch OHLCV data for a date range with pagination.
+
+        Args:
+            symbol: Trading pair
+            timeframe: Timeframe
+            start_date: Start datetime
+            end_date: End datetime
+            limit: Candles per request
+
+        Returns:
+            DataFrame with columns: [timestamp, open, high, low, close, volume]
+        """
+        all_candles = []
+        current_ts = int(start_date.timestamp() * 1000)
+        end_ts = int(end_date.timestamp() * 1000)
+
+        while current_ts < end_ts:
+            try:
+                candles = self.fetch_ohlcv(symbol, timeframe, since=current_ts, limit=limit)
+
+                if not candles:
+                    break
+
+                all_candles.extend(candles)
+
+                # Update current timestamp to last candle + 1
+                last_ts = candles[-1][0]
+                current_ts = last_ts + self._timeframe_to_ms(timeframe)
+
+                # Rate limiting handled by ccxt enableRateLimit
+                logger.debug(f"Fetched {len(candles)} candles for {symbol} {timeframe}, last_ts={datetime.fromtimestamp(last_ts/1000)}")
+
+            except Exception as e:
+                logger.error(f"Error in fetch_ohlcv_range: {e}")
+                break
+
+        if not all_candles:
+            return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+        df = pd.DataFrame(all_candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df = df.drop_duplicates(subset='timestamp').sort_values('timestamp').reset_index(drop=True)
+
+        return df
+
+    def fetch_funding_rate(self, symbol: str) -> Optional[float]:
+        """Fetch current funding rate for a futures symbol"""
+        try:
+            funding = self.exchange.fetch_funding_rate(symbol)
+            return funding.get('fundingRate', 0.0)
+        except Exception as e:
+            logger.warning(f"Could not fetch funding rate for {symbol}: {e}")
+            return None
+
+    def fetch_open_interest(self, symbol: str) -> Optional[float]:
+        """Fetch current open interest for a futures symbol"""
+        try:
+            oi = self.exchange.fetch_open_interest(symbol)
+            return oi.get('openInterest', 0.0)
+        except Exception as e:
+            logger.warning(f"Could not fetch open interest for {symbol}: {e}")
+            return None
+
+    def fetch_order_book(self, symbol: str, limit: int = 20) -> Optional[dict]:
+        """Fetch order book (depth)"""
+        try:
+            orderbook = self.exchange.fetch_order_book(symbol, limit=limit)
+            return orderbook
+        except Exception as e:
+            logger.warning(f"Could not fetch order book for {symbol}: {e}")
+            return None
+
+    def detect_gaps(self, df: pd.DataFrame, timeframe: str) -> List[Tuple[datetime, datetime]]:
+        """
+        Detect gaps in OHLCV data.
+
+        Args:
+            df: DataFrame with 'timestamp' column
+            timeframe: Expected timeframe
+
+        Returns:
+            List of (gap_start, gap_end) tuples
+        """
+        if df.empty:
             return []
 
-        return rows
+        expected_delta = self._timeframe_to_timedelta(timeframe)
+        gaps = []
+
+        for i in range(len(df) - 1):
+            current_ts = df.iloc[i]['timestamp']
+            next_ts = df.iloc[i + 1]['timestamp']
+
+            actual_delta = next_ts - current_ts
+
+            if actual_delta > expected_delta * 1.5:  # Allow 50% tolerance
+                gaps.append((current_ts, next_ts))
+
+        return gaps
+
+    @staticmethod
+    def _timeframe_to_ms(timeframe: str) -> int:
+        """Convert timeframe string to milliseconds"""
+        units = {'m': 60, 'h': 3600, 'd': 86400, 'w': 604800}
+        unit = timeframe[-1]
+        value = int(timeframe[:-1])
+        return value * units[unit] * 1000
+
+    @staticmethod
+    def _timeframe_to_timedelta(timeframe: str) -> timedelta:
+        """Convert timeframe string to timedelta"""
+        units = {'m': 'minutes', 'h': 'hours', 'd': 'days', 'w': 'weeks'}
+        unit = timeframe[-1]
+        value = int(timeframe[:-1])
+        return timedelta(**{units[unit]: value})
+
+    def get_available_pairs(self, quote: str = 'USDT', contract_type: str = 'future') -> List[str]:
+        """Get list of available trading pairs"""
+        markets = self.exchange.markets
+
+        pairs = [
+            symbol for symbol, market in markets.items()
+            if market.get('quote') == quote
+            and market.get('type') == contract_type
+            and market.get('active', False)
+        ]
+
+        return sorted(pairs)

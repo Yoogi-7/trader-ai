@@ -1,118 +1,122 @@
-import Head from 'next/head';
-import useSWR from 'swr';
-import { useEffect } from 'react';
-import { useRouter } from 'next/router';
-import { fetcher } from '../src/api';
-import { useAuth } from '../src/context/AuthContext';
-import { SignalsLive } from '../src/components/SignalsLive';
-import { HistoryTable } from '../src/components/HistoryTable';
-import { Simulator } from '../src/components/Simulator';
-import { RiskForm } from '../src/components/RiskForm';
-import { Leaderboard } from '../src/components/Leaderboard';
-import { RiskDashboard } from '../src/components/RiskDashboard';
-import { TradingJournal } from '../src/components/TradingJournal';
-import { FeatureHighlights } from '../src/components/FeatureHighlights';
-import { ArbitrageWidget } from '../src/components/ArbitrageWidget';
-import { StrategyAssistant } from '../src/components/StrategyAssistant';
+import { useState, useEffect } from 'react'
+import axios from 'axios'
+
+const API_URL = process.env.API_URL || 'http://localhost:8000'
+
+interface Signal {
+  signal_id: string
+  symbol: string
+  side: string
+  entry_price: number
+  tp1_price: number
+  tp2_price: number
+  tp3_price: number
+  sl_price: number
+  leverage: number
+  confidence: number
+  expected_net_profit_pct: number
+  risk_profile: string
+  timestamp: string
+}
 
 export default function Home() {
-  const router = useRouter();
-  const { user, loading } = useAuth();
-  const { data: history } = useSWR(() => (user ? '/signals/history?limit=100&offset=0' : null), fetcher, {
-    refreshInterval: 5000,
-  });
-
-  const viewParam = Array.isArray(router.query.view) ? router.query.view[0] : router.query.view;
-  const adminViewingUser = user?.role === 'ADMIN' && viewParam === 'user';
+  const [signals, setSignals] = useState<Signal[]>([])
+  const [riskProfile, setRiskProfile] = useState('MEDIUM')
+  const [capital, setCapital] = useState(100)
 
   useEffect(() => {
-    if (!loading) {
-      if (!user) {
-        router.replace('/login');
-      } else if (user.role === 'ADMIN' && !adminViewingUser) {
-        router.replace('/admin');
-      }
-    }
-  }, [user, loading, router, adminViewingUser]);
+    fetchSignals()
+  }, [riskProfile])
 
-  if (loading || !user || (user.role !== 'USER' && !adminViewingUser)) {
-    return (
-      <main className="min-h-screen flex items-center justify-center bg-slate-50">
-        <p className="text-slate-600">Ładowanie…</p>
-      </main>
-    );
+  const fetchSignals = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/v1/signals/live`, {
+        params: { risk_profile: riskProfile.toLowerCase() }
+      })
+      setSignals(response.data)
+    } catch (error) {
+      console.error('Error fetching signals:', error)
+    }
   }
 
   return (
-    <>
-      <Head>
-        <title>Trader AI — Panel użytkownika</title>
-      </Head>
-      <main className="min-h-screen bg-slate-50">
-        <div className="max-w-7xl mx-auto px-4 py-6">
-          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
-            <h1 className="text-2xl font-bold">Trader AI — Panel użytkownika</h1>
-            {adminViewingUser && (
-              <button
-                onClick={() => router.push('/admin')}
-                className="self-start md:self-auto px-3 py-2 rounded bg-slate-200 text-slate-700 hover:bg-slate-300"
+    <div className="min-h-screen bg-gray-900 text-white p-8">
+      <div className="max-w-7xl mx-auto">
+        <h1 className="text-4xl font-bold mb-8">TraderAI - Live Signals</h1>
+
+        {/* Controls */}
+        <div className="bg-gray-800 rounded-lg p-6 mb-8">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium mb-2">Risk Profile</label>
+              <select
+                value={riskProfile}
+                onChange={(e) => setRiskProfile(e.target.value)}
+                className="w-full bg-gray-700 rounded px-4 py-2"
               >
-                Wróć do panelu administratora
-              </button>
-            )}
-          </div>
-
-          <div className="mb-6">
-            <Leaderboard />
-          </div>
-
-          <div className="mb-6">
-            <FeatureHighlights />
-          </div>
-
-          <div className="mb-6">
-            <StrategyAssistant />
-          </div>
-
-          <section className="grid md:grid-cols-3 gap-4">
-            <div className="col-span-2">
-              <div className="bg-white rounded-2xl shadow p-4 mb-4">
-                <h2 className="font-semibold mb-2">Live sygnały</h2>
-                <SignalsLive />
-              </div>
-
-              <div className="bg-white rounded-2xl shadow p-4">
-                <h2 className="font-semibold mb-2">Historia sygnałów</h2>
-                <HistoryTable rows={history?.signals ?? []} />
-              </div>
+                <option value="LOW">Low Risk</option>
+                <option value="MEDIUM">Medium Risk</option>
+                <option value="HIGH">High Risk</option>
+              </select>
             </div>
-
-            <div className="col-span-1 space-y-4">
-              <div className="bg-white rounded-2xl shadow p-4">
-                <h2 className="font-semibold mb-3">Trading journal</h2>
-                <TradingJournal />
-              </div>
-              <div className="bg-white rounded-2xl shadow p-4">
-                <h2 className="font-semibold mb-3">Risk dashboard</h2>
-                <RiskDashboard />
-              </div>
-              <div className="bg-white rounded-2xl shadow p-4">
-                <h2 className="font-semibold mb-3">Arbitrage radar</h2>
-                <ArbitrageWidget />
-              </div>
-              <div className="bg-white rounded-2xl shadow p-4">
-                <h2 className="font-semibold mb-3">Ustawienia profilu</h2>
-                <RiskForm onSaved={() => {}} />
-              </div>
-
-              <div className="bg-white rounded-2xl shadow p-4">
-                <h2 className="font-semibold mb-3">Symulator (what-if)</h2>
-                <Simulator />
-              </div>
+            <div>
+              <label className="block text-sm font-medium mb-2">Capital (USD)</label>
+              <input
+                type="number"
+                value={capital}
+                onChange={(e) => setCapital(Number(e.target.value))}
+                className="w-full bg-gray-700 rounded px-4 py-2"
+              />
             </div>
-          </section>
+          </div>
         </div>
-      </main>
-    </>
-  );
+
+        {/* Signals Table */}
+        <div className="bg-gray-800 rounded-lg overflow-hidden">
+          <table className="w-full">
+            <thead className="bg-gray-700">
+              <tr>
+                <th className="px-4 py-3 text-left">Symbol</th>
+                <th className="px-4 py-3 text-left">Side</th>
+                <th className="px-4 py-3 text-left">Entry</th>
+                <th className="px-4 py-3 text-left">TP1/TP2/TP3</th>
+                <th className="px-4 py-3 text-left">SL</th>
+                <th className="px-4 py-3 text-left">Leverage</th>
+                <th className="px-4 py-3 text-left">Confidence</th>
+                <th className="px-4 py-3 text-left">Expected Profit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {signals.map((signal) => (
+                <tr key={signal.signal_id} className="border-t border-gray-700 hover:bg-gray-750">
+                  <td className="px-4 py-3 font-medium">{signal.symbol}</td>
+                  <td className="px-4 py-3">
+                    <span className={`px-2 py-1 rounded text-xs ${
+                      signal.side === 'LONG' ? 'bg-green-600' : 'bg-red-600'
+                    }`}>
+                      {signal.side}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3">${signal.entry_price.toFixed(2)}</td>
+                  <td className="px-4 py-3 text-sm">
+                    ${signal.tp1_price.toFixed(2)} / ${signal.tp2_price.toFixed(2)} / ${signal.tp3_price.toFixed(2)}
+                  </td>
+                  <td className="px-4 py-3 text-red-400">${signal.sl_price.toFixed(2)}</td>
+                  <td className="px-4 py-3">{signal.leverage.toFixed(1)}x</td>
+                  <td className="px-4 py-3">{(signal.confidence * 100).toFixed(1)}%</td>
+                  <td className="px-4 py-3 text-green-400">+{signal.expected_net_profit_pct.toFixed(2)}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          {signals.length === 0 && (
+            <div className="text-center py-12 text-gray-400">
+              No active signals for selected risk profile
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }

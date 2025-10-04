@@ -1,34 +1,39 @@
-# ====== Builder ======
-FROM python:3.12-slim AS builder
-ENV PIP_NO_CACHE_DIR=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gcc libpq-dev curl && rm -rf /var/lib/apt/lists/*
+FROM python:3.11-slim
+
 WORKDIR /app
-COPY infra/requirements-api.txt /app/requirements.txt
-RUN python -m pip install --upgrade pip && pip wheel --wheel-dir=/wheels -r /app/requirements.txt
 
-# ====== Runtime ======
-FROM python:3.12-slim
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    UVICORN_WORKERS=2
-RUN useradd -m -u 10001 appuser
-WORKDIR /app
-COPY --from=builder /wheels /wheels
-COPY infra/requirements-api.txt /app/requirements.txt
-RUN python -m pip install --no-index --find-links=/wheels -r /app/requirements.txt && rm -rf /wheels
+# Install system dependencies for TA-Lib
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy app
-COPY apps /app/apps
-COPY alembic.ini /app/alembic.ini
-COPY migrations /app/migrations
+# Install TA-Lib
+RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
+    tar -xzf ta-lib-0.4.0-src.tar.gz && \
+    cd ta-lib/ && \
+    ./configure --prefix=/usr && \
+    make && \
+    make install && \
+    cd .. && \
+    rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
-# Entry script
-COPY infra/entrypoints/api.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
+# Install Poetry
+RUN pip install poetry
 
-EXPOSE 8000
-USER appuser
-CMD ["/app/entrypoint.sh"]
+# Copy project files
+COPY pyproject.toml poetry.lock ./
+
+# Install Python dependencies
+RUN poetry config virtualenvs.create false && \
+    poetry install --no-interaction --no-ansi --no-root
+
+# Copy application code (ensure proper structure)
+COPY apps/ ./apps/
+COPY migrations/ ./migrations/
+COPY alembic.ini .
+COPY .env* ./
+
+ENV PYTHONPATH=/app
+
+CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

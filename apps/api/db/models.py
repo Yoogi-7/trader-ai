@@ -1,211 +1,444 @@
-# apps/api/db/models.py
-# PL: Kompletny zestaw modeli zgodny z wymaganiami + indeksy.
-# EN: Complete model set per spec + indexes.
-
-import os
-import time
+from datetime import datetime
+from enum import Enum as PyEnum
 from sqlalchemy import (
-    Column, String, Integer, Float, JSON, BigInteger, Boolean, ForeignKey, Index, UniqueConstraint
+    Boolean, Column, DateTime, Enum, Float, ForeignKey,
+    Integer, String, Text, UniqueConstraint, Index, JSON
 )
-from sqlalchemy.types import JSON as GenericJSON
-
-USE_GENERIC_JSON = os.getenv("DATABASE_URL", "").startswith("sqlite") or os.getenv("SQLITE_FALLBACK", "1") == "1"
-
-if USE_GENERIC_JSON:
-    JSONField = GenericJSON
-    def ArrayFloat():  # pragma: no cover - simple helper
-        return GenericJSON
-else:
-    from sqlalchemy.dialects.postgresql import JSONB, ARRAY
-
-    JSONField = JSONB
-
-    def ArrayFloat():
-        return ARRAY(Float)
-from sqlalchemy.orm import relationship, Mapped, mapped_column
+from sqlalchemy.orm import relationship
 from apps.api.db.base import Base
 
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
-# --------- Core market/time-series ---------
+class TimeFrame(str, PyEnum):
+    M1 = "1m"
+    M5 = "5m"
+    M15 = "15m"
+    H1 = "1h"
+    H4 = "4h"
+    D1 = "1d"
+
+
+class RiskProfile(str, PyEnum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class SignalStatus(str, PyEnum):
+    PENDING = "pending"
+    ACTIVE = "active"
+    TP1_HIT = "tp1_hit"
+    TP2_HIT = "tp2_hit"
+    TP3_HIT = "tp3_hit"
+    SL_HIT = "sl_hit"
+    TIME_STOP = "time_stop"
+    CANCELLED = "cancelled"
+
+
+class Side(str, PyEnum):
+    LONG = "long"
+    SHORT = "short"
+
+
+# ============================================================================
+# MARKET DATA
+# ============================================================================
 
 class OHLCV(Base):
     __tablename__ = "ohlcv"
-    # PK i klucz czasowy (epoch ms) – zoptymalizowane pod Timescale hypertable
-    symbol: Mapped[str] = mapped_column(String, primary_key=True)
-    tf: Mapped[str] = mapped_column(String, primary_key=True)  # '1m','15m','1h', etc.
-    ts: Mapped[int] = mapped_column(BigInteger, primary_key=True)  # epoch ms
-    o: Mapped[float] = mapped_column(Float, nullable=False)
-    h: Mapped[float] = mapped_column(Float, nullable=False)
-    l: Mapped[float] = mapped_column(Float, nullable=False)
-    c: Mapped[float] = mapped_column(Float, nullable=False)
-    v: Mapped[float] = mapped_column(Float, nullable=False)
-    source_hash: Mapped[str | None] = mapped_column(String, nullable=True)
-
     __table_args__ = (
-        Index("ix_ohlcv_ts", "ts"),
-        Index("ix_ohlcv_sym_tf_ts_desc", "symbol", "tf", "ts", postgresql_using="btree"),
+        UniqueConstraint("symbol", "timeframe", "timestamp", name="uq_ohlcv_symbol_tf_ts"),
+        Index("idx_ohlcv_symbol_tf_ts", "symbol", "timeframe", "timestamp"),
+        Index("idx_ohlcv_ts", "timestamp"),
     )
 
-class Feature(Base):
-    __tablename__ = "features"
-    symbol: Mapped[str] = mapped_column(String, primary_key=True)
-    tf: Mapped[str] = mapped_column(String, primary_key=True)
-    ts: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    version: Mapped[str] = mapped_column(String, primary_key=True, default="1")
-    f_vector: Mapped[dict] = mapped_column(JSONField, nullable=False)
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(Enum(TimeFrame), nullable=False)
+    timestamp = Column(DateTime, nullable=False)
+    open = Column(Float, nullable=False)
+    high = Column(Float, nullable=False)
+    low = Column(Float, nullable=False)
+    close = Column(Float, nullable=False)
+    volume = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
+
+class MarketMetrics(Base):
+    __tablename__ = "market_metrics"
     __table_args__ = (
-        Index("ix_features_ts", "ts"),
+        UniqueConstraint("symbol", "timestamp", name="uq_market_metrics_symbol_ts"),
+        Index("idx_market_metrics_symbol_ts", "symbol", "timestamp"),
     )
 
-class BackfillProgress(Base):
-    __tablename__ = "backfill_progress"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    symbol: Mapped[str] = mapped_column(String, nullable=False)
-    tf: Mapped[str] = mapped_column(String, nullable=False)
-    last_ts_completed: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    chunk_start_ts: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    chunk_end_ts: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    retry_count: Mapped[int] = mapped_column(Integer, default=0)
-    status: Mapped[str] = mapped_column(String, default="idle")  # idle/running/paused/error/done
-    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False)
+    funding_rate = Column(Float)
+    open_interest = Column(Float)
+    spread_bps = Column(Float)
+    depth_imbalance = Column(Float)
+    realized_volatility = Column(Float)
+    created_at = Column(DateTime, default=datetime.utcnow)
 
+
+# ============================================================================
+# FEATURES & LABELS
+# ============================================================================
+
+class FeatureSet(Base):
+    __tablename__ = "feature_sets"
     __table_args__ = (
-        UniqueConstraint("symbol", "tf", name="uq_backfill_symbol_tf"),
-        Index("ix_backfill_status", "status"),
+        UniqueConstraint("symbol", "timeframe", "timestamp", name="uq_features_symbol_tf_ts"),
+        Index("idx_features_symbol_tf_ts", "symbol", "timeframe", "timestamp"),
     )
 
-# --------- Signals / Execution / PnL ---------
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(Enum(TimeFrame), nullable=False)
+    timestamp = Column(DateTime, nullable=False)
+
+    # Technical indicators
+    ema_9 = Column(Float)
+    ema_21 = Column(Float)
+    ema_50 = Column(Float)
+    ema_200 = Column(Float)
+    rsi_14 = Column(Float)
+    stoch_k = Column(Float)
+    stoch_d = Column(Float)
+    macd = Column(Float)
+    macd_signal = Column(Float)
+    macd_hist = Column(Float)
+    atr_14 = Column(Float)
+    bb_upper = Column(Float)
+    bb_middle = Column(Float)
+    bb_lower = Column(Float)
+    bb_width = Column(Float)
+
+    # Ichimoku
+    tenkan_sen = Column(Float)
+    kijun_sen = Column(Float)
+    senkou_a = Column(Float)
+    senkou_b = Column(Float)
+    chikou_span = Column(Float)
+
+    # Fibonacci & Pivots
+    fib_618 = Column(Float)
+    fib_50 = Column(Float)
+    fib_382 = Column(Float)
+    pivot_point = Column(Float)
+    resistance_1 = Column(Float)
+    support_1 = Column(Float)
+
+    # Market microstructure
+    spread_bps = Column(Float)
+    depth_imbalance = Column(Float)
+    realized_vol = Column(Float)
+
+    # Regime
+    regime_trend = Column(String(20))  # uptrend, downtrend, sideways
+    regime_volatility = Column(String(20))  # low, medium, high
+
+    # Sentiment (plugin interface)
+    sentiment_score = Column(Float)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class Label(Base):
+    __tablename__ = "labels"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", "timestamp", name="uq_labels_symbol_tf_ts"),
+        Index("idx_labels_symbol_tf_ts", "symbol", "timeframe", "timestamp"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(Enum(TimeFrame), nullable=False)
+    timestamp = Column(DateTime, nullable=False)
+    side = Column(Enum(Side), nullable=False)
+
+    # Triple barrier
+    tp_barrier = Column(Float, nullable=False)
+    sl_barrier = Column(Float, nullable=False)
+    time_barrier = Column(Integer, nullable=False)  # bars
+
+    # Outcome
+    hit_barrier = Column(String(10))  # tp, sl, time
+    bars_to_hit = Column(Integer)
+    return_pct = Column(Float)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ============================================================================
+# MODELS & REGISTRY
+# ============================================================================
+
+class ModelRegistry(Base):
+    __tablename__ = "model_registry"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_id = Column(String(50), unique=True, nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(Enum(TimeFrame), nullable=False)
+    model_type = Column(String(50), nullable=False)  # lgbm, xgb, tft, ensemble
+    version = Column(String(20), nullable=False)
+
+    # Training metadata
+    train_start = Column(DateTime, nullable=False)
+    train_end = Column(DateTime, nullable=False)
+    oos_start = Column(DateTime, nullable=False)
+    oos_end = Column(DateTime, nullable=False)
+
+    # Hyperparameters
+    hyperparameters = Column(JSON)
+
+    # Metrics (OOS)
+    accuracy = Column(Float)
+    precision = Column(Float)
+    recall = Column(Float)
+    f1_score = Column(Float)
+    roc_auc = Column(Float)
+    hit_rate_tp1 = Column(Float)  # Critical metric
+    avg_net_profit_pct = Column(Float)  # Critical metric
+    sharpe_ratio = Column(Float)
+    max_drawdown_pct = Column(Float)
+
+    # Artifacts
+    artifact_path = Column(String(255))
+    feature_importance = Column(JSON)
+
+    # Status
+    is_active = Column(Boolean, default=False)
+    is_production = Column(Boolean, default=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    deployed_at = Column(DateTime)
+
+
+class DriftMetrics(Base):
+    __tablename__ = "drift_metrics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    model_id = Column(String(50), ForeignKey("model_registry.model_id"), nullable=False, index=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+
+    psi_score = Column(Float)
+    ks_statistic = Column(Float)
+    feature_drift_scores = Column(JSON)
+    prediction_drift = Column(Float)
+
+    data_freshness_hours = Column(Float)
+    drift_detected = Column(Boolean, default=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    model = relationship("ModelRegistry")
+
+
+# ============================================================================
+# SIGNALS & TRADES
+# ============================================================================
 
 class Signal(Base):
     __tablename__ = "signals"
-    id: Mapped[str] = mapped_column(String, primary_key=True)  # UUID/KSUID
-    symbol: Mapped[str] = mapped_column(String, nullable=False)
-    tf_base: Mapped[str] = mapped_column(String, nullable=False)  # np. '15m'
-    ts: Mapped[int] = mapped_column(BigInteger, nullable=False)  # event time
-    dir: Mapped[str] = mapped_column(String, nullable=False)  # 'LONG'/'SHORT'
-    entry: Mapped[float] = mapped_column(Float, nullable=False)
-    tp: Mapped[list[float] | None] = mapped_column(ArrayFloat(), nullable=True)  # [tp1,tp2,tp3]
-    sl: Mapped[float] = mapped_column(Float, nullable=False)
-    lev: Mapped[float] = mapped_column(Float, nullable=False)  # leverage used (planned)
-    risk: Mapped[str] = mapped_column(String, nullable=False)  # LOW/MED/HIGH
-    margin_mode: Mapped[str] = mapped_column(String, nullable=False, default="ISOLATED")
-    expected_net_pct: Mapped[float] = mapped_column(Float, nullable=False)  # musi być >= 0.02
-    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)  # 0..1
-    model_ver: Mapped[str] = mapped_column(String, nullable=True)
-    reason_discard: Mapped[str | None] = mapped_column(String, nullable=True)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="new")  # new/published/cancelled/expired
-    ai_summary: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    executions: Mapped[list["Execution"]] = relationship("Execution", back_populates="signal", cascade="all, delete-orphan")
-    pnl_rows: Mapped[list["PnL"]] = relationship("PnL", back_populates="signal", cascade="all, delete-orphan")
+    id = Column(Integer, primary_key=True, index=True)
+    signal_id = Column(String(50), unique=True, nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    side = Column(Enum(Side), nullable=False)
 
-    __table_args__ = (
-        Index("ix_signals_sym_tf_ts", "symbol", "tf_base", "ts"),
-        Index("ix_signals_status", "status"),
-    )
+    # Entry
+    entry_price = Column(Float, nullable=False)
+    timestamp = Column(DateTime, nullable=False, index=True)
 
-class Execution(Base):
-    __tablename__ = "executions"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    signal_id: Mapped[str] = mapped_column(String, ForeignKey("signals.id", ondelete="CASCADE"))
-    side: Mapped[str] = mapped_column(String, nullable=False)  # BUY/SELL
-    order_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    px: Mapped[float] = mapped_column(Float, nullable=False)
-    qty: Mapped[float] = mapped_column(Float, nullable=False)
-    fee: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    slippage: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)  # bps or absolute?
-    status: Mapped[str] = mapped_column(String, nullable=False, default="filled")
-    ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # Exits
+    tp1_price = Column(Float, nullable=False)
+    tp1_pct = Column(Float, default=30.0)
+    tp2_price = Column(Float, nullable=False)
+    tp2_pct = Column(Float, default=40.0)
+    tp3_price = Column(Float, nullable=False)
+    tp3_pct = Column(Float, default=30.0)
+    sl_price = Column(Float, nullable=False)
 
-    signal: Mapped[Signal] = relationship("Signal", back_populates="executions")
+    # Position sizing
+    leverage = Column(Float, nullable=False)
+    margin_mode = Column(String(10), default="ISOLATED")
+    position_size_usd = Column(Float, nullable=False)
+    quantity = Column(Float, nullable=False)
 
-    __table_args__ = (
-        Index("ix_exec_signal_ts", "signal_id", "ts"),
-    )
+    # Risk metrics
+    risk_reward_ratio = Column(Float)
+    estimated_liquidation = Column(Float)
+    max_loss_usd = Column(Float)
 
-class PnL(Base):
-    __tablename__ = "pnl"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    signal_id: Mapped[str] = mapped_column(String, ForeignKey("signals.id", ondelete="CASCADE"))
-    realized: Mapped[float | None] = mapped_column(Float, nullable=True)
-    unrealized: Mapped[float | None] = mapped_column(Float, nullable=True)
-    max_dd: Mapped[float | None] = mapped_column(Float, nullable=True)
-    rr: Mapped[float | None] = mapped_column(Float, nullable=True)
-    holding_time: Mapped[int | None] = mapped_column(Integer, nullable=True)  # seconds
-    funding_paid: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # ML metadata
+    model_id = Column(String(50), ForeignKey("model_registry.model_id"))
+    confidence = Column(Float)
 
-    signal: Mapped[Signal] = relationship("Signal", back_populates="pnl_rows")
+    # Expected profit
+    expected_net_profit_pct = Column(Float, nullable=False)
+    expected_net_profit_usd = Column(Float, nullable=False)
 
-    __table_args__ = (
-        Index("ix_pnl_signal", "signal_id"),
-    )
+    # Validity
+    valid_until = Column(DateTime, nullable=False)
 
-# --------- Training / Backtests / Users ---------
+    # Status
+    status = Column(Enum(SignalStatus), default=SignalStatus.PENDING, index=True)
 
-class TrainingRun(Base):
-    __tablename__ = "training_runs"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    started_at: Mapped[int] = mapped_column(BigInteger, nullable=False)   # epoch ms
-    finished_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="running")
-    params_json: Mapped[dict | None] = mapped_column(JSONField, nullable=True)
-    metrics_json: Mapped[dict | None] = mapped_column(JSONField, nullable=True)
+    # Filters
+    passed_spread_check = Column(Boolean, default=True)
+    passed_liquidity_check = Column(Boolean, default=True)
+    passed_profit_filter = Column(Boolean, default=True)
+    passed_correlation_check = Column(Boolean, default=True)
+    rejection_reason = Column(Text)
 
-    __table_args__ = (
-        Index("ix_train_status_start", "status", "started_at"),
-    )
+    # Risk profile
+    risk_profile = Column(Enum(RiskProfile), nullable=False, index=True)
 
-class Backtest(Base):
-    __tablename__ = "backtests"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    params_json: Mapped[dict | None] = mapped_column(JSONField, nullable=True)
-    started_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    finished_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    summary_json: Mapped[dict | None] = mapped_column(JSONField, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    published_at = Column(DateTime)
 
-    trades: Mapped[list["BacktestTrade"]] = relationship("BacktestTrade", back_populates="backtest", cascade="all, delete-orphan")
+    model = relationship("ModelRegistry")
+    trade_results = relationship("TradeResult", back_populates="signal")
 
-    __table_args__ = (
-        Index("ix_backtests_start", "started_at"),
-    )
 
-class BacktestTrade(Base):
-    __tablename__ = "backtest_trades"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    backtest_id: Mapped[int] = mapped_column(Integer, ForeignKey("backtests.id", ondelete="CASCADE"))
-    symbol: Mapped[str] = mapped_column(String, nullable=False)
-    side: Mapped[str] = mapped_column(String, nullable=False)
-    entry_ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    exit_ts: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    entry: Mapped[float] = mapped_column(Float, nullable=False)
-    exit: Mapped[float] = mapped_column(Float, nullable=False)
-    fee: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
-    pnl: Mapped[float] = mapped_column(Float, nullable=False)
+class TradeResult(Base):
+    __tablename__ = "trade_results"
 
-    backtest: Mapped[Backtest] = relationship("Backtest", back_populates="trades")
+    id = Column(Integer, primary_key=True, index=True)
+    signal_id = Column(String(50), ForeignKey("signals.signal_id"), nullable=False, index=True)
 
-    __table_args__ = (
-        Index("ix_bt_trades_bt", "backtest_id"),
-        Index("ix_bt_trades_sym", "symbol"),
-    )
+    # Execution
+    entry_filled_price = Column(Float)
+    entry_filled_at = Column(DateTime)
+    entry_fee_usd = Column(Float)
+    entry_slippage_bps = Column(Float)
+
+    # Exits
+    tp1_filled_price = Column(Float)
+    tp1_filled_at = Column(DateTime)
+    tp2_filled_price = Column(Float)
+    tp2_filled_at = Column(DateTime)
+    tp3_filled_price = Column(Float)
+    tp3_filled_at = Column(DateTime)
+    sl_filled_price = Column(Float)
+    sl_filled_at = Column(DateTime)
+
+    # PnL
+    gross_pnl_usd = Column(Float)
+    total_fees_usd = Column(Float)
+    funding_fees_usd = Column(Float)
+    net_pnl_usd = Column(Float)
+    net_pnl_pct = Column(Float)
+
+    # Duration
+    duration_minutes = Column(Integer)
+
+    # Trailing SL (if activated)
+    trailing_activated = Column(Boolean, default=False)
+    trailing_sl_price = Column(Float)
+
+    # Final status
+    final_status = Column(Enum(SignalStatus))
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    closed_at = Column(DateTime)
+
+    signal = relationship("Signal", back_populates="trade_results")
+
+
+# ============================================================================
+# BACKFILL & JOBS
+# ============================================================================
+
+class BackfillJob(Base):
+    __tablename__ = "backfill_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String(50), unique=True, nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(Enum(TimeFrame), nullable=False)
+
+    start_date = Column(DateTime, nullable=False)
+    end_date = Column(DateTime, nullable=False)
+
+    # Progress
+    last_completed_ts = Column(DateTime)
+    candles_fetched = Column(Integer, default=0)
+    total_candles_estimate = Column(Integer)
+    progress_pct = Column(Float, default=0.0)
+
+    # Performance
+    candles_per_minute = Column(Float)
+    eta_minutes = Column(Float)
+
+    # Gaps
+    detected_gaps = Column(JSON)  # [{start: ts, end: ts}, ...]
+
+    # Status
+    status = Column(String(20), default="pending", index=True)  # pending, running, paused, completed, failed
+    error_message = Column(Text)
+
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+# ============================================================================
+# USERS & AUTH
+# ============================================================================
 
 class User(Base):
     __tablename__ = "users"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    risk_profile: Mapped[str] = mapped_column(String, default="LOW")
-    capital: Mapped[float] = mapped_column(Float, default=100.0)
-    email: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    password_hash: Mapped[str] = mapped_column(String, nullable=False)
-    role: Mapped[str] = mapped_column(String, nullable=False, default="USER")
-    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False, default=_now_ms)
-    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False, default=_now_ms, onupdate=_now_ms)
-    prefs: Mapped[dict | None] = mapped_column(JSONField, nullable=True)
-    api_connected: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    __table_args__ = (
-        UniqueConstraint("email", name="uq_users_email"),
-        Index("ix_users_risk", "risk_profile"),
-    )
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(50), unique=True, nullable=False, index=True)
+    email = Column(String(100), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+
+    is_active = Column(Boolean, default=True)
+    is_admin = Column(Boolean, default=False)
+
+    # User preferences
+    default_risk_profile = Column(Enum(RiskProfile), default=RiskProfile.MEDIUM)
+    default_capital_usd = Column(Float, default=100.0)
+    preferred_pairs = Column(JSON)  # ["BTC/USDT", "ETH/USDT", ...]
+
+    # API keys (for webhook integration)
+    telegram_chat_id = Column(String(100))
+    discord_webhook_url = Column(String(255))
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login = Column(DateTime)
+
+
+# ============================================================================
+# SYSTEM CONFIG
+# ============================================================================
+
+class SystemConfig(Base):
+    __tablename__ = "system_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String(100), unique=True, nullable=False, index=True)
+    value = Column(JSON, nullable=False)
+    description = Column(Text)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class CircuitBreaker(Base):
+    __tablename__ = "circuit_breakers"
+
+    id = Column(Integer, primary_key=True, index=True)
+    breaker_type = Column(String(50), nullable=False, index=True)  # kill_switch, loss_streak, max_dd
+    is_triggered = Column(Boolean, default=False, index=True)
+
+    trigger_reason = Column(Text)
+    trigger_value = Column(Float)
+    threshold = Column(Float)
+
+    triggered_at = Column(DateTime)
+    resolved_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)

@@ -1,156 +1,222 @@
-# apps/ml/features.py
-# PL: Pipeline feature engineering + labeling + upsert do tabeli 'features' (JSONB) z wersjonowaniem.
-# EN: Feature pipeline + labeling + upsert into 'features' (JSONB) with versioning.
-
-from __future__ import annotations
-import os
-from typing import List, Dict, Optional
-
-import numpy as np
 import pandas as pd
-from sqlalchemy import select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import Session
+import numpy as np
+from typing import Optional
+import logging
 
-from apps.api.db.session import SessionLocal
-from apps.api.db import models
-from apps.ml.ta_utils import (
-    ema, rsi, stoch, macd, atr, bollinger, ichimoku,
-    pivot_points, fibonacci_levels, realized_vol, microstructure, adx_regime
-)
-from apps.ml.labeling import triple_barrier_labels
-from apps.ml.sentiment_plugin import load_provider
+logger = logging.getLogger(__name__)
 
-FEATURES_VERSION = os.getenv("FEATURES_VERSION", "1")
-LABEL_TP_PCT = float(os.getenv("LABEL_TP_PCT", "0.02"))
-LABEL_SL_PCT = float(os.getenv("LABEL_SL_PCT", "0.01"))
-LABEL_MAX_HORIZON = int(os.getenv("LABEL_MAX_HORIZON", "60"))
+try:
+    import talib
+    TALIB_AVAILABLE = True
+except ImportError:
+    TALIB_AVAILABLE = False
+    logger.warning("TA-Lib not available, using pandas-ta fallback")
 
-def _fetch_ohlcv(db: Session, symbol: str, tf: str, start_ts: Optional[int], end_ts: Optional[int]) -> pd.DataFrame:
-    q = select(models.OHLCV).where(
-        models.OHLCV.symbol == symbol,
-        models.OHLCV.tf == tf,
-    )
-    if start_ts is not None:
-        q = q.where(models.OHLCV.ts >= start_ts)
-    if end_ts is not None:
-        q = q.where(models.OHLCV.ts <= end_ts)
-    q = q.order_by(models.OHLCV.ts.asc())
-    rows = db.execute(q).scalars().all()
-    if not rows:
-        return pd.DataFrame(columns=["ts", "open", "high", "low", "close", "volume"]).astype({
-            "ts": "int64", "open": "float64", "high": "float64", "low": "float64", "close": "float64", "volume": "float64"
-        })
-    data = {
-        "ts": [r.ts for r in rows],
-        "open": [r.o for r in rows],
-        "high": [r.h for r in rows],
-        "low": [r.l for r in rows],
-        "close": [r.c for r in rows],
-        "volume": [r.v for r in rows],
-    }
-    df = pd.DataFrame(data)
-    return df
+import pandas_ta as ta
 
-def _build_feature_vector(df: pd.DataFrame, symbol: str, tf: str) -> pd.DataFrame:
-    # Basic technicals
-    ema(df, 9); ema(df, 20); ema(df, 50); ema(df, 200)
-    rsi(df, 14)
-    stoch(df, 14, 3)
-    macd(df, 12, 26, 9)
-    atr(df, 14)
-    bollinger(df, 20, 2.0)
-    ichimoku(df)
 
-    # Derived/micro/momentum/vol
-    realized_vol(df, 30)
-    microstructure(df)
-
-    # Regime detection uses rv computed above
-    adx_regime(df, 14)
-
-    # Fibonacci & pivots
-    fibonacci_levels(df, lookback=120)
-    pivot_points(df)
-
-    # Returns and normalized distances
-    df["ret_1"] = df["close"].pct_change()
-    df["ret_5"] = df["close"].pct_change(5)
-    df["dist_bb_up"] = (df["close"] - df["bb_up"]) / (df["bb_up"].abs() + 1e-12)
-    df["dist_bb_low"] = (df["close"] - df["bb_low"]) / (df["bb_low"].abs() + 1e-12)
-    df["atr_p"] = df["atr"] / (df["close"].abs() + 1e-12)
-
-    # Sentiment plugin
-    sent = load_provider()
-    # for performance, compute sparse (optional); here simple loop
-    df["sentiment"] = 0.0
-    for i in range(len(df)):
-        ts_ms = int(df["ts"].iat[i])
-        try:
-            df.at[i, "sentiment"] = float(sent.get_score(symbol, ts_ms))
-        except Exception:
-            df.at[i, "sentiment"] = 0.0
-
-    # Labels (triple-barrier) on same TF
-    lbl = triple_barrier_labels(df.copy(), tp_pct=LABEL_TP_PCT, sl_pct=LABEL_SL_PCT, max_horizon=LABEL_MAX_HORIZON)
-    df["label_y"] = lbl["label_y"]
-    df["label_tp_hit"] = lbl["label_tp_hit"]
-    df["label_sl_hit"] = lbl["label_sl_hit"]
-    df["label_tte"] = lbl["label_tte"]
-    df["meta_label"] = lbl["meta_label"]
-
-    return df
-
-def _df_to_records(df: pd.DataFrame) -> List[Dict]:
-    # Construct compact f_vector dict per row
-    cols_keep = [c for c in df.columns if c not in ("open", "high", "low", "close", "volume")]
-    recs: List[Dict] = []
-    for _, r in df.iterrows():
-        fvec = {k: (None if pd.isna(r[k]) else float(r[k]) if isinstance(r[k], (np.floating, float)) else (int(r[k]) if isinstance(r[k], (np.integer, int)) else r[k]))
-                for k in cols_keep if k != "ts"}
-        recs.append({
-            "ts": int(r["ts"]),
-            "f_vector": fvec
-        })
-    return recs
-
-def upsert_features(db: Session, symbol: str, tf: str, version: str | int, records: List[Dict]) -> int:
-    if not records:
-        return 0
-    values = [{"symbol": symbol, "tf": tf, "ts": r["ts"], "version": str(version), "f_vector": r["f_vector"]} for r in records]
-    stmt = pg_insert(models.Feature.__table__).values(values)
-    stmt = stmt.on_conflict_do_update(
-        index_elements=["symbol", "tf", "ts", "version"],
-        set_={"f_vector": stmt.excluded.f_vector}
-    )
-    db.execute(stmt)
-    return len(values)
-
-def compute_and_store_features(symbol: str, tf: str, start_ts: Optional[int] = None, end_ts: Optional[int] = None) -> int:
+class FeatureEngineering:
     """
-    PL: Liczy featury i etykiety na (symbol, tf, [start_ts..end_ts]) i upsertuje do DB w wersji FEATURES_VERSION.
-    EN: Computes features+labels for (symbol, tf, [start_ts..end_ts]) and upserts to DB with FEATURES_VERSION.
-    Returns number of upserted rows.
+    Comprehensive feature engineering for crypto futures trading.
+    Includes: TA indicators, Fibonacci, pivots, microstructure, regime detection.
     """
-    with SessionLocal() as db:
-        df = _fetch_ohlcv(db, symbol, tf, start_ts, end_ts)
-        if df.empty:
-            return 0
-        feat_df = _build_feature_vector(df, symbol, tf)
-        records = _df_to_records(feat_df)
-        n = upsert_features(db, symbol, tf, FEATURES_VERSION, records)
-        db.commit()
-        return n
 
-# CLI usage: python -m apps.ml.features BTC/USDT 15m 1700000000000 1710000000000
-if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 3:
-        print("Usage: python -m apps.ml.features SYMBOL TF [START_TS] [END_TS]")
-        sys.exit(1)
-    sym = sys.argv[1]
-    tf = sys.argv[2]
-    s_ts = int(sys.argv[3]) if len(sys.argv) > 3 else None
-    e_ts = int(sys.argv[4]) if len(sys.argv) > 4 else None
-    rows = compute_and_store_features(sym, tf, s_ts, e_ts)
-    print(f"[features] upserted rows: {rows} for {sym} {tf} v{FEATURES_VERSION}")
+    def __init__(self):
+        self.feature_columns = []
+
+    def compute_all_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Compute all features for a given OHLCV DataFrame.
+
+        Args:
+            df: DataFrame with columns [timestamp, open, high, low, close, volume]
+
+        Returns:
+            DataFrame with all computed features
+        """
+        df = df.copy()
+
+        # Technical indicators
+        df = self._add_emas(df)
+        df = self._add_rsi(df)
+        df = self._add_stochastic(df)
+        df = self._add_macd(df)
+        df = self._add_atr(df)
+        df = self._add_bollinger_bands(df)
+        df = self._add_ichimoku(df)
+
+        # Fibonacci & Pivots
+        df = self._add_fibonacci(df)
+        df = self._add_pivot_points(df)
+
+        # Market regime
+        df = self._add_regime_detection(df)
+
+        # Microstructure (requires market_metrics join in production)
+        # Placeholder columns for now
+        df['spread_bps'] = 0.0
+        df['depth_imbalance'] = 0.0
+        df['realized_vol'] = df['close'].pct_change().rolling(20).std() * np.sqrt(365 * 24)
+
+        # Sentiment (plugin interface - placeholder)
+        df['sentiment_score'] = 0.0
+
+        return df
+
+    def _add_emas(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add Exponential Moving Averages"""
+        for period in [9, 21, 50, 200]:
+            if TALIB_AVAILABLE:
+                df[f'ema_{period}'] = talib.EMA(df['close'], timeperiod=period)
+            else:
+                df[f'ema_{period}'] = ta.ema(df['close'], length=period)
+        return df
+
+    def _add_rsi(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add RSI (Relative Strength Index)"""
+        if TALIB_AVAILABLE:
+            df['rsi_14'] = talib.RSI(df['close'], timeperiod=14)
+        else:
+            df['rsi_14'] = ta.rsi(df['close'], length=14)
+        return df
+
+    def _add_stochastic(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add Stochastic Oscillator"""
+        if TALIB_AVAILABLE:
+            df['stoch_k'], df['stoch_d'] = talib.STOCH(
+                df['high'], df['low'], df['close'],
+                fastk_period=14, slowk_period=3, slowd_period=3
+            )
+        else:
+            stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3)
+            if stoch is not None and not stoch.empty:
+                df['stoch_k'] = stoch[f'STOCHk_14_3_3']
+                df['stoch_d'] = stoch[f'STOCHd_14_3_3']
+            else:
+                df['stoch_k'] = np.nan
+                df['stoch_d'] = np.nan
+        return df
+
+    def _add_macd(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add MACD (Moving Average Convergence Divergence)"""
+        if TALIB_AVAILABLE:
+            df['macd'], df['macd_signal'], df['macd_hist'] = talib.MACD(
+                df['close'], fastperiod=12, slowperiod=26, signalperiod=9
+            )
+        else:
+            macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
+            if macd is not None and not macd.empty:
+                df['macd'] = macd['MACD_12_26_9']
+                df['macd_signal'] = macd['MACDs_12_26_9']
+                df['macd_hist'] = macd['MACDh_12_26_9']
+            else:
+                df['macd'] = np.nan
+                df['macd_signal'] = np.nan
+                df['macd_hist'] = np.nan
+        return df
+
+    def _add_atr(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add ATR (Average True Range)"""
+        if TALIB_AVAILABLE:
+            df['atr_14'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
+        else:
+            df['atr_14'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+        return df
+
+    def _add_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add Bollinger Bands"""
+        if TALIB_AVAILABLE:
+            df['bb_upper'], df['bb_middle'], df['bb_lower'] = talib.BBANDS(
+                df['close'], timeperiod=20, nbdevup=2, nbdevdn=2
+            )
+        else:
+            bbands = ta.bbands(df['close'], length=20, std=2)
+            if bbands is not None and not bbands.empty:
+                df['bb_lower'] = bbands['BBL_20_2.0']
+                df['bb_middle'] = bbands['BBM_20_2.0']
+                df['bb_upper'] = bbands['BBU_20_2.0']
+            else:
+                df['bb_lower'] = np.nan
+                df['bb_middle'] = np.nan
+                df['bb_upper'] = np.nan
+
+        df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
+        return df
+
+    def _add_ichimoku(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add Ichimoku Cloud indicators"""
+        ichimoku = ta.ichimoku(df['high'], df['low'], df['close'])
+
+        if ichimoku is not None and len(ichimoku) == 2:
+            ich_df, ich_span = ichimoku
+            df['tenkan_sen'] = ich_df['ITS_9']
+            df['kijun_sen'] = ich_df['IKS_26']
+            df['senkou_a'] = ich_span['ISA_9']
+            df['senkou_b'] = ich_span['ISB_26']
+            df['chikou_span'] = ich_df['ICS_26']
+        else:
+            df['tenkan_sen'] = np.nan
+            df['kijun_sen'] = np.nan
+            df['senkou_a'] = np.nan
+            df['senkou_b'] = np.nan
+            df['chikou_span'] = np.nan
+
+        return df
+
+    def _add_fibonacci(self, df: pd.DataFrame, lookback: int = 100) -> pd.DataFrame:
+        """
+        Add Fibonacci retracement levels based on recent high/low.
+        """
+        rolling_high = df['high'].rolling(lookback).max()
+        rolling_low = df['low'].rolling(lookback).min()
+        diff = rolling_high - rolling_low
+
+        df['fib_618'] = rolling_high - diff * 0.618
+        df['fib_50'] = rolling_high - diff * 0.5
+        df['fib_382'] = rolling_high - diff * 0.382
+
+        return df
+
+    def _add_pivot_points(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add Pivot Points (classic formula).
+        """
+        # Use previous day's high, low, close for pivot calculation
+        df['pivot_point'] = (df['high'].shift(1) + df['low'].shift(1) + df['close'].shift(1)) / 3
+        df['resistance_1'] = 2 * df['pivot_point'] - df['low'].shift(1)
+        df['support_1'] = 2 * df['pivot_point'] - df['high'].shift(1)
+
+        return df
+
+    def _add_regime_detection(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Detect market regime: trend (uptrend/downtrend/sideways) and volatility (low/med/high).
+        """
+        # Trend detection using EMA crossovers
+        if 'ema_21' in df.columns and 'ema_50' in df.columns:
+            ema_diff = df['ema_21'] - df['ema_50']
+            df['regime_trend'] = np.where(
+                ema_diff > 0, 'uptrend',
+                np.where(ema_diff < 0, 'downtrend', 'sideways')
+            )
+        else:
+            df['regime_trend'] = 'sideways'
+
+        # Volatility regime using ATR percentile
+        if 'atr_14' in df.columns and df['close'].notna().any():
+            atr_pct = df['atr_14'] / df['close']
+            atr_percentile = atr_pct.rolling(100).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 0 else 0.5)
+
+            df['regime_volatility'] = np.where(
+                atr_percentile > 0.66, 'high',
+                np.where(atr_percentile > 0.33, 'medium', 'low')
+            )
+        else:
+            df['regime_volatility'] = 'medium'
+
+        return df
+
+    def get_feature_columns(self, df: pd.DataFrame) -> list:
+        """Return list of feature column names"""
+        exclude = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'symbol', 'timeframe']
+        return [col for col in df.columns if col not in exclude]

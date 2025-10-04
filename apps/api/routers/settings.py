@@ -1,17 +1,25 @@
-# apps/api/routes/settings.py
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from apps.api.deps import db_dep
-from apps.api import schemas, crud
+from fastapi import APIRouter
+from pydantic import BaseModel
+from apps.api.config import settings
 
-router = APIRouter(prefix="/settings", tags=["settings"])
+router = APIRouter()
 
-@router.post("/profile", response_model=schemas.OkResp)
-def set_profile(req: schemas.UserSettingsReq, db: Session = Depends(db_dep)):
-    ok = crud.user_upsert_settings(db, req.user_id, req.risk_profile, req.capital, req.prefs)
-    return schemas.OkResp(ok=ok)
 
-@router.post("/capital", response_model=schemas.OkResp)
-def set_capital(req: schemas.UserCapitalReq, db: Session = Depends(db_dep)):
-    ok = crud.user_set_capital(db, req.user_id, req.capital)
-    return schemas.OkResp(ok=ok)
+class SystemSettings(BaseModel):
+    min_confidence_threshold: float
+    min_net_profit_pct: float
+    maker_fee_bps: float
+    taker_fee_bps: float
+    slippage_bps: float
+
+
+@router.get("/", response_model=SystemSettings)
+async def get_settings():
+    """Get system settings"""
+    return SystemSettings(
+        min_confidence_threshold=settings.MIN_CONFIDENCE_THRESHOLD,
+        min_net_profit_pct=settings.MIN_NET_PROFIT_PCT,
+        maker_fee_bps=settings.MAKER_FEE_BPS,
+        taker_fee_bps=settings.TAKER_FEE_BPS,
+        slippage_bps=settings.SLIPPAGE_BPS
+    )

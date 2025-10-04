@@ -1,38 +1,33 @@
+.PHONY: help build up down logs test migrate shell
 
-.PHONY: up down logs seed backfill train backtest api web tests lint fmt
+help:
+	@echo "TraderAI - Makefile Commands"
+	@echo ""
+	@echo "  make build    - Build Docker images"
+	@echo "  make up       - Start all services"
+	@echo "  make down     - Stop all services"
+	@echo "  make logs     - View logs (all services)"
+	@echo "  make test     - Run test suite"
+	@echo "  make migrate  - Run database migrations"
+	@echo "  make shell    - Open API container shell"
+
+build:
+	docker-compose build
 
 up:
-	docker compose up -d --build
+	docker-compose up -d
 
 down:
-	docker compose down -v
+	docker-compose down
 
 logs:
-	docker compose logs -f --tail=200
+	docker-compose logs -f
 
-seed:
-	docker compose exec api python -m apps.api.seed
+test:
+	docker-compose exec api pytest tests/ -v
 
-backfill:
-	docker compose exec worker python -m apps.ml.jobs.backfill
+migrate:
+	docker-compose exec api alembic upgrade head
 
-train:
-	docker compose exec worker python -m apps.ml.jobs.train
-
-backtest:
-	docker compose exec worker python -m apps.ml.jobs.backtest
-
-api:
-	docker compose exec api bash
-
-web:
-	docker compose exec web sh
-
-tests:
-	docker compose exec api pytest -q
-
-lint:
-	docker compose exec api ruff check .
-
-fmt:
-	docker compose exec api ruff format .
+shell:
+	docker-compose exec api /bin/bash

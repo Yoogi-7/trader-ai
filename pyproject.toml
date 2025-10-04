@@ -1,46 +1,54 @@
-
 [tool.poetry]
-name = "trader-ai"
-version = "0.1.0"
-description = "Trader AI monorepo"
-authors = ["You <you@example.com>"]
-readme = "README.md"
-packages = [{include = "apps"}]
+name = "traderai"
+version = "1.0.0"
+description = "AI-powered crypto futures trading signal system"
+authors = ["TraderAI Team"]
 
 [tool.poetry.dependencies]
-python = "^3.12"
-fastapi = "^0.111.0"
-uvicorn = {extras = ["standard"], version="^0.30.0"}
-sqlalchemy = "^2.0.32"
+python = ">=3.10,<3.13"
+fastapi = "^0.109.0"
+uvicorn = {extras = ["standard"], version = "^0.27.0"}
+sqlalchemy = "^2.0.25"
 psycopg2-binary = "^2.9.9"
-alembic = "^1.13.2"
-pydantic = "^2.8.2"
-pandas = "^2.2.2"
-numpy = "^2.0.1"
-ccxt = "^4.3.98"
-python-dotenv = "^1.0.1"
-redis = "^5.0.7"
-passlib = "^1.7.4"
-bcrypt = "==4.0.1"
-pyjwt = "^2.9.0"
-celery = "^5.4.0"
-scikit-learn = "^1.5.2"
-lightgbm = "^4.5.0"
-xgboost = "^2.1.1"
-optuna = "^3.6.1"
-statsmodels = "^0.14.2"
+alembic = "^1.13.1"
+pydantic = "^2.5.3"
+pydantic-settings = "^2.1.0"
+redis = "^5.0.1"
+celery = {extras = ["redis"], version = "^5.3.6"}
+ccxt = "^4.2.25"
+pandas = "^2.1.4"
+numpy = "^1.26.3"
+scikit-learn = "^1.4.0"
+lightgbm = "^4.3.0"
+xgboost = "^2.0.3"
+torch = "^2.1.2"
+optuna = "^3.5.0"
+scipy = "^1.12.0"
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+python-multipart = "^0.0.6"
 websockets = "^12.0"
-tenacity = "^9.0.0"
-orjson = "^3.10.7"
-requests = "^2.32.3"
-typer = "^0.12.3"
-loguru = "^0.7.2"
-pytest = "^8.3.2"
-pytest-asyncio = "^0.24.0"
-ruff = "^0.6.3"
+aiohttp = "^3.9.1"
+asyncpg = "^0.29.0"
+httpx = "^0.26.0"
+python-dotenv = "^1.0.0"
 
 [tool.poetry.group.dev.dependencies]
-mypy = "^1.11.1"
+pytest = "^7.4.4"
+pytest-asyncio = "^0.23.3"
+pytest-cov = "^4.1.0"
+black = "^23.12.1"
+ruff = "^0.1.11"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
 
 [tool.ruff]
 line-length = 100
+select = ["E", "F", "I"]
+ignore = ["E501"]
