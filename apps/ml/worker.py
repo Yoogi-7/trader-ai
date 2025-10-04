@@ -1,8 +1,10 @@
 from celery import Celery
 from apps.api.config import settings
 from apps.api.db.session import SessionLocal
+from apps.api.db.models import OHLCV
 from apps.ml.backfill import BackfillService
 from apps.ml.training import train_model_pipeline
+from sqlalchemy import and_
 import logging
 
 logger = logging.getLogger(__name__)
@@ -64,6 +66,58 @@ def generate_signals_task():
     return {"status": "completed", "signals_generated": 0}
 
 
+@celery_app.task(name="backfill.update_latest")
+def update_latest_candles_task():
+    """Update latest candles for all active symbols (runs every 15 minutes)"""
+    db = SessionLocal()
+    try:
+        from apps.ml.backfill import BackfillService
+        from apps.api.db.models import TimeFrame
+        from datetime import datetime, timedelta
+
+        service = BackfillService(db)
+
+        # Get latest timestamp from database for BTC/USDT 15m
+        latest_candle = db.query(OHLCV).filter(
+            and_(
+                OHLCV.symbol == 'BTC/USDT',
+                OHLCV.timeframe == TimeFrame.M15
+            )
+        ).order_by(OHLCV.timestamp.desc()).first()
+
+        if latest_candle:
+            # Fetch candles from latest timestamp to now
+            start_date = latest_candle.timestamp
+            end_date = datetime.utcnow()
+
+            logger.info(f"Updating candles from {start_date} to {end_date}")
+
+            df = service.client.fetch_ohlcv_range(
+                symbol='BTC/USDT',
+                timeframe='15m',
+                start_date=start_date,
+                end_date=end_date,
+                limit=100
+            )
+
+            if not df.empty:
+                service._upsert_ohlcv('BTC/USDT', TimeFrame.M15, df)
+                logger.info(f"Updated {len(df)} latest candles for BTC/USDT 15m")
+                return {"status": "completed", "candles_updated": len(df)}
+            else:
+                logger.info("No new candles to update")
+                return {"status": "completed", "candles_updated": 0}
+        else:
+            logger.warning("No existing candles found, skipping update")
+            return {"status": "completed", "candles_updated": 0}
+
+    except Exception as e:
+        logger.error(f"Update latest candles task failed: {e}")
+        return {"status": "failed", "error": str(e)}
+    finally:
+        db.close()
+
+
 @celery_app.task(name="drift.monitor")
 def monitor_drift_task():
     """Monitor model drift (runs daily)"""
@@ -117,6 +171,10 @@ def generate_historical_signals_task(symbol: str, start_date: str, end_date: str
 
 # Celery beat schedule (for periodic tasks)
 celery_app.conf.beat_schedule = {
+    'update-latest-candles-every-15-minutes': {
+        'task': 'backfill.update_latest',
+        'schedule': 900.0,  # 15 minutes
+    },
     'generate-signals-every-5-minutes': {
         'task': 'signals.generate',
         'schedule': 300.0,  # 5 minutes

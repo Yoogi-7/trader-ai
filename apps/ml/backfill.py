@@ -159,36 +159,47 @@ class BackfillService:
             raise
 
     def _upsert_ohlcv(self, symbol: str, timeframe: TimeFrame, df):
-        """Upsert OHLCV data (insert or update on conflict)"""
+        """Upsert OHLCV data (insert or update on conflict) using bulk operations"""
+        from sqlalchemy.dialects.postgresql import insert
+
+        # Prepare data for bulk insert
+        records = []
         for _, row in df.iterrows():
-            existing = self.db.query(OHLCV).filter(
-                and_(
-                    OHLCV.symbol == symbol,
-                    OHLCV.timeframe == timeframe,
-                    OHLCV.timestamp == row['timestamp']
-                )
-            ).first()
+            records.append({
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'timestamp': row['timestamp'],
+                'open': float(row['open']),
+                'high': float(row['high']),
+                'low': float(row['low']),
+                'close': float(row['close']),
+                'volume': float(row['volume']),
+                'created_at': datetime.utcnow()
+            })
 
-            if existing:
-                existing.open = row['open']
-                existing.high = row['high']
-                existing.low = row['low']
-                existing.close = row['close']
-                existing.volume = row['volume']
-            else:
-                ohlcv = OHLCV(
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    timestamp=row['timestamp'],
-                    open=row['open'],
-                    high=row['high'],
-                    low=row['low'],
-                    close=row['close'],
-                    volume=row['volume']
-                )
-                self.db.add(ohlcv)
+        if not records:
+            return
 
-        self.db.commit()
+        # Use PostgreSQL's INSERT ... ON CONFLICT DO UPDATE
+        stmt = insert(OHLCV).values(records)
+        stmt = stmt.on_conflict_do_update(
+            constraint='uq_ohlcv_symbol_tf_ts',
+            set_={
+                'open': stmt.excluded.open,
+                'high': stmt.excluded.high,
+                'low': stmt.excluded.low,
+                'close': stmt.excluded.close,
+                'volume': stmt.excluded.volume
+            }
+        )
+
+        try:
+            self.db.execute(stmt)
+            self.db.commit()
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Error upserting OHLCV data: {e}")
+            raise
 
     def _detect_gaps(self, job: BackfillJob):
         """Detect gaps in stored OHLCV data"""
