@@ -9,27 +9,34 @@ logger = logging.getLogger(__name__)
 
 class WalkForwardValidator:
     """
-    Walk-forward optimization with purge and embargo to prevent data leakage.
+    Walk-forward optimization with expanding windows and purge/embargo to prevent data leakage.
+
+    Uses expanding windows: each split trains on ALL historical data up to that point,
+    rather than a fixed-size sliding window.
     """
 
     def __init__(
         self,
-        train_period_days: int = 180,
         test_period_days: int = 30,
+        min_train_days: int = 180,
         purge_days: int = 2,
-        embargo_days: int = 1
+        embargo_days: int = 1,
+        use_expanding_window: bool = True
     ):
         """
         Args:
-            train_period_days: Training window size
             test_period_days: Testing (OOS) window size
+            min_train_days: Minimum training data required for first split
             purge_days: Days to purge after train set (prevent leakage from overlapping labels)
             embargo_days: Days to embargo at start of test set (prevent lookahead bias)
+            use_expanding_window: If True, use expanding windows (train on all history).
+                                 If False, use sliding windows (fixed train size)
         """
-        self.train_period = timedelta(days=train_period_days)
         self.test_period = timedelta(days=test_period_days)
+        self.min_train_period = timedelta(days=min_train_days)
         self.purge = timedelta(days=purge_days)
         self.embargo = timedelta(days=embargo_days)
+        self.use_expanding_window = use_expanding_window
 
     def generate_splits(
         self,
@@ -38,50 +45,78 @@ class WalkForwardValidator:
         end_date: datetime
     ) -> List[Dict]:
         """
-        Generate walk-forward train/test splits.
+        Generate walk-forward train/test splits with expanding or sliding windows.
 
         Args:
             df: DataFrame with 'timestamp' column
-            start_date: Start date for walk-forward
-            end_date: End date for walk-forward
+            start_date: Start date for walk-forward (earliest available data)
+            end_date: End date for walk-forward (latest available data)
 
         Returns:
             List of splits: [{'train': (start, end), 'test': (start, end)}, ...]
         """
         splits = []
-        current_train_start = start_date
 
-        while current_train_start + self.train_period + self.test_period <= end_date:
-            # Train period
-            train_start = current_train_start
-            train_end = train_start + self.train_period
+        # First split: train from start_date to (start + min_train_period)
+        # Then test on next test_period
+        current_test_start = start_date + self.min_train_period + self.purge + self.embargo
+
+        while current_test_start + self.test_period <= end_date:
+            if self.use_expanding_window:
+                # EXPANDING WINDOW: Train on ALL data from start to current point
+                train_start = start_date
+                train_end = current_test_start - self.purge - self.embargo
+            else:
+                # SLIDING WINDOW: Fixed-size training window
+                train_end = current_test_start - self.purge - self.embargo
+                train_start = max(start_date, train_end - self.min_train_period)
 
             # Purge period (excluded)
-            purge_end = train_end + self.purge
+            purge_start = train_end
+            purge_end = purge_start + self.purge
 
-            # Test period (with embargo at start)
-            test_start = purge_end + self.embargo
+            # Embargo period (excluded)
+            embargo_start = purge_end
+            embargo_end = embargo_start + self.embargo
+
+            # Test period
+            test_start = embargo_end
             test_end = test_start + self.test_period
 
             if test_end > end_date:
                 break
 
+            # Verify we have minimum training data
+            train_days = (train_end - train_start).days
+            if train_days < self.min_train_period.days:
+                logger.warning(
+                    f"Insufficient training data: {train_days} days < {self.min_train_period.days} days required"
+                )
+                current_test_start += self.test_period
+                continue
+
             splits.append({
                 'train': (train_start, train_end),
                 'test': (test_start, test_end),
-                'purge': (train_end, purge_end),
-                'embargo': (purge_end, test_start)
+                'purge': (purge_start, purge_end),
+                'embargo': (embargo_start, embargo_end),
+                'train_days': train_days
             })
 
+            window_type = "expanding" if self.use_expanding_window else "sliding"
             logger.debug(
-                f"Split created - Train: {train_start.date()} to {train_end.date()}, "
+                f"Split created ({window_type}) - "
+                f"Train: {train_start.date()} to {train_end.date()} ({train_days} days), "
                 f"Test: {test_start.date()} to {test_end.date()}"
             )
 
-            # Slide window forward by test period
-            current_train_start = test_start
+            # Move forward by test period
+            current_test_start += self.test_period
 
-        logger.info(f"Generated {len(splits)} walk-forward splits")
+        logger.info(
+            f"Generated {len(splits)} walk-forward splits "
+            f"({'expanding' if self.use_expanding_window else 'sliding'} windows)"
+        )
         return splits
 
     def get_train_test_data(

@@ -389,6 +389,47 @@ class BackfillJob(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class TrainingJob(Base):
+    __tablename__ = "training_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String(50), unique=True, nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(Enum(TimeFrame), nullable=False)
+
+    # Training parameters
+    test_period_days = Column(Integer, default=30)
+    min_train_days = Column(Integer, default=180)
+    use_expanding_window = Column(Boolean, default=True)
+
+    # Progress
+    current_fold = Column(Integer)
+    total_folds = Column(Integer)
+    progress_pct = Column(Float, default=0.0)
+
+    # Metrics
+    accuracy = Column(Float)
+    hit_rate_tp1 = Column(Float)
+    avg_roc_auc = Column(Float)
+
+    # Model
+    model_id = Column(String(50), ForeignKey("model_registry.model_id"), index=True)
+    version = Column(String(20))
+
+    # Status
+    status = Column(String(20), default="pending", index=True)  # pending, training, completed, failed
+    error_message = Column(Text)
+
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    elapsed_seconds = Column(Float)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    model = relationship("ModelRegistry")
+
+
 # ============================================================================
 # USERS & AUTH
 # ============================================================================

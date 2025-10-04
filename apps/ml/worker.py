@@ -9,6 +9,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Import celery signals to register them
+import apps.ml.celery_signals  # noqa: F401
+
 celery_app = Celery(
     "traderai",
     broker=str(settings.CELERY_BROKER_URL),
@@ -39,21 +42,43 @@ def execute_backfill_task(job_id: str):
         db.close()
 
 
-@celery_app.task(name="training.train_model")
-def train_model_task(symbol: str, timeframe: str, lookback_days: int = 1460):
-    """Train ML model"""
+@celery_app.task(name="training.train_model", bind=True)
+def train_model_task(
+    self,
+    symbol: str,
+    timeframe: str,
+    test_period_days: int = 30,
+    min_train_days: int = 180,
+    use_expanding_window: bool = True
+):
+    """Train ML model with walk-forward validation using expanding windows"""
     db = SessionLocal()
     try:
-        model_id = train_model_pipeline(
+        logger.info(
+            f"Starting training task: {symbol} {timeframe}, "
+            f"test_period={test_period_days}, min_train={min_train_days}, "
+            f"expanding={use_expanding_window}"
+        )
+
+        results = train_model_pipeline(
             db=db,
             symbol=symbol,
             timeframe=timeframe,
-            lookback_days=lookback_days
+            test_period_days=test_period_days,
+            min_train_days=min_train_days,
+            use_expanding_window=use_expanding_window
         )
-        return {"status": "completed", "model_id": model_id}
+
+        return {
+            "status": "completed",
+            "model_id": results['model_id'],
+            "version": results.get('registry_version'),
+            "avg_metrics": results.get('avg_metrics', {})
+        }
     except Exception as e:
-        logger.error(f"Training task failed: {e}")
-        return {"status": "failed", "error": str(e)}
+        logger.error(f"Training task failed: {e}", exc_info=True)
+        # Re-raise exception so Celery marks task as FAILURE
+        raise
     finally:
         db.close()
 

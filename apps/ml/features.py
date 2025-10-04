@@ -12,6 +12,13 @@ except ImportError:
     TALIB_AVAILABLE = False
     logger.warning("TA-Lib not available, will use basic pandas calculations")
 
+try:
+    import pandas_ta as ta
+    PANDAS_TA_AVAILABLE = True
+except ImportError:
+    PANDAS_TA_AVAILABLE = False
+    logger.warning("pandas_ta not available, some indicators will be unavailable")
+
 
 class FeatureEngineering:
     """
@@ -66,16 +73,25 @@ class FeatureEngineering:
         for period in [9, 21, 50, 200]:
             if TALIB_AVAILABLE:
                 df[f'ema_{period}'] = talib.EMA(df['close'], timeperiod=period)
-            else:
+            elif PANDAS_TA_AVAILABLE:
                 df[f'ema_{period}'] = ta.ema(df['close'], length=period)
+            else:
+                df[f'ema_{period}'] = df['close'].ewm(span=period, adjust=False).mean()
         return df
 
     def _add_rsi(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add RSI (Relative Strength Index)"""
         if TALIB_AVAILABLE:
             df['rsi_14'] = talib.RSI(df['close'], timeperiod=14)
-        else:
+        elif PANDAS_TA_AVAILABLE:
             df['rsi_14'] = ta.rsi(df['close'], length=14)
+        else:
+            # Manual RSI calculation
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            df['rsi_14'] = 100 - (100 / (1 + rs))
         return df
 
     def _add_stochastic(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -85,7 +101,7 @@ class FeatureEngineering:
                 df['high'], df['low'], df['close'],
                 fastk_period=14, slowk_period=3, slowd_period=3
             )
-        else:
+        elif PANDAS_TA_AVAILABLE:
             stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3)
             if stoch is not None and not stoch.empty:
                 df['stoch_k'] = stoch[f'STOCHk_14_3_3']
@@ -93,6 +109,12 @@ class FeatureEngineering:
             else:
                 df['stoch_k'] = np.nan
                 df['stoch_d'] = np.nan
+        else:
+            # Manual Stochastic calculation
+            low_14 = df['low'].rolling(window=14).min()
+            high_14 = df['high'].rolling(window=14).max()
+            df['stoch_k'] = 100 * ((df['close'] - low_14) / (high_14 - low_14))
+            df['stoch_d'] = df['stoch_k'].rolling(window=3).mean()
         return df
 
     def _add_macd(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -101,7 +123,7 @@ class FeatureEngineering:
             df['macd'], df['macd_signal'], df['macd_hist'] = talib.MACD(
                 df['close'], fastperiod=12, slowperiod=26, signalperiod=9
             )
-        else:
+        elif PANDAS_TA_AVAILABLE:
             macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
             if macd is not None and not macd.empty:
                 df['macd'] = macd['MACD_12_26_9']
@@ -111,14 +133,29 @@ class FeatureEngineering:
                 df['macd'] = np.nan
                 df['macd_signal'] = np.nan
                 df['macd_hist'] = np.nan
+        else:
+            # Manual MACD calculation
+            ema_12 = df['close'].ewm(span=12, adjust=False).mean()
+            ema_26 = df['close'].ewm(span=26, adjust=False).mean()
+            df['macd'] = ema_12 - ema_26
+            df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+            df['macd_hist'] = df['macd'] - df['macd_signal']
         return df
 
     def _add_atr(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add ATR (Average True Range)"""
         if TALIB_AVAILABLE:
             df['atr_14'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
-        else:
+        elif PANDAS_TA_AVAILABLE:
             df['atr_14'] = ta.atr(df['high'], df['low'], df['close'], length=14)
+        else:
+            # Manual ATR calculation
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = np.max(ranges, axis=1)
+            df['atr_14'] = pd.Series(true_range).rolling(window=14).mean()
         return df
 
     def _add_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -127,7 +164,7 @@ class FeatureEngineering:
             df['bb_upper'], df['bb_middle'], df['bb_lower'] = talib.BBANDS(
                 df['close'], timeperiod=20, nbdevup=2, nbdevdn=2
             )
-        else:
+        elif PANDAS_TA_AVAILABLE:
             bbands = ta.bbands(df['close'], length=20, std=2)
             if bbands is not None and not bbands.empty:
                 df['bb_lower'] = bbands['BBL_20_2.0']
@@ -137,27 +174,51 @@ class FeatureEngineering:
                 df['bb_lower'] = np.nan
                 df['bb_middle'] = np.nan
                 df['bb_upper'] = np.nan
+        else:
+            # Manual Bollinger Bands calculation
+            df['bb_middle'] = df['close'].rolling(window=20).mean()
+            bb_std = df['close'].rolling(window=20).std()
+            df['bb_upper'] = df['bb_middle'] + (bb_std * 2)
+            df['bb_lower'] = df['bb_middle'] - (bb_std * 2)
 
         df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
         return df
 
     def _add_ichimoku(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add Ichimoku Cloud indicators"""
-        ichimoku = ta.ichimoku(df['high'], df['low'], df['close'])
+        if PANDAS_TA_AVAILABLE:
+            ichimoku = ta.ichimoku(df['high'], df['low'], df['close'])
 
-        if ichimoku is not None and len(ichimoku) == 2:
-            ich_df, ich_span = ichimoku
-            df['tenkan_sen'] = ich_df['ITS_9']
-            df['kijun_sen'] = ich_df['IKS_26']
-            df['senkou_a'] = ich_span['ISA_9']
-            df['senkou_b'] = ich_span['ISB_26']
-            df['chikou_span'] = ich_df['ICS_26']
+            if ichimoku is not None and len(ichimoku) == 2:
+                ich_df, ich_span = ichimoku
+                df['tenkan_sen'] = ich_df['ITS_9']
+                df['kijun_sen'] = ich_df['IKS_26']
+                df['senkou_a'] = ich_span['ISA_9']
+                df['senkou_b'] = ich_span['ISB_26']
+                df['chikou_span'] = ich_df['ICS_26']
+            else:
+                df['tenkan_sen'] = np.nan
+                df['kijun_sen'] = np.nan
+                df['senkou_a'] = np.nan
+                df['senkou_b'] = np.nan
+                df['chikou_span'] = np.nan
         else:
-            df['tenkan_sen'] = np.nan
-            df['kijun_sen'] = np.nan
-            df['senkou_a'] = np.nan
-            df['senkou_b'] = np.nan
-            df['chikou_span'] = np.nan
+            # Manual Ichimoku calculation
+            high_9 = df['high'].rolling(window=9).max()
+            low_9 = df['low'].rolling(window=9).min()
+            df['tenkan_sen'] = (high_9 + low_9) / 2
+
+            high_26 = df['high'].rolling(window=26).max()
+            low_26 = df['low'].rolling(window=26).min()
+            df['kijun_sen'] = (high_26 + low_26) / 2
+
+            df['senkou_a'] = ((df['tenkan_sen'] + df['kijun_sen']) / 2).shift(26)
+
+            high_52 = df['high'].rolling(window=52).max()
+            low_52 = df['low'].rolling(window=52).min()
+            df['senkou_b'] = ((high_52 + low_52) / 2).shift(26)
+
+            df['chikou_span'] = df['close'].shift(-26)
 
         return df
 
