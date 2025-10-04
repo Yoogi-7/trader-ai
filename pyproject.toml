@@ -17,6 +17,7 @@ redis = "^5.0.1"
 celery = {extras = ["redis"], version = "^5.3.6"}
 ccxt = "^4.2.25"
 pandas = "^2.1.4"
+ta-lib = "^0.4.28"
 numpy = "^1.26.3"
 scikit-learn = "^1.4.0"
 lightgbm = "^4.3.0"

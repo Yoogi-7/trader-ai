@@ -50,8 +50,9 @@ async def start_backfill(
         end_date=end_date
     )
 
-    # In production, this would be a Celery task
-    # background_tasks.add_task(service.execute_backfill, job)
+    # Trigger Celery task to execute backfill
+    from apps.ml.worker import execute_backfill_task
+    execute_backfill_task.delay(job.job_id)
 
     return {"job_id": job.job_id, "status": "started"}
 

@@ -10,9 +10,7 @@ try:
     TALIB_AVAILABLE = True
 except ImportError:
     TALIB_AVAILABLE = False
-    logger.warning("TA-Lib not available, using pandas-ta fallback")
-
-import pandas_ta as ta
+    logger.warning("TA-Lib not available, will use basic pandas calculations")
 
 
 class FeatureEngineering:
