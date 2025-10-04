@@ -13,6 +13,9 @@ interface BackfillStatus {
   candles_fetched: number
   candles_per_minute?: number
   eta_minutes?: number
+  started_at?: string
+  completed_at?: string
+  created_at?: string
 }
 
 interface TrainingStatus {
@@ -23,6 +26,8 @@ interface TrainingStatus {
   total_folds?: number
   accuracy?: number
   hit_rate_tp1?: number
+  elapsed_seconds?: number
+  error_message?: string
 }
 
 interface HistoricalSignal {
@@ -41,6 +46,15 @@ interface HistoricalSignal {
   was_profitable?: boolean
 }
 
+interface SystemStatus {
+  hit_rate_tp1?: number
+  avg_net_profit_pct?: number
+  active_models: number
+  total_signals: number
+  total_trades: number
+  win_rate?: number
+}
+
 export default function Admin() {
   const [backfillJobs, setBackfillJobs] = useState<BackfillStatus[]>([])
   const [trainingJobs, setTrainingJobs] = useState<TrainingStatus[]>([])
@@ -48,6 +62,7 @@ export default function Admin() {
   const [activeBackfillId, setActiveBackfillId] = useState<string | null>(null)
   const [activeTrainingId, setActiveTrainingId] = useState<string | null>(null)
   const [showHistoricalSignals, setShowHistoricalSignals] = useState(false)
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
 
   // Load existing jobs on mount
   useEffect(() => {
@@ -55,10 +70,22 @@ export default function Admin() {
       try {
         const response = await axios.get(`${API_URL}/api/v1/backfill/jobs`)
         const jobs: BackfillStatus[] = response.data
-        setBackfillJobs(jobs)
+
+        // Filter out jobs older than 24h
+        const now = new Date()
+        const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+
+        const recentJobs = jobs.filter(job => {
+          // Use completed_at for completed jobs, started_at for running, created_at as fallback
+          const jobDate = job.completed_at || job.started_at || job.created_at
+          if (!jobDate) return true // Keep jobs without timestamp
+          return new Date(jobDate) > twentyFourHoursAgo
+        })
+
+        setBackfillJobs(recentJobs)
 
         // Set active job if any is running
-        const runningJob = jobs.find(j => j.status === 'running')
+        const runningJob = recentJobs.find(j => j.status === 'running')
         if (runningJob) {
           setActiveBackfillId(runningJob.job_id)
         }
@@ -67,6 +94,23 @@ export default function Admin() {
       }
     }
     loadJobs()
+    loadSystemStatus()
+  }, [])
+
+  // Load system status
+  const loadSystemStatus = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/v1/system/status`)
+      setSystemStatus(response.data)
+    } catch (error) {
+      console.error('Error loading system status:', error)
+    }
+  }
+
+  // Poll system status every 10 seconds
+  useEffect(() => {
+    const interval = setInterval(loadSystemStatus, 10000)
+    return () => clearInterval(interval)
   }, [])
 
   // Poll for backfill status
@@ -134,11 +178,20 @@ export default function Admin() {
   const startBackfill = async () => {
     try {
       console.log('Starting backfill, API_URL:', API_URL)
+
+      // Get earliest available date from backend
+      const infoResponse = await axios.get(`${API_URL}/api/v1/backfill/earliest?symbol=BTC/USDT&timeframe=15m`)
+      const earliestDate = infoResponse.data.earliest_date || '2017-01-01T00:00:00'
+
+      console.log('Earliest available date:', earliestDate)
+
+      const endDate = new Date().toISOString()
+
       const response = await axios.post(`${API_URL}/api/v1/backfill/start`, {
         symbol: 'BTC/USDT',
         timeframe: '15m',
-        start_date: '2020-01-01T00:00:00',
-        end_date: '2024-01-01T00:00:00'
+        start_date: earliestDate,
+        end_date: endDate
       })
       console.log('Backfill response:', response.data)
       setActiveBackfillId(response.data.job_id)
@@ -168,17 +221,19 @@ export default function Admin() {
 
   const generateHistoricalSignals = async () => {
     try {
+      // Get earliest available date from backfill data
+      const infoResponse = await axios.get(`${API_URL}/api/v1/backfill/earliest?symbol=BTC/USDT&timeframe=15m`)
+      const earliestDate = infoResponse.data.earliest_date || '2017-01-01T00:00:00'
+
       const endDate = new Date()
-      const startDate = new Date()
-      startDate.setDate(startDate.getDate() - 30)
 
       const response = await axios.post(`${API_URL}/api/v1/signals/historical/generate`, {
         symbol: 'BTC/USDT',
-        start_date: startDate.toISOString(),
+        start_date: earliestDate,
         end_date: endDate.toISOString(),
         timeframe: '15m'
       })
-      alert(`Historical signal generation started: ${response.data.message}`)
+      alert(`Historical signal generation started for full history: ${response.data.message}`)
 
       // Load historical signals after a delay
       setTimeout(loadHistoricalSignals, 5000)
@@ -218,7 +273,7 @@ export default function Admin() {
             disabled={activeBackfillId !== null}
             className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-6 py-2 rounded font-medium"
           >
-            {activeBackfillId ? 'Backfill Running...' : 'Start BTC/USDT Backfill (4 years)'}
+            {activeBackfillId ? 'Backfill Running...' : 'Start BTC/USDT Backfill (Full History)'}
           </button>
 
           {/* Active Backfill Jobs */}
@@ -338,6 +393,25 @@ export default function Admin() {
                       <p className="font-bold text-green-400">{(job.hit_rate_tp1 * 100).toFixed(1)}%</p>
                     </div>
                   )}
+                  {job.elapsed_seconds !== undefined && (
+                    <div>
+                      <p className="text-gray-400">Elapsed Time</p>
+                      <p className="font-bold">{Math.floor(job.elapsed_seconds / 60)}m {Math.floor(job.elapsed_seconds % 60)}s</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Error Message */}
+                {job.error_message && (
+                  <div className="mt-3 p-3 bg-red-900 border border-red-700 rounded text-sm">
+                    <p className="text-red-200 font-semibold">Error:</p>
+                    <p className="text-red-300">{job.error_message}</p>
+                  </div>
+                )}
+
+                {/* Job ID for debugging */}
+                <div className="mt-3 text-xs text-gray-500">
+                  Job ID: {job.job_id}
                 </div>
               </div>
             ))}
@@ -355,7 +429,7 @@ export default function Admin() {
               onClick={generateHistoricalSignals}
               className="bg-purple-600 hover:bg-purple-700 px-6 py-2 rounded font-medium"
             >
-              Generate Historical Signals (Last 30 days)
+              Generate Historical Signals (Full History)
             </button>
             <button
               onClick={loadHistoricalSignals}
@@ -453,18 +527,44 @@ export default function Admin() {
         {/* System Status */}
         <div className="bg-gray-800 rounded-lg p-6">
           <h2 className="text-2xl font-bold mb-4">System Status</h2>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-3 gap-4 mb-4">
             <div className="bg-gray-700 p-4 rounded">
               <p className="text-gray-400 text-sm">Hit Rate (TP1)</p>
-              <p className="text-3xl font-bold text-green-400">57.2%</p>
+              <p className="text-3xl font-bold text-green-400">
+                {systemStatus?.hit_rate_tp1 !== null && systemStatus?.hit_rate_tp1 !== undefined
+                  ? `${(systemStatus.hit_rate_tp1 * 100).toFixed(1)}%`
+                  : 'N/A'}
+              </p>
             </div>
             <div className="bg-gray-700 p-4 rounded">
               <p className="text-gray-400 text-sm">Avg Net Profit</p>
-              <p className="text-3xl font-bold text-green-400">2.8%</p>
+              <p className="text-3xl font-bold text-green-400">
+                {systemStatus?.avg_net_profit_pct !== null && systemStatus?.avg_net_profit_pct !== undefined
+                  ? `${systemStatus.avg_net_profit_pct.toFixed(1)}%`
+                  : 'N/A'}
+              </p>
             </div>
             <div className="bg-gray-700 p-4 rounded">
               <p className="text-gray-400 text-sm">Active Models</p>
-              <p className="text-3xl font-bold">3</p>
+              <p className="text-3xl font-bold">{systemStatus?.active_models ?? 0}</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="bg-gray-700 p-4 rounded">
+              <p className="text-gray-400 text-sm">Total Signals</p>
+              <p className="text-2xl font-bold">{systemStatus?.total_signals ?? 0}</p>
+            </div>
+            <div className="bg-gray-700 p-4 rounded">
+              <p className="text-gray-400 text-sm">Total Trades</p>
+              <p className="text-2xl font-bold">{systemStatus?.total_trades ?? 0}</p>
+            </div>
+            <div className="bg-gray-700 p-4 rounded">
+              <p className="text-gray-400 text-sm">Win Rate</p>
+              <p className="text-2xl font-bold text-green-400">
+                {systemStatus?.win_rate !== null && systemStatus?.win_rate !== undefined
+                  ? `${(systemStatus.win_rate * 100).toFixed(1)}%`
+                  : 'N/A'}
+              </p>
             </div>
           </div>
         </div>

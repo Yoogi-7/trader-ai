@@ -26,6 +26,9 @@ class BackfillStatus(BaseModel):
     candles_fetched: int
     candles_per_minute: Optional[float]
     eta_minutes: Optional[float]
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    created_at: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -84,3 +87,21 @@ async def list_backfill_jobs(
 
     service = BackfillService(db)
     return [service.get_job_status(job.job_id) for job in jobs if service.get_job_status(job.job_id)]
+
+
+@router.get("/earliest")
+async def get_earliest_available_date(
+    symbol: str,
+    timeframe: str,
+    db: Session = Depends(get_db)
+):
+    """Get earliest available date for a symbol and timeframe from the exchange"""
+    service = BackfillService(db)
+
+    earliest_dt = service.client.get_earliest_timestamp(symbol, timeframe)
+
+    if earliest_dt:
+        return {"earliest_date": earliest_dt.isoformat(), "symbol": symbol, "timeframe": timeframe}
+    else:
+        # Fallback to a reasonable default if unable to fetch
+        return {"earliest_date": "2017-01-01T00:00:00", "symbol": symbol, "timeframe": timeframe}

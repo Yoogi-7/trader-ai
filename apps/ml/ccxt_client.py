@@ -209,3 +209,34 @@ class CCXTClient:
         ]
 
         return sorted(pairs)
+
+    def get_earliest_timestamp(self, symbol: str, timeframe: str) -> Optional[datetime]:
+        """
+        Get earliest available timestamp for a symbol by fetching the first candle.
+
+        Args:
+            symbol: Trading pair (e.g., 'BTC/USDT')
+            timeframe: Timeframe (e.g., '15m')
+
+        Returns:
+            Earliest available datetime or None if unable to fetch
+        """
+        try:
+            # Try fetching from a very early timestamp (2010-01-01)
+            # Most exchanges will return the earliest available data if we go too far back
+            early_timestamp = int(datetime(2010, 1, 1).timestamp() * 1000)
+
+            candles = self.fetch_ohlcv(symbol, timeframe, since=early_timestamp, limit=1)
+
+            if candles and len(candles) > 0:
+                earliest_ts_ms = candles[0][0]
+                earliest_dt = datetime.fromtimestamp(earliest_ts_ms / 1000)
+                logger.info(f"Earliest available data for {symbol} {timeframe}: {earliest_dt}")
+                return earliest_dt
+            else:
+                logger.warning(f"No data available for {symbol} {timeframe}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error getting earliest timestamp for {symbol} {timeframe}: {e}")
+            return None
