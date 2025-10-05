@@ -553,6 +553,14 @@ class SignalEngine:
 
         signal['model_id'] = deployment.get('model_id')
         signal['model_version'] = deployment.get('version')
+        signal['trailing_stop'] = {
+            'enabled': True,
+            'activation_condition': 'tp1_hit',
+            'atr_value': float(atr),
+            'breakeven_offset_multiplier': 0.5,
+            'trail_multiplier': 1.0,
+            'atr_distance': float(atr * 0.5)
+        }
 
         return SignalInferenceResult(
             signal=signal,

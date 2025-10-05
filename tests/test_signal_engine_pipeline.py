@@ -14,11 +14,12 @@ from apps.api.db.models import (
     Side,
     Signal,
     SignalStatus,
-    TimeFrame
+    TimeFrame,
+    TradeResult
 )
 from apps.ml.signal_engine import SignalEngine
 from apps.ml.signal_engine import SignalGenerator
-from apps.ml.worker import generate_signals_task
+from apps.ml.worker import generate_signals_task, _update_trailing_stop_for_signal
 
 
 class DummyRegistry:
@@ -99,6 +100,8 @@ def test_signal_engine_pipeline_generates_profitable_signal():
     assert result.accepted is True
     assert result.signal['expected_net_profit_pct'] >= settings.MIN_NET_PROFIT_PCT
     assert result.inference_metadata['confidence'] == pytest.approx(0.8)
+    assert result.signal['trailing_stop']['enabled'] is True
+    assert result.signal['trailing_stop']['atr_distance'] > 0
 
     session.close()
     engine.dispose()
@@ -388,5 +391,67 @@ def test_generate_signals_task_skips_when_position_limit_reached(monkeypatch):
 
     session = SessionLocal()
     assert session.query(Signal).count() == settings.MED_MAX_POSITIONS
+    session.close()
+    engine.dispose()
+
+
+def test_trailing_stop_activation_updates_signal_and_trade_result():
+    SessionLocal, engine = create_sqlite_session()
+    session = SessionLocal()
+
+    signal = Signal(
+        signal_id="sig_trailing",
+        symbol="BTC/USDT",
+        side=Side.LONG,
+        entry_price=100.0,
+        timestamp=datetime.utcnow(),
+        tp1_price=105.0,
+        tp1_pct=30.0,
+        tp2_price=110.0,
+        tp2_pct=40.0,
+        tp3_price=115.0,
+        tp3_pct=30.0,
+        sl_price=95.0,
+        leverage=3.0,
+        margin_mode="ISOLATED",
+        position_size_usd=300.0,
+        quantity=3.0,
+        risk_reward_ratio=2.0,
+        estimated_liquidation=80.0,
+        max_loss_usd=30.0,
+        model_id="model123",
+        confidence=0.75,
+        expected_net_profit_pct=4.0,
+        expected_net_profit_usd=12.0,
+        valid_until=datetime.utcnow() + timedelta(hours=1),
+        status=SignalStatus.ACTIVE,
+        risk_profile=RiskProfile.MEDIUM
+    )
+
+    session.add(signal)
+    session.commit()
+
+    stored_signal = session.query(Signal).filter_by(signal_id="sig_trailing").one()
+
+    result = _update_trailing_stop_for_signal(
+        db=session,
+        signal=stored_signal,
+        current_price=106.0,
+        atr=5.0,
+        event_timestamp=datetime.utcnow()
+    )
+
+    session.refresh(stored_signal)
+    trade_result = session.query(TradeResult).filter_by(signal_id="sig_trailing").one()
+
+    assert result['updated'] is True
+    assert result['tp1_hit'] is True
+    assert stored_signal.sl_price == pytest.approx(102.5)
+    assert stored_signal.status == SignalStatus.TP1_HIT
+    assert trade_result.trailing_activated is True
+    assert trade_result.trailing_sl_price == pytest.approx(102.5)
+    assert trade_result.tp1_filled_price == pytest.approx(105.0)
+    assert trade_result.tp1_filled_at is not None
+
     session.close()
     engine.dispose()

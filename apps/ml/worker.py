@@ -1,7 +1,8 @@
 from celery import Celery
+from typing import Optional
 from apps.api.config import settings
 from apps.api.db.session import SessionLocal
-from apps.api.db.models import OHLCV, Signal, SignalStatus, RiskProfile, Side
+from apps.api.db.models import OHLCV, Signal, SignalStatus, RiskProfile, Side, TradeResult
 from apps.ml.backfill import BackfillService
 from apps.ml.training import train_model_pipeline
 from apps.ml.model_registry import ModelRegistry
@@ -392,13 +393,122 @@ def _build_signal_broadcast_payload(signal_record, signal_data, model_info, infe
         'status': signal_record.status.value,
         'risk_profile': signal_record.risk_profile.value,
         'risk_filters': risk_filters,
-        'inference': metadata
+        'inference': metadata,
+        'trailing_stop': signal_data.get('trailing_stop') if isinstance(signal_data, dict) else None
     }
 
     return {
         'type': 'signal.created',
         'data': payload_data
     }
+
+
+def _update_trailing_stop_for_signal(
+    db,
+    signal: Signal,
+    current_price: float,
+    atr: float,
+    event_timestamp: Optional[datetime] = None
+):
+    """Apply trailing stop logic to a single signal and persist the result."""
+
+    engine = SignalEngine(db)
+
+    new_sl = engine.apply_trailing_stop(
+        current_price=current_price,
+        entry_price=signal.entry_price,
+        current_sl=signal.sl_price,
+        tp1_price=signal.tp1_price,
+        side=signal.side,
+        atr=atr
+    )
+
+    tp1_hit = (
+        (signal.side == Side.LONG and current_price >= signal.tp1_price) or
+        (signal.side == Side.SHORT and current_price <= signal.tp1_price)
+    )
+
+    if new_sl == signal.sl_price:
+        return {
+            'updated': False,
+            'tp1_hit': tp1_hit,
+            'new_sl_price': signal.sl_price
+        }
+
+    signal.sl_price = new_sl
+
+    if tp1_hit and signal.status == SignalStatus.ACTIVE:
+        signal.status = SignalStatus.TP1_HIT
+
+    trade_result = (
+        db.query(TradeResult)
+        .filter(TradeResult.signal_id == signal.signal_id)
+        .one_or_none()
+    )
+
+    if trade_result is None:
+        trade_result = TradeResult(signal_id=signal.signal_id)
+        db.add(trade_result)
+
+    trade_result.trailing_activated = True
+    trade_result.trailing_sl_price = new_sl
+
+    if tp1_hit and trade_result.tp1_filled_at is None:
+        trade_result.tp1_filled_price = signal.tp1_price
+        trade_result.tp1_filled_at = event_timestamp or datetime.utcnow()
+
+    db.commit()
+
+    return {
+        'updated': True,
+        'tp1_hit': tp1_hit,
+        'new_sl_price': new_sl
+    }
+
+
+@celery_app.task(name="signals.update_trailing_stop")
+def update_trailing_stop_task(signal_id: str, current_price: float, atr: float, timestamp: Optional[str] = None):
+    """Celery task that updates trailing stop for a signal based on the latest price."""
+
+    db = SessionLocal()
+
+    try:
+        signal = (
+            db.query(Signal)
+            .filter(Signal.signal_id == signal_id)
+            .one_or_none()
+        )
+
+        if signal is None:
+            logger.warning("Signal %s not found for trailing stop update", signal_id)
+            return {'status': 'not_found'}
+
+        event_ts = None
+        if timestamp:
+            try:
+                event_ts = datetime.fromisoformat(timestamp)
+            except ValueError:
+                logger.warning("Invalid timestamp provided for trailing stop update: %s", timestamp)
+
+        result = _update_trailing_stop_for_signal(
+            db=db,
+            signal=signal,
+            current_price=current_price,
+            atr=atr,
+            event_timestamp=event_ts
+        )
+
+        return {
+            'status': 'updated' if result['updated'] else 'unchanged',
+            'tp1_hit': result['tp1_hit'],
+            'sl_price': result['new_sl_price']
+        }
+    except Exception as exc:
+        db.rollback()
+        logger.error("Trailing stop update failed: %s", exc, exc_info=True)
+        raise
+    finally:
+        db.close()
 
 
 @celery_app.task(name="backfill.update_latest")
