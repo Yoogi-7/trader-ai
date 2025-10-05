@@ -494,6 +494,30 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     last_login = Column(DateTime)
 
+    tokens = relationship(
+        "UserToken",
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
+
+
+class UserToken(Base):
+    __tablename__ = "user_tokens"
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="uq_user_tokens_user_id_name"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    token_prefix = Column(String(12), nullable=False)
+    revoked = Column(Boolean, default=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime)
+
+    user = relationship("User", back_populates="tokens")
+
 
 # ============================================================================
 # SYSTEM CONFIG

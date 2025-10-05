@@ -1,7 +1,23 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from datetime import datetime
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from apps.api.config import settings
-from apps.api.routers import signals, backtest, backfill, train, settings as settings_router, system
+from apps.api.db.models import UserToken
+from apps.api.db.session import AsyncSessionLocal
+from apps.api.routers import (
+    signals,
+    backtest,
+    backfill,
+    train,
+    settings as settings_router,
+    system,
+    users,
+)
+from apps.api.security import hash_token
+from sqlalchemy import select
+from starlette import status
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -12,6 +28,8 @@ app = FastAPI(
     description="AI-powered crypto futures trading signal system",
     version="1.0.0"
 )
+
+app.state.session_maker = AsyncSessionLocal
 
 # CORS
 app.add_middleware(
@@ -29,6 +47,60 @@ app.include_router(backfill.router, prefix=f"{settings.API_V1_PREFIX}/backfill",
 app.include_router(train.router, prefix=f"{settings.API_V1_PREFIX}/train", tags=["Training"])
 app.include_router(settings_router.router, prefix=f"{settings.API_V1_PREFIX}/settings", tags=["Settings"])
 app.include_router(system.router, prefix=f"{settings.API_V1_PREFIX}/system", tags=["System"])
+app.include_router(users.router, prefix=f"{settings.API_V1_PREFIX}/users", tags=["Users"])
+
+
+UNPROTECTED_PATHS = {"/", "/health"}
+UNPROTECTED_PREFIXES = ("/docs", "/openapi", "/redoc", "/static", "/ws")
+
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    path = request.url.path
+
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    if path in UNPROTECTED_PATHS or any(path.startswith(prefix) for prefix in UNPROTECTED_PREFIXES):
+        return await call_next(request)
+
+    api_key = request.headers.get("X-API-Key")
+
+    if not api_key:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            api_key = auth_header.split(" ", 1)[1]
+
+    if not api_key:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"detail": "Missing API key"},
+        )
+
+    token_hash = hash_token(api_key)
+    session_maker = getattr(request.app.state, "session_maker", AsyncSessionLocal)
+
+    async with session_maker() as session:
+        result = await session.execute(
+            select(UserToken).where(
+                UserToken.token_hash == token_hash,
+                UserToken.revoked.is_(False),
+            )
+        )
+        token = result.scalar_one_or_none()
+
+        if not token:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Invalid API key"},
+            )
+
+        token.last_used_at = datetime.utcnow()
+        await session.commit()
+        request.state.user_id = token.user_id
+
+    response = await call_next(request)
+    return response
 
 
 # WebSocket connection manager for live signals
