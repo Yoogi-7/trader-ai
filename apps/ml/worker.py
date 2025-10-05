@@ -355,6 +355,44 @@ def generate_signals_task():
         db.close()
 
 
+@celery_app.task(name="signals.expire")
+def expire_signals_task():
+    """Expire signals that are past their validity window."""
+
+    db = SessionLocal()
+
+    try:
+        now = datetime.utcnow()
+
+        expirable_signals = db.query(Signal).filter(
+            Signal.valid_until < now,
+            Signal.status.in_([SignalStatus.PENDING, SignalStatus.ACTIVE])
+        ).all()
+
+        if not expirable_signals:
+            return {"expired": 0}
+
+        expired_count = 0
+        for signal in expirable_signals:
+            signal.status = SignalStatus.TIME_STOP
+            signal.expired_at = now
+
+            if signal.closed_at is None:
+                signal.closed_at = now
+
+            expired_count += 1
+
+        db.commit()
+
+        return {"expired": expired_count}
+    except Exception as exc:
+        db.rollback()
+        logger.error("Failed to expire signals: %s", exc, exc_info=True)
+        raise
+    finally:
+        db.close()
+
+
 def _build_signal_broadcast_payload(signal_record, signal_data, model_info, inference_metadata, risk_filters):
     """Build websocket payload for a generated signal."""
 
@@ -874,6 +912,10 @@ celery_app.conf.beat_schedule = {
     },
     'generate-signals-every-5-minutes': {
         'task': 'signals.generate',
+        'schedule': 300.0,  # 5 minutes
+    },
+    'expire-signals-every-5-minutes': {
+        'task': 'signals.expire',
         'schedule': 300.0,  # 5 minutes
     },
     'monitor-drift-daily': {
