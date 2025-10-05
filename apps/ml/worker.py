@@ -1,7 +1,7 @@
 from celery import Celery
 from apps.api.config import settings
 from apps.api.db.session import SessionLocal
-from apps.api.db.models import OHLCV, Signal, SignalStatus, RiskProfile, Side
+from apps.api.db.models import OHLCV, Signal, SignalStatus, RiskProfile, Side, SignalRejection
 from apps.ml.backfill import BackfillService
 from apps.ml.training import train_model_pipeline
 from apps.ml.model_registry import ModelRegistry
@@ -362,12 +362,14 @@ def generate_signals_task():
 
             processed_deployments += 1
 
+            selected_risk_profile = RiskProfile.MEDIUM
+
             try:
                 result = engine.generate_for_deployment(
                     symbol=symbol,
                     timeframe=timeframe,
                     environment=environment,
-                    risk_profile=RiskProfile.MEDIUM,
+                    risk_profile=selected_risk_profile,
                     capital_usd=1000.0
                 )
             except Exception as exc:
@@ -380,6 +382,41 @@ def generate_signals_task():
                 summary['skipped'] += 1
                 if result and not result.accepted:
                     skipped_filters += 1
+                    rejection_reasons = result.rejection_reasons or []
+                    reason_text = (
+                        "Failed risk filters: " + ", ".join(rejection_reasons)
+                        if rejection_reasons
+                        else "Signal rejected by risk filters"
+                    )
+                    metadata = dict(result.inference_metadata or {})
+                    timestamp = metadata.get('timestamp')
+                    if timestamp is not None:
+                        if hasattr(timestamp, 'isoformat'):
+                            metadata['timestamp'] = timestamp.isoformat()
+                        else:
+                            metadata['timestamp'] = str(timestamp)
+                    timeframe_value = timeframe.value if hasattr(timeframe, 'value') else str(timeframe)
+                    rejection_record = SignalRejection(
+                        symbol=symbol,
+                        timeframe=timeframe_value,
+                        environment=environment,
+                        model_id=(result.model_info or {}).get('model_id') if result.model_info else None,
+                        risk_profile=selected_risk_profile,
+                        failed_filters=rejection_reasons,
+                        rejection_reason=reason_text,
+                        inference_metadata=metadata
+                    )
+                    try:
+                        db.add(rejection_record)
+                        db.commit()
+                    except Exception as exc:
+                        logger.error(
+                            "Failed to persist rejection for %s %s: %s",
+                            symbol,
+                            timeframe_value,
+                            exc
+                        )
+                        db.rollback()
                 continue
 
             signal_data = result.signal

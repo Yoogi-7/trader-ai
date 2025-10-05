@@ -306,6 +306,21 @@ class Signal(Base):
     trade_results = relationship("TradeResult", back_populates="signal")
 
 
+class SignalRejection(Base):
+    __tablename__ = "signal_rejections"
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(String(20), nullable=False)
+    environment = Column(String(20), nullable=False, default="production")
+    model_id = Column(String(50))
+    risk_profile = Column(Enum(RiskProfile))
+    failed_filters = Column(JSON, nullable=False)
+    rejection_reason = Column(Text, nullable=False)
+    inference_metadata = Column(JSON)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class TradeResult(Base):
     __tablename__ = "trade_results"
 
