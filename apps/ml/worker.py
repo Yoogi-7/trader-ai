@@ -59,7 +59,7 @@ def train_model_task(
     use_expanding_window: bool = True
 ):
     """Train ML model with walk-forward validation using expanding windows"""
-    from apps.api.db.models import TrainingJob, TimeFrame
+    from apps.api.db.models import TrainingJob, TimeFrame, ModelRegistry as ModelRecord
     from datetime import datetime
 
     db = SessionLocal()
@@ -133,6 +133,113 @@ def train_model_task(
                 logger.error(f"Failed to update labeling progress: {e}")
                 db.rollback()
 
+        def ensure_model_registry_record(results_dict: dict):
+            """Create or update relational model registry entry so FKs stay valid."""
+
+            model_id = results_dict.get('model_id')
+            if not model_id:
+                return None
+
+            try:
+                timeframe_enum = TimeFrame(timeframe)
+            except ValueError:
+                logger.error("Invalid timeframe %s for model registry entry", timeframe)
+                return None
+
+            avg_metrics = results_dict.get('avg_metrics') or {}
+            split_results = results_dict.get('split_results') or []
+            validation_period = results_dict.get('validation_period') or {}
+
+            train_starts = [split.get('train_start') for split in split_results if split.get('train_start')]
+            train_ends = [split.get('train_end') for split in split_results if split.get('train_end')]
+            test_starts = [split.get('test_start') for split in split_results if split.get('test_start')]
+            test_ends = [split.get('test_end') for split in split_results if split.get('test_end')]
+
+            def _parse_iso(value):
+                if not value:
+                    return None
+                try:
+                    return datetime.fromisoformat(value)
+                except (ValueError, TypeError):
+                    return None
+
+            train_start = min(train_starts) if train_starts else _parse_iso(validation_period.get('start'))
+            train_end = max(train_ends) if train_ends else _parse_iso(validation_period.get('end'))
+            oos_start = min(test_starts) if test_starts else train_start
+            oos_end = max(test_ends) if test_ends else train_end
+
+            registry = ModelRegistry()
+            registry_version = results_dict.get('registry_version')
+            registry_entry = registry.get_model(symbol, timeframe, registry_version)
+            artifact_path = registry_entry.get('path') if registry_entry else None
+
+            def _to_serializable(value):
+                if isinstance(value, np.generic):
+                    return value.item()
+                if isinstance(value, dict):
+                    return {k: _to_serializable(v) for k, v in value.items()}
+                if isinstance(value, list):
+                    return [_to_serializable(v) for v in value]
+                return value
+
+            feature_importance = results_dict.get('feature_importance')
+            if feature_importance:
+                feature_importance = _to_serializable(feature_importance)
+
+            db_model = db.query(ModelRecord).filter_by(model_id=model_id).first()
+
+            if not db_model:
+                if not (train_start and train_end and oos_start and oos_end):
+                    logger.warning("Skipping model registry insert for %s due to missing timeline metadata", model_id)
+                    return None
+
+                db_model = ModelRecord(
+                    model_id=model_id,
+                    symbol=symbol,
+                    timeframe=timeframe_enum,
+                    model_type='ensemble',
+                    version=registry_version or 'v1',
+                    train_start=train_start,
+                    train_end=train_end,
+                    oos_start=oos_start,
+                    oos_end=oos_end,
+                    hyperparameters=None,
+                    accuracy=avg_metrics.get('avg_accuracy'),
+                    precision=avg_metrics.get('avg_precision'),
+                    recall=avg_metrics.get('avg_recall'),
+                    f1_score=avg_metrics.get('avg_f1_score'),
+                    roc_auc=avg_metrics.get('avg_roc_auc'),
+                    hit_rate_tp1=avg_metrics.get('avg_hit_rate_tp1'),
+                    artifact_path=artifact_path,
+                    feature_importance=feature_importance
+                )
+                db.add(db_model)
+            else:
+                db_model.symbol = symbol
+                db_model.timeframe = timeframe_enum
+                if registry_version:
+                    db_model.version = registry_version
+                if train_start:
+                    db_model.train_start = train_start
+                if train_end:
+                    db_model.train_end = train_end
+                if oos_start:
+                    db_model.oos_start = oos_start
+                if oos_end:
+                    db_model.oos_end = oos_end
+                db_model.accuracy = avg_metrics.get('avg_accuracy')
+                db_model.precision = avg_metrics.get('avg_precision')
+                db_model.recall = avg_metrics.get('avg_recall')
+                db_model.f1_score = avg_metrics.get('avg_f1_score')
+                db_model.roc_auc = avg_metrics.get('avg_roc_auc')
+                db_model.hit_rate_tp1 = avg_metrics.get('avg_hit_rate_tp1')
+                if artifact_path:
+                    db_model.artifact_path = artifact_path
+                if feature_importance:
+                    db_model.feature_importance = feature_importance
+
+            return db_model
+
         results = train_model_pipeline(
             db=db,
             symbol=symbol,
@@ -147,10 +254,20 @@ def train_model_task(
         )
 
         # Update job as completed
+        model_record = ensure_model_registry_record(results)
+
         training_job.status = 'completed'
         training_job.completed_at = datetime.utcnow()
-        training_job.model_id = results.get('model_id')
-        training_job.version = results.get('registry_version')
+        if model_record:
+            training_job.model_id = model_record.model_id
+            training_job.version = model_record.version
+        else:
+            logger.warning(
+                "No relational registry entry for model %s; leaving training job detached",
+                results.get('model_id')
+            )
+            training_job.model_id = None
+            training_job.version = results.get('registry_version')
 
         avg_metrics = results.get('avg_metrics', {})
         training_job.accuracy = avg_metrics.get('avg_accuracy')
@@ -174,16 +291,26 @@ def train_model_task(
         logger.error(f"Training task failed: {e}", exc_info=True)
 
         # Update job as failed
+        db.rollback()
+
         if training_job:
-            training_job.status = 'failed'
-            training_job.completed_at = datetime.utcnow()
-            training_job.error_message = str(e)
+            try:
+                training_job = db.query(TrainingJob).filter_by(job_id=self.request.id).first()
+                if training_job:
+                    training_job.status = 'failed'
+                    training_job.completed_at = datetime.utcnow()
+                    training_job.error_message = str(e)
+                    training_job.model_id = None
+                    training_job.version = None
 
-            if training_job.started_at:
-                elapsed = (datetime.utcnow() - training_job.started_at).total_seconds()
-                training_job.elapsed_seconds = elapsed
+                    if training_job.started_at:
+                        elapsed = (datetime.utcnow() - training_job.started_at).total_seconds()
+                        training_job.elapsed_seconds = elapsed
 
-            db.commit()
+                    db.commit()
+            except Exception as update_error:
+                logger.error(f"Failed to persist training failure status: {update_error}")
+                db.rollback()
 
         # Re-raise exception so Celery marks task as FAILURE
         raise
