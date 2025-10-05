@@ -3,13 +3,14 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 from apps.api.db import get_db
+from apps.api.security import get_current_user
 from celery.result import AsyncResult
 from apps.ml.worker import celery_app
 from apps.ml.model_registry import ModelRegistry
 from apps.ml.performance_tracker import PerformanceTracker
 from datetime import datetime
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 class TrainRequest(BaseModel):

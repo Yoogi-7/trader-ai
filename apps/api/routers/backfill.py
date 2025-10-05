@@ -4,12 +4,13 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 from apps.api.db import get_db
+from apps.api.security import get_current_user
 from apps.api.db.models import BackfillJob, TimeFrame
 from apps.ml.backfill import BackfillService
 import logging
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 class BackfillRequest(BaseModel):

@@ -6,9 +6,10 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 from apps.api.db import get_async_db, get_db
 from apps.api.db.models import Signal, RiskProfile, SignalStatus, TradeResult
+from apps.api.security import get_current_user
 from pydantic import BaseModel
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 class SignalResponse(BaseModel):

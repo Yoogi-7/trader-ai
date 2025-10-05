@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from apps.api.config import settings
-from apps.api.routers import signals, backtest, backfill, train, settings as settings_router, system
+from apps.api.routers import auth, signals, backtest, backfill, train, settings as settings_router, system
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +23,7 @@ app.add_middleware(
 )
 
 # Include routers
+app.include_router(auth.router, prefix=f"{settings.API_V1_PREFIX}/auth", tags=["Auth"])
 app.include_router(signals.router, prefix=f"{settings.API_V1_PREFIX}/signals", tags=["Signals"])
 app.include_router(backtest.router, prefix=f"{settings.API_V1_PREFIX}/backtest", tags=["Backtest"])
 app.include_router(backfill.router, prefix=f"{settings.API_V1_PREFIX}/backfill", tags=["Backfill"])
