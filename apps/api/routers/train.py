@@ -7,7 +7,7 @@ from celery.result import AsyncResult
 from apps.ml.worker import celery_app
 from apps.ml.model_registry import ModelRegistry
 from apps.ml.performance_tracker import PerformanceTracker
-from datetime import datetime
+from datetime import datetime, timedelta
 
 router = APIRouter()
 
@@ -178,8 +178,8 @@ async def list_training_jobs(db: Session = Depends(get_db)):
     from apps.api.db.models import TrainingJob
     from datetime import datetime, timedelta
 
-    # Get jobs from last 24 hours
-    cutoff = datetime.utcnow() - timedelta(hours=24)
+    # Get jobs from last 3 hours
+    cutoff = datetime.utcnow() - timedelta(hours=3)
     jobs = db.query(TrainingJob).filter(
         TrainingJob.created_at >= cutoff
     ).order_by(TrainingJob.created_at.desc()).all()

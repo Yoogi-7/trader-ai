@@ -112,13 +112,13 @@ export default function Admin() {
 
         // Filter out jobs older than 24h
         const now = new Date()
-        const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000)
+        const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60 * 1000)
 
         const recentJobs = jobs.filter(job => {
           // Use completed_at for completed jobs, started_at for running, created_at as fallback
           const jobDate = job.completed_at || job.started_at || job.created_at
           if (!jobDate) return true // Keep jobs without timestamp
-          return new Date(jobDate) > twentyFourHoursAgo
+          return new Date(jobDate) > threeHoursAgo
         })
 
         setBackfillJobs(recentJobs)

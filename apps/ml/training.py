@@ -166,10 +166,34 @@ class WalkForwardPipeline:
             how='inner'
         )
 
-        merged = merged.dropna()
+        if merged.empty:
+            logger.warning("Merged feature/label frame is empty after join")
+            return merged
+
+        # Ensure essential label columns are present and non-null
+        label_cols = ['label', 'hit_barrier', 'return_pct', 'bars_to_hit']
+        merged = merged.dropna(subset=label_cols)
+
+        # Replace non-finite values that can appear after technical indicator calculations
+        merged = merged.replace([float('inf'), float('-inf')], pd.NA)
+
+        # Forward/backward fill remaining feature NaNs, then fallback to zero to keep rows
+        feature_cols = [
+            col
+            for col in merged.columns
+            if col not in label_cols + ['timestamp', 'symbol', 'timeframe']
+        ]
+
+        if feature_cols:
+            merged[feature_cols] = merged[feature_cols].ffill().bfill().fillna(0)
+
+        merged = merged.replace({pd.NA: 0})
 
         logger.info(f"Features and labels prepared: {len(merged)} samples")
-        logger.info(f"Label distribution: {merged['label'].value_counts().to_dict()}")
+        if not merged.empty:
+            logger.info(f"Label distribution: {merged['label'].value_counts().to_dict()}")
+        else:
+            logger.info("Label distribution: {}")
 
         return merged
 
@@ -222,32 +246,17 @@ class WalkForwardPipeline:
 
         feature_cols = self.feature_eng.get_feature_columns(df_prepared)
 
-        for i, split in enumerate(splits):
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Split {i+1}/{len(splits)}")
-            logger.info(f"Train: {split['train'][0].date()} to {split['train'][1].date()}")
-            logger.info(f"Test: {split['test'][0].date()} to {split['test'][1].date()}")
+        def _train_on_split(train_df, test_df, split_index: int, total_splits: int, train_bounds, test_bounds):
+            nonlocal best_model, best_oos_auc
 
-            # Update progress callback if provided
-            if progress_callback:
-                progress = ((i + 1) / len(splits)) * 100
-                progress_callback(
-                    progress_pct=progress,
-                    current_fold=i + 1,
-                    total_folds=len(splits)
+            if len(train_df) < 50 or len(test_df) < 10:
+                logger.warning(
+                    "Insufficient data in split %s (train=%s, test=%s). Skipping...",
+                    split_index,
+                    len(train_df),
+                    len(test_df)
                 )
-
-            # Get train/test data
-            train_df, test_df = self.validator.get_train_test_data(df_prepared, split)
-
-            # Validate no leakage
-            if not self.validator.validate_no_leakage(train_df, test_df):
-                logger.error(f"Leakage detected in split {i+1}, skipping...")
-                continue
-
-            if len(train_df) < 100 or len(test_df) < 10:
-                logger.warning(f"Insufficient data in split {i+1}, skipping...")
-                continue
+                return None
 
             # Split into features and labels
             X_train = train_df[feature_cols]
@@ -256,67 +265,152 @@ class WalkForwardPipeline:
             y_test = test_df['label']
 
             # Further split train into train/val for early stopping
-            train_size = int(len(X_train) * 0.8)
+            train_size = max(int(len(X_train) * 0.8), 1)
             X_train_fit = X_train.iloc[:train_size]
             y_train_fit = y_train.iloc[:train_size]
             X_val = X_train.iloc[train_size:]
             y_val = y_train.iloc[train_size:]
 
-            # Train model
-            logger.info(f"Training ensemble model...")
+            if len(X_val) == 0:
+                X_val = X_train_fit
+                y_val = y_train_fit
+
             model = EnsembleModel()
 
             try:
+                logger.info(
+                    "Training ensemble model for split %s/%s (train=%s, test=%s)",
+                    split_index,
+                    total_splits,
+                    len(train_df),
+                    len(test_df)
+                )
                 model.train(X_train_fit, y_train_fit, X_val, y_val)
-            except Exception as e:
-                logger.error(f"Training failed for split {i+1}: {e}")
-                continue
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.error("Training failed for split %s: %s", split_index, exc)
+                return None
 
-            # Evaluate on OOS test set
             test_metrics = model.evaluate(X_test, y_test)
-            logger.info(f"OOS Test Metrics: {test_metrics}")
+            logger.info("OOS Test Metrics: %s", test_metrics)
 
-            # Calibrate conformal predictor on validation set
             conformal = ConformalPredictor(model, target_confidence=self.target_confidence)
             conformal.calibrate(X_val, y_val)
 
-            # Test conformal predictions
             preds, conf, mask = conformal.filter_by_confidence(X_test)
-            filtered_test_metrics = model.evaluate(X_test[mask], y_test[mask]) if mask.sum() > 0 else {}
+            filtered_metrics = model.evaluate(X_test[mask], y_test[mask]) if mask.sum() > 0 else {}
 
             hit_rate_tp1 = float(test_df['label'].mean()) if len(test_df) > 0 else 0.0
 
             split_result = {
-                'split_id': i,
-                'train_start': split['train'][0],
-                'train_end': split['train'][1],
-                'test_start': split['test'][0],
-                'test_end': split['test'][1],
+                'split_id': split_index - 1,
+                'train_start': train_bounds[0],
+                'train_end': train_bounds[1],
+                'test_start': test_bounds[0],
+                'test_end': test_bounds[1],
                 'train_samples': len(train_df),
                 'test_samples': len(test_df),
                 'oos_metrics': test_metrics,
                 'hit_rate_tp1': hit_rate_tp1,
                 'filtered_coverage': mask.sum() / len(mask) if len(mask) > 0 else 0,
-                'filtered_metrics': filtered_test_metrics
+                'filtered_metrics': filtered_metrics
             }
 
-            split_results.append(split_result)
+            if progress_callback:
+                progress_callback(
+                    progress_pct=min(100.0, (split_index / max(total_splits, 1)) * 100.0),
+                    current_fold=split_index,
+                    total_folds=total_splits
+                )
 
-            # Track best model (by OOS AUC)
-            if test_metrics['roc_auc'] > best_oos_auc:
+            if test_metrics.get('roc_auc', 0) > best_oos_auc:
                 best_oos_auc = test_metrics['roc_auc']
                 best_model = model
-                logger.info(f"New best model found! OOS AUC: {best_oos_auc:.4f}")
+                logger.info("New best model found! OOS AUC: %.4f", best_oos_auc)
+            elif best_model is None:
+                best_model = model
+
+            return split_result
+
+        for i, split in enumerate(splits):
+            logger.info(f"\n{'='*60}")
+            logger.info(f"Split {i+1}/{len(splits)}")
+            logger.info(f"Train: {split['train'][0].date()} to {split['train'][1].date()}")
+            logger.info(f"Test: {split['test'][0].date()} to {split['test'][1].date()}")
+
+            # Get train/test data
+            train_df, test_df = self.validator.get_train_test_data(df_prepared, split)
+            # Validate no leakage
+            if not self.validator.validate_no_leakage(train_df, test_df):
+                logger.error(f"Leakage detected in split {i+1}, skipping...")
+                continue
+
+            split_result = _train_on_split(
+                train_df,
+                test_df,
+                split_index=i + 1,
+                total_splits=len(splits),
+                train_bounds=split['train'],
+                test_bounds=split['test']
+            )
+
+            if split_result:
+                split_results.append(split_result)
 
         # 5. Aggregate results
         if not split_results:
-            raise ValueError("No valid splits completed")
+            logger.warning("No valid walk-forward splits completed. Falling back to chronological hold-out training.")
+
+            total_samples = len(df_prepared)
+            if total_samples < 120:
+                raise ValueError(
+                    "Insufficient labeled data for training after fallback (need >= 120 rows, got %d)" % total_samples
+                )
+
+            test_size = max(int(total_samples * 0.2), 10)
+            train_size = total_samples - test_size
+
+            if train_size < 50:
+                raise ValueError(
+                    "Insufficient training window size after fallback (train=%d, test=%d)" % (train_size, test_size)
+                )
+
+            fallback_train = df_prepared.iloc[:train_size].copy()
+            fallback_test = df_prepared.iloc[train_size:].copy()
+
+            fallback_train_bounds = (
+                fallback_train['timestamp'].min(),
+                fallback_train['timestamp'].max()
+            )
+            fallback_test_bounds = (
+                fallback_test['timestamp'].min(),
+                fallback_test['timestamp'].max()
+            )
+
+            split_result = _train_on_split(
+                fallback_train,
+                fallback_test,
+                split_index=1,
+                total_splits=1,
+                train_bounds=fallback_train_bounds,
+                test_bounds=fallback_test_bounds
+            )
+
+            if not split_result:
+                raise ValueError("Fallback training split could not be completed")
+
+            split_results.append(split_result)
 
         if progress_callback:
+            completed_folds = len(split_results)
+            if completed_folds == len(splits) and len(splits) > 0:
+                reported_total = len(splits)
+            else:
+                reported_total = max(completed_folds, 1)
+
             progress_callback(
                 progress_pct=100.0,
-                current_fold=len(splits),
-                total_folds=len(splits)
+                current_fold=completed_folds,
+                total_folds=reported_total
             )
 
         avg_metrics = self._aggregate_split_results(split_results)

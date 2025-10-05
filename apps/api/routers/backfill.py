@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 from apps.api.db import get_db
 from apps.api.db.models import BackfillJob, TimeFrame
 from apps.ml.backfill import BackfillService
@@ -127,7 +127,14 @@ async def list_backfill_jobs(
     """List recent backfill jobs"""
     from apps.api.db.models import BackfillJob
 
-    jobs = db.query(BackfillJob).order_by(BackfillJob.created_at.desc()).limit(limit).all()
+    cutoff = datetime.utcnow() - timedelta(hours=3)
+    jobs = (
+        db.query(BackfillJob)
+        .filter(BackfillJob.created_at >= cutoff)
+        .order_by(BackfillJob.created_at.desc())
+        .limit(limit)
+        .all()
+    )
 
     service = BackfillService(db)
     return [service.get_job_status(job.job_id) for job in jobs if service.get_job_status(job.job_id)]
