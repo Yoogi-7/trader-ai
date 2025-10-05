@@ -1,9 +1,9 @@
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import and_
-from apps.api.db.models import OHLCV, BackfillJob, TimeFrame
+from apps.api.db.models import OHLCV, BackfillJob, TimeFrame, MarketMetrics
 from apps.ml.ccxt_client import CCXTClient
 import time
 import uuid
@@ -16,9 +16,9 @@ class BackfillService:
     Resumable backfill service with checkpoint support.
     """
 
-    def __init__(self, db: Session, exchange_id: str = None):
+    def __init__(self, db: Session, exchange_id: str = None, client: Optional[CCXTClient] = None):
         self.db = db
-        self.client = CCXTClient(exchange_id=exchange_id)
+        self.client = client or CCXTClient(exchange_id=exchange_id)
 
     def create_backfill_job(
         self,
@@ -199,6 +199,90 @@ class BackfillService:
         except Exception as e:
             self.db.rollback()
             logger.error(f"Error upserting OHLCV data: {e}")
+            raise
+
+    def fetch_open_interest(self, symbol: str) -> Optional[float]:
+        """Fetch open interest from the exchange client."""
+        return self.client.fetch_open_interest(symbol)
+
+    def fetch_spread_bps(self, symbol: str, depth_limit: int = 20) -> Optional[float]:
+        """Compute spread in basis points using top-of-book prices."""
+        order_book = self.client.fetch_order_book(symbol, limit=depth_limit)
+
+        if not order_book:
+            return None
+
+        bids = order_book.get('bids') or []
+        asks = order_book.get('asks') or []
+
+        if not bids or not asks:
+            return None
+
+        best_bid = bids[0][0]
+        best_ask = asks[0][0]
+
+        if best_bid is None or best_ask is None:
+            return None
+
+        mid_price = (best_bid + best_ask) / 2
+        if mid_price <= 0:
+            return None
+
+        spread = best_ask - best_bid
+        return (spread / mid_price) * 10_000
+
+    def collect_market_metrics(self, symbol: str) -> Dict[str, Any]:
+        """Collect market microstructure metrics for a symbol."""
+        metrics: Dict[str, Any] = {
+            'open_interest': None,
+            'spread_bps': None,
+            'funding_rate': None,
+        }
+
+        try:
+            metrics['open_interest'] = self.fetch_open_interest(symbol)
+        except Exception as exc:
+            logger.warning("Failed to fetch open interest for %s: %s", symbol, exc)
+
+        try:
+            metrics['spread_bps'] = self.fetch_spread_bps(symbol)
+        except Exception as exc:
+            logger.warning("Failed to compute spread for %s: %s", symbol, exc)
+
+        try:
+            metrics['funding_rate'] = self.client.fetch_funding_rate(symbol)
+        except Exception as exc:
+            logger.warning("Failed to fetch funding rate for %s: %s", symbol, exc)
+
+        return metrics
+
+    def upsert_market_metrics(self, symbol: str, timestamp: datetime, metrics: Dict[str, Any]):
+        """Upsert market metrics for a given symbol and timestamp."""
+        if hasattr(timestamp, 'to_pydatetime'):
+            timestamp = timestamp.to_pydatetime()
+
+        record = (
+            self.db.query(MarketMetrics)
+            .filter(
+                MarketMetrics.symbol == symbol,
+                MarketMetrics.timestamp == timestamp
+            )
+            .one_or_none()
+        )
+
+        if record is None:
+            record = MarketMetrics(symbol=symbol, timestamp=timestamp)
+            self.db.add(record)
+
+        record.open_interest = metrics.get('open_interest')
+        record.spread_bps = metrics.get('spread_bps')
+        record.funding_rate = metrics.get('funding_rate')
+
+        try:
+            self.db.commit()
+        except Exception as exc:
+            self.db.rollback()
+            logger.error("Error upserting market metrics for %s at %s: %s", symbol, timestamp, exc)
             raise
 
     def _detect_gaps(self, job: BackfillJob):
