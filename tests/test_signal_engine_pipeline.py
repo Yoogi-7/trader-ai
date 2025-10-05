@@ -68,6 +68,48 @@ def insert_mock_ohlcv(session, symbol="BTC/USDT", rows=120):
     session.commit()
 
 
+def insert_correlated_ohlcv_pair(
+    session,
+    primary_symbol="BTC/USDT",
+    secondary_symbol="ETH/USDT",
+    rows=120
+):
+    base_ts = datetime.utcnow() - timedelta(minutes=rows * 15)
+
+    for idx in range(rows):
+        ts = base_ts + timedelta(minutes=15 * idx)
+        primary_close = 50000 + idx + 120
+        secondary_close = 2500 + idx * 5
+
+        session.add(
+            OHLCV(
+                symbol=primary_symbol,
+                timeframe=TimeFrame.M15,
+                timestamp=ts,
+                open=primary_close - 100,
+                high=primary_close + 800,
+                low=primary_close - 800,
+                close=primary_close,
+                volume=200 + idx
+            )
+        )
+
+        session.add(
+            OHLCV(
+                symbol=secondary_symbol,
+                timeframe=TimeFrame.M15,
+                timestamp=ts,
+                open=secondary_close - 25,
+                high=secondary_close + 40,
+                low=secondary_close - 45,
+                close=secondary_close,
+                volume=180 + idx
+            )
+        )
+
+    session.commit()
+
+
 def test_signal_engine_pipeline_generates_profitable_signal():
     SessionLocal, engine = create_sqlite_session()
     session = SessionLocal()
@@ -172,6 +214,105 @@ def test_signal_engine_pipeline_respects_position_limit():
 
     session.close()
     engine.dispose()
+
+
+def test_signal_engine_blocks_highly_correlated_signal():
+    SessionLocal, engine = create_sqlite_session()
+    session = SessionLocal()
+
+    insert_correlated_ohlcv_pair(session)
+
+    deployment = {
+        'model_id': 'model123',
+        'version': 'v1',
+        'path': 'unused',
+        'symbol': 'BTC/USDT',
+        'timeframe': '15m'
+    }
+
+    class AnySymbolRegistry(DummyRegistry):
+        def get_deployed_model(self, symbol, timeframe, environment='production'):
+            return {
+                'model_id': 'model123',
+                'version': 'v1',
+                'path': 'unused',
+                'symbol': symbol,
+                'timeframe': timeframe
+            }
+
+    engine_service = SignalEngine(
+        db=session,
+        registry=AnySymbolRegistry(deployment),
+        model_factory=lambda: DummyModel(0.8),
+        lookback_bars=90
+    )
+
+    original_threshold = settings.CORRELATION_THRESHOLD
+    settings.CORRELATION_THRESHOLD = 0.6
+
+    try:
+        first_result = engine_service.generate_for_deployment(
+            symbol='BTC/USDT',
+            timeframe='15m',
+            risk_profile=RiskProfile.MEDIUM,
+            capital_usd=1000.0
+        )
+
+        assert first_result is not None
+        assert first_result.accepted is True
+        assert engine_service.correlation_state.current_exposures['BTC/USDT'] == Side.LONG
+
+        session.add(
+            Signal(
+                signal_id=first_result.signal['signal_id'],
+                symbol=first_result.signal['symbol'],
+                side=first_result.signal['side'],
+                entry_price=first_result.signal['entry_price'],
+                timestamp=first_result.signal['timestamp'],
+                tp1_price=first_result.signal['tp1_price'],
+                tp1_pct=first_result.signal['tp1_pct'],
+                tp2_price=first_result.signal['tp2_price'],
+                tp2_pct=first_result.signal['tp2_pct'],
+                tp3_price=first_result.signal['tp3_price'],
+                tp3_pct=first_result.signal['tp3_pct'],
+                sl_price=first_result.signal['sl_price'],
+                leverage=first_result.signal['leverage'],
+                margin_mode=first_result.signal['margin_mode'],
+                position_size_usd=first_result.signal['position_size_usd'],
+                quantity=first_result.signal['quantity'],
+                risk_reward_ratio=first_result.signal['risk_reward_ratio'],
+                estimated_liquidation=first_result.signal['estimated_liquidation'],
+                max_loss_usd=first_result.signal['max_loss_usd'],
+                model_id=first_result.signal['model_id'],
+                confidence=first_result.signal['confidence'],
+                expected_net_profit_pct=first_result.signal['expected_net_profit_pct'],
+                expected_net_profit_usd=first_result.signal['expected_net_profit_usd'],
+                valid_until=first_result.signal['valid_until'],
+                status=SignalStatus.ACTIVE,
+                risk_profile=first_result.signal['risk_profile'],
+                passed_spread_check=True,
+                passed_liquidity_check=True,
+                passed_profit_filter=True,
+                passed_correlation_check=True
+            )
+        )
+        session.commit()
+
+        second_result = engine_service.generate_for_deployment(
+            symbol='ETH/USDT',
+            timeframe='15m',
+            risk_profile=RiskProfile.MEDIUM,
+            capital_usd=1000.0
+        )
+
+        assert second_result is not None
+        assert second_result.accepted is False
+        assert second_result.signal is None
+        assert second_result.risk_filters['correlation'] is False
+    finally:
+        settings.CORRELATION_THRESHOLD = original_threshold
+        session.close()
+        engine.dispose()
 
 
 def test_generate_signals_task_returns_statistics(monkeypatch):

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from typing import Dict, Optional, Tuple, Callable, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 import logging
@@ -371,6 +371,14 @@ class SignalInferenceResult:
     accepted: bool
 
 
+@dataclass
+class CorrelationRiskState:
+    """Track correlation risk parameters and current exposures."""
+
+    threshold: float
+    current_exposures: Dict[str, Side] = field(default_factory=dict)
+
+
 class SignalEngine:
     """
     High level signal generation pipeline that
@@ -397,6 +405,9 @@ class SignalEngine:
         self.max_spread_bps = max_spread_bps
         self.min_volume = min_volume
         self.feature_engineering = FeatureEngineering()
+        self.correlation_state = CorrelationRiskState(
+            threshold=settings.CORRELATION_THRESHOLD
+        )
 
     def generate_for_deployment(
         self,
@@ -451,12 +462,15 @@ class SignalEngine:
         volume = float(latest_snapshot['volume'])
         spread_bps = float(latest_snapshot.get('spread_bps', 0.0))
 
+        self._refresh_correlation_state()
+        correlation_allowed = self._passes_correlation_filter(symbol, timeframe, side)
+
         risk_filters = {
             'confidence': confidence >= settings.MIN_CONFIDENCE_THRESHOLD,
             'atr': atr > 0,
             'liquidity': volume >= self.min_volume,
             'spread': spread_bps <= self.max_spread_bps,
-            'correlation': True,
+            'correlation': correlation_allowed,
             'profit': False,  # updated after generator run
             'position_limit': True
         }
@@ -469,7 +483,7 @@ class SignalEngine:
             'timestamp': latest_snapshot['timestamp']
         }
 
-        if not all(risk_filters[key] for key in ['confidence', 'atr', 'liquidity', 'spread']):
+        if not all(risk_filters[key] for key in ['confidence', 'atr', 'liquidity', 'spread', 'correlation']):
             logger.info(
                 "Signal for %s %s rejected by pre-signal risk filters: %s",
                 symbol,
@@ -553,6 +567,7 @@ class SignalEngine:
 
         signal['model_id'] = deployment.get('model_id')
         signal['model_version'] = deployment.get('version')
+        self.correlation_state.current_exposures[symbol] = side
 
         return SignalInferenceResult(
             signal=signal,
@@ -565,38 +580,7 @@ class SignalEngine:
     def _prepare_latest_snapshot(self, symbol: str, timeframe: str) -> Dict[str, Any]:
         """Fetch latest OHLCV data and compute features/ATR."""
 
-        timeframe_value = timeframe.value if isinstance(timeframe, Enum) else str(timeframe)
-
-        ohlcv_rows = (
-            self.db.query(OHLCV)
-            .filter(
-                and_(
-                    OHLCV.symbol == symbol,
-                    OHLCV.timeframe == timeframe_value,
-                    OHLCV.timestamp != None
-                )
-            )
-            .order_by(OHLCV.timestamp.desc())
-            .limit(self.lookback_bars)
-            .all()
-        )
-
-        if not ohlcv_rows:
-            raise ValueError(f"No OHLCV data available for {symbol} {timeframe}")
-
-        ohlcv_rows = list(reversed(ohlcv_rows))
-
-        df = pd.DataFrame([
-            {
-                'timestamp': row.timestamp,
-                'open': row.open,
-                'high': row.high,
-                'low': row.low,
-                'close': row.close,
-                'volume': row.volume
-            }
-            for row in ohlcv_rows
-        ])
+        df = self._load_ohlcv_dataframe(symbol, timeframe)
 
         market_metrics_row = (
             self.db.query(MarketMetrics)
@@ -649,6 +633,120 @@ class SignalEngine:
         model = self.model_factory()
         model.load(model_path)
         return model
+
+    def _refresh_correlation_state(self) -> None:
+        """Update current exposures from active signals in the database."""
+
+        active_signals = (
+            self.db.query(Signal.symbol, Signal.side)
+            .filter(
+                Signal.status == SignalStatus.ACTIVE,
+                Signal.valid_until > datetime.utcnow()
+            )
+            .all()
+        )
+
+        exposures: Dict[str, Side] = {
+            symbol: side for symbol, side in active_signals
+        }
+        exposures.update(self.correlation_state.current_exposures)
+        self.correlation_state.current_exposures = exposures
+
+    def _passes_correlation_filter(
+        self,
+        symbol: str,
+        timeframe: str,
+        side: Side
+    ) -> bool:
+        """Check if the new signal is allowed under correlation risk constraints."""
+
+        exposures = {
+            sym: existing_side
+            for sym, existing_side in self.correlation_state.current_exposures.items()
+            if sym != symbol and existing_side == side
+        }
+
+        if not exposures:
+            return True
+
+        for other_symbol in exposures:
+            correlation = self._compute_pairwise_correlation(symbol, other_symbol, timeframe)
+            if correlation is None:
+                continue
+            if abs(correlation) >= self.correlation_state.threshold:
+                logger.info(
+                    "Correlation risk filter blocked %s due to %s (corr=%.3f >= %.2f)",
+                    symbol,
+                    other_symbol,
+                    correlation,
+                    self.correlation_state.threshold
+                )
+                return False
+
+        return True
+
+    def _compute_pairwise_correlation(
+        self,
+        symbol_a: str,
+        symbol_b: str,
+        timeframe: str
+    ) -> Optional[float]:
+        """Compute correlation between two symbols over the configured lookback."""
+
+        try:
+            df_a = self._load_ohlcv_dataframe(symbol_a, timeframe)[['timestamp', 'close']]
+            df_b = self._load_ohlcv_dataframe(symbol_b, timeframe)[['timestamp', 'close']]
+        except ValueError:
+            return None
+
+        merged = pd.merge(
+            df_a,
+            df_b,
+            on='timestamp',
+            how='inner',
+            suffixes=('_a', '_b')
+        )
+
+        if merged.empty or len(merged) < 2:
+            return None
+
+        return float(merged['close_a'].corr(merged['close_b']))
+
+    def _load_ohlcv_dataframe(self, symbol: str, timeframe: str) -> pd.DataFrame:
+        """Load OHLCV data for a symbol and timeframe."""
+
+        timeframe_value = timeframe.value if isinstance(timeframe, Enum) else str(timeframe)
+
+        ohlcv_rows = (
+            self.db.query(OHLCV)
+            .filter(
+                and_(
+                    OHLCV.symbol == symbol,
+                    OHLCV.timeframe == timeframe_value,
+                    OHLCV.timestamp != None
+                )
+            )
+            .order_by(OHLCV.timestamp.desc())
+            .limit(self.lookback_bars)
+            .all()
+        )
+
+        if not ohlcv_rows:
+            raise ValueError(f"No OHLCV data available for {symbol} {timeframe}")
+
+        ohlcv_rows = list(reversed(ohlcv_rows))
+
+        return pd.DataFrame([
+            {
+                'timestamp': row.timestamp,
+                'open': row.open,
+                'high': row.high,
+                'low': row.low,
+                'close': row.close,
+                'volume': row.volume
+            }
+            for row in ohlcv_rows
+        ])
 
     @staticmethod
     def _build_model_info(deployment: Dict[str, Any]) -> Dict[str, Any]:

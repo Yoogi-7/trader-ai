@@ -55,5 +55,8 @@ class Settings(BaseSettings):
     DRIFT_KS_THRESHOLD: float = 0.1
     MAX_CONSECUTIVE_LOSSES: int = 5
 
+    # Correlation risk
+    CORRELATION_THRESHOLD: float = 0.85
+
 
 settings = Settings()
