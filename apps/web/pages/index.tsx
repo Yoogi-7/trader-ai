@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import axios from 'axios'
 
 const API_URL = process.env.API_URL || 'http://localhost:8000'
@@ -20,24 +20,9 @@ interface Signal {
 }
 
 export default function Home() {
-  const [signals, setSignals] = useState<Signal[]>([])
   const [riskProfile, setRiskProfile] = useState('MEDIUM')
   const [capital, setCapital] = useState(100)
-
-  useEffect(() => {
-    fetchSignals()
-  }, [riskProfile])
-
-  const fetchSignals = async () => {
-    try {
-      const response = await axios.get(`${API_URL}/api/v1/signals/live`, {
-        params: { risk_profile: riskProfile.toLowerCase() }
-      })
-      setSignals(response.data)
-    } catch (error) {
-      console.error('Error fetching signals:', error)
-    }
-  }
+  const { signals } = useLiveSignals(riskProfile)
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-8">
@@ -119,4 +104,133 @@ export default function Home() {
       </div>
     </div>
   )
+}
+
+function useLiveSignals(riskProfile: string) {
+  const [signals, setSignals] = useState<Signal[]>([])
+  const websocketRef = useRef<WebSocket | null>(null)
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const shouldReconnectRef = useRef(true)
+  const hasReceivedMessageRef = useRef(false)
+  const isMountedRef = useRef(false)
+
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+    }
+  }, [])
+
+  const fetchSignals = useCallback(async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/v1/signals/live`, {
+        params: { risk_profile: riskProfile.toLowerCase() }
+      })
+      if (isMountedRef.current) {
+        setSignals(response.data)
+      }
+    } catch (error) {
+      console.error('Error fetching signals:', error)
+    }
+  }, [riskProfile])
+
+  useEffect(() => {
+    fetchSignals()
+  }, [fetchSignals])
+
+  const connectWebSocket = useCallback(() => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+      reconnectTimeoutRef.current = null
+    }
+
+    hasReceivedMessageRef.current = false
+
+    const baseUrl = API_URL.replace(/^http/, 'ws').replace(/\/$/, '')
+    const url = `${baseUrl}/ws/signals?risk_profile=${riskProfile.toLowerCase()}`
+    const socket = new WebSocket(url)
+    websocketRef.current = socket
+
+    const handleMessage = (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(event.data)
+        hasReceivedMessageRef.current = true
+
+        if (Array.isArray(payload)) {
+          if (isMountedRef.current) {
+            setSignals(payload)
+          }
+        } else if (payload && typeof payload === 'object' && 'signal_id' in payload) {
+          setSignals((prevSignals) => {
+            if (!isMountedRef.current) {
+              return prevSignals
+            }
+
+            const existingIndex = prevSignals.findIndex(
+              (signal) => signal.signal_id === (payload as Signal).signal_id
+            )
+
+            if (existingIndex >= 0) {
+              const updatedSignals = [...prevSignals]
+              updatedSignals[existingIndex] = payload as Signal
+              return updatedSignals
+            }
+
+            return [payload as Signal, ...prevSignals]
+          })
+        }
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error)
+      }
+    }
+
+    const scheduleReconnect = () => {
+      if (!shouldReconnectRef.current) {
+        return
+      }
+
+      reconnectTimeoutRef.current = setTimeout(() => {
+        connectWebSocket()
+      }, 3000)
+
+      if (!hasReceivedMessageRef.current) {
+        fetchSignals()
+      }
+    }
+
+    socket.addEventListener('open', () => {
+      if (!hasReceivedMessageRef.current) {
+        fetchSignals()
+      }
+    })
+    socket.addEventListener('message', handleMessage)
+    socket.addEventListener('close', scheduleReconnect)
+    socket.addEventListener('error', (event) => {
+      console.error('WebSocket error:', event)
+      socket.close()
+    })
+  }, [fetchSignals, riskProfile])
+
+  useEffect(() => {
+    shouldReconnectRef.current = true
+    hasReceivedMessageRef.current = false
+    connectWebSocket()
+
+    return () => {
+      shouldReconnectRef.current = false
+      hasReceivedMessageRef.current = false
+
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current)
+        reconnectTimeoutRef.current = null
+      }
+
+      if (websocketRef.current) {
+        websocketRef.current.close()
+        websocketRef.current = null
+      }
+    }
+  }, [connectWebSocket])
+
+  return { signals }
 }
