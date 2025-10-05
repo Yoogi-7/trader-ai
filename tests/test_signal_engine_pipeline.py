@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from sqlalchemy import create_engine
@@ -100,6 +101,61 @@ def test_signal_engine_pipeline_generates_profitable_signal():
     assert result.accepted is True
     assert result.signal['expected_net_profit_pct'] >= settings.MIN_NET_PROFIT_PCT
     assert result.inference_metadata['confidence'] == pytest.approx(0.8)
+
+    session.close()
+    engine.dispose()
+
+
+def test_signal_engine_logs_prediction_batch_metadata():
+    SessionLocal, engine = create_sqlite_session()
+    session = SessionLocal()
+    insert_mock_ohlcv(session)
+
+    deployment = {
+        'model_id': 'model123',
+        'version': 'v1',
+        'path': 'unused',
+        'symbol': 'BTC/USDT',
+        'timeframe': '15m'
+    }
+
+    tracker_mock = MagicMock()
+
+    engine_service = SignalEngine(
+        db=session,
+        registry=DummyRegistry(deployment),
+        model_factory=lambda: DummyModel(0.65),
+        performance_tracker=tracker_mock,
+        lookback_bars=90
+    )
+
+    result = engine_service.generate_for_deployment(
+        symbol='BTC/USDT',
+        timeframe='15m',
+        risk_profile=RiskProfile.MEDIUM,
+        capital_usd=1500.0
+    )
+
+    assert result is not None
+    tracker_mock.log_prediction_batch.assert_called_once()
+    _, kwargs = tracker_mock.log_prediction_batch.call_args
+
+    assert kwargs['model_id'] == deployment['model_id']
+    assert kwargs['symbol'] == 'BTC/USDT'
+    assert kwargs['timeframe'] == '15m'
+
+    predictions_df = kwargs['predictions']
+    expected_columns = {'ema_21', 'rsi_14', 'atr_14', 'volume', 'probability', 'confidence', 'prediction', 'side', 'timestamp'}
+    assert expected_columns.issubset(set(predictions_df.columns))
+    assert len(predictions_df) == 1
+    assert predictions_df['probability'].iloc[0] == pytest.approx(0.65)
+    assert predictions_df['prediction'].iloc[0] in (0, 1)
+
+    metadata = kwargs['metadata']
+    assert metadata['environment'] == 'production'
+    assert metadata['risk_profile'] == RiskProfile.MEDIUM.value
+    assert metadata['capital_usd'] == pytest.approx(1500.0)
+    assert metadata['model_version'] == deployment['version']
 
     session.close()
     engine.dispose()

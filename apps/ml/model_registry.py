@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 import logging
 
+from apps.api.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -14,8 +16,8 @@ class ModelRegistry:
     Tracks model performance, metadata, and enables model promotion/rollback.
     """
 
-    def __init__(self, registry_dir: str = "./model_registry"):
-        self.registry_dir = Path(registry_dir)
+    def __init__(self, registry_dir: Optional[str] = None):
+        self.registry_dir = Path(registry_dir or settings.MODEL_REGISTRY_DIR)
         self.registry_dir.mkdir(parents=True, exist_ok=True)
         self.index_file = self.registry_dir / "index.json"
         self._load_index()

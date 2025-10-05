@@ -6,6 +6,8 @@ from pathlib import Path
 import json
 import logging
 
+from apps.api.config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -15,8 +17,8 @@ class PerformanceTracker:
     Monitor for degradation, drift, and generate performance reports.
     """
 
-    def __init__(self, tracking_dir: str = "./performance_tracking"):
-        self.tracking_dir = Path(tracking_dir)
+    def __init__(self, tracking_dir: Optional[str] = None):
+        self.tracking_dir = Path(tracking_dir or settings.PERFORMANCE_TRACKING_DIR)
         self.tracking_dir.mkdir(parents=True, exist_ok=True)
 
     def log_prediction_batch(

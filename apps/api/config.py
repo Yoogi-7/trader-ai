@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     MIN_CONFIDENCE_THRESHOLD: float = 0.55
     MIN_NET_PROFIT_PCT: float = 2.0
     DEFAULT_LOOKBACK_YEARS: int = 4
+    MODEL_REGISTRY_DIR: str = "./model_registry"
+    PERFORMANCE_TRACKING_DIR: str = "./performance_tracking"
 
     # Costs
     MAKER_FEE_BPS: float = 2.0

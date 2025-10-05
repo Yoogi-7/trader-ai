@@ -14,6 +14,7 @@ from apps.api.config import settings
 from apps.ml.features import FeatureEngineering
 from apps.ml.model_registry import ModelRegistry
 from apps.ml.models import EnsembleModel
+from apps.ml.performance_tracker import PerformanceTracker
 
 logger = logging.getLogger(__name__)
 
@@ -386,18 +387,22 @@ class SignalEngine:
         registry: Optional[ModelRegistry] = None,
         signal_generator: Optional[SignalGenerator] = None,
         model_factory: Optional[Callable[[], Any]] = None,
+        performance_tracker: Optional[PerformanceTracker] = None,
         lookback_bars: int = 250,
         max_spread_bps: float = 15.0,
         min_volume: float = 1.0
     ):
         self.db = db
-        self.registry = registry or ModelRegistry()
+        self.registry = registry or ModelRegistry(registry_dir=settings.MODEL_REGISTRY_DIR)
         self.signal_generator = signal_generator or SignalGenerator()
         self.model_factory = model_factory or EnsembleModel
         self.lookback_bars = lookback_bars
         self.max_spread_bps = max_spread_bps
         self.min_volume = min_volume
         self.feature_engineering = FeatureEngineering()
+        self.performance_tracker = performance_tracker or PerformanceTracker(
+            tracking_dir=settings.PERFORMANCE_TRACKING_DIR
+        )
 
     def generate_for_deployment(
         self,
@@ -469,6 +474,38 @@ class SignalEngine:
             'environment': environment,
             'timestamp': latest_snapshot['timestamp']
         }
+
+        prediction_record = inference_df.copy()
+        prediction_record['probability'] = probability
+        prediction_record['confidence'] = confidence
+        prediction_record['prediction'] = 1 if side == Side.LONG else 0
+        prediction_record['side'] = side.value
+        prediction_record['timestamp'] = pd.to_datetime(latest_snapshot['timestamp'])
+
+        tracking_metadata = {
+            **inference_metadata,
+            'risk_profile': risk_profile.value,
+            'capital_usd': capital_usd,
+            'model_version': deployment.get('version')
+        }
+
+        model_id = deployment.get('model_id')
+
+        try:
+            self.performance_tracker.log_prediction_batch(
+                model_id=model_id or "unknown",
+                symbol=symbol,
+                timeframe=timeframe,
+                predictions=prediction_record,
+                metadata=tracking_metadata
+            )
+        except Exception:
+            logger.exception(
+                "Failed to log prediction batch for %s %s in %s",
+                symbol,
+                timeframe,
+                environment
+            )
 
         if not all(risk_filters[key] for key in ['confidence', 'atr', 'liquidity', 'spread']):
             failed_filters = [k for k, v in risk_filters.items() if not v]
