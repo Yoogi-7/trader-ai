@@ -33,6 +33,16 @@ class Settings(BaseSettings):
     MIN_NET_PROFIT_PCT: float = 2.0
     DEFAULT_LOOKBACK_YEARS: int = 4
 
+    # LLM / Summaries
+    LLM_PROVIDER: str = "openai"
+    LLM_MODEL: str = "gpt-4o-mini"
+    LLM_API_KEY: str = ""
+    LLM_MAX_TOKENS: int = 512
+    LLM_SUMMARY_TEMPLATE: str = (
+        "Signal $signal_id on $symbol recommends a $side position at $entry_price "
+        "with expected profit of $expected_net_profit_pct% and confidence $confidence%."
+    )
+
     # Costs
     MAKER_FEE_BPS: float = 2.0
     TAKER_FEE_BPS: float = 5.0

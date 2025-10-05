@@ -6,6 +6,7 @@ from apps.ml.backfill import BackfillService
 from apps.ml.training import train_model_pipeline
 from apps.ml.model_registry import ModelRegistry
 from apps.ml.signal_engine import SignalEngine
+from apps.ml.summaries import generate_signal_summary
 from apps.ml.drift import DriftDetector
 from sqlalchemy import and_
 from datetime import datetime
@@ -260,6 +261,20 @@ def generate_signals_task():
             inference_metadata = result.inference_metadata
             model_info = result.model_info
 
+            try:
+                signal_data['ai_summary'] = generate_signal_summary(
+                    signal_data,
+                    model_info=model_info,
+                    inference_metadata=inference_metadata
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error(
+                    "Failed to create AI summary for signal %s: %s",
+                    signal_data.get('signal_id'),
+                    exc,
+                )
+                signal_data['ai_summary'] = None
+
             signal_record = Signal(
                 signal_id=signal_data['signal_id'],
                 symbol=signal_data['symbol'],
@@ -291,6 +306,7 @@ def generate_signals_task():
                 passed_profit_filter=risk_filters.get('profit', True),
                 passed_correlation_check=risk_filters.get('correlation', True),
                 risk_profile=signal_data['risk_profile'] if isinstance(signal_data['risk_profile'], RiskProfile) else RiskProfile(signal_data['risk_profile']),
+                ai_summary=signal_data.get('ai_summary'),
                 published_at=datetime.utcnow()
             )
 
@@ -391,6 +407,7 @@ def _build_signal_broadcast_payload(signal_record, signal_data, model_info, infe
         'valid_until': signal_record.valid_until.isoformat(),
         'status': signal_record.status.value,
         'risk_profile': signal_record.risk_profile.value,
+        'ai_summary': signal_record.ai_summary,
         'risk_filters': risk_filters,
         'inference': metadata
     }
