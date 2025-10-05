@@ -447,7 +447,7 @@ export default function Admin() {
 
       const uniqueSymbols = Array.from(new Set(knownSymbols))
 
-      const launches = await Promise.all(
+      const launchResults = await Promise.allSettled(
         uniqueSymbols.map(async (symbol) => {
           const response = await axios.post(`${API_URL}/api/v1/train/start`, {
             symbol,
@@ -469,22 +469,66 @@ export default function Admin() {
         })
       )
 
+      const successfulLaunches: TrainingStatus[] = []
+      const failedLaunches: { symbol: string; reason: string }[] = []
+
+      launchResults.forEach((result, index) => {
+        const symbol = uniqueSymbols[index]
+        if (result.status === 'fulfilled') {
+          successfulLaunches.push(result.value)
+        } else {
+          const failure: any = result
+          const reason =
+            failure?.reason?.response?.data?.detail ||
+            failure?.reason?.message ||
+            (typeof failure?.reason === 'string' ? failure.reason : 'Unknown error')
+          failedLaunches.push({ symbol, reason })
+        }
+      })
+
+      if (successfulLaunches.length === 0) {
+        const combinedReason = failedLaunches.map(item => `${item.symbol}: ${item.reason}`).join('\n')
+        throw new Error(combinedReason || 'Failed to start training jobs')
+      }
+
       setTrainingJobs(prev => {
         const merged = new Map(prev.map(job => [job.job_id, job]))
-        launches.forEach(job => {
+        successfulLaunches.forEach(job => {
           merged.set(job.job_id, { ...merged.get(job.job_id), ...job })
         })
         return Array.from(merged.values())
       })
 
       setActiveTrainingIds(prev => {
-        const combined = [...prev, ...launches.map(job => job.job_id)]
+        const combined = [...prev, ...successfulLaunches.map(job => job.job_id)]
         return Array.from(new Set(combined))
       })
+
+      if (failedLaunches.length > 0) {
+        const message = failedLaunches.map(item => `${item.symbol}: ${item.reason}`).join('\n')
+        alert(`Some training jobs failed to start:\n${message}`)
+      }
     } catch (error: any) {
       console.error('Error starting training:', error)
       alert(`Error starting training: ${error.response?.data?.detail || error.message}`)
     }
+  }
+
+  const normalizeToIsoUtc = (value: string | null | undefined) => {
+    if (!value) {
+      return new Date('2017-01-01T00:00:00Z').toISOString()
+    }
+
+    const trimmed = value.trim()
+    const hasTimezone = /([zZ]|[+-]\d\d:\d\d)$/.test(trimmed)
+    const candidate = hasTimezone ? trimmed : `${trimmed}Z`
+    const parsed = new Date(candidate)
+
+    if (Number.isNaN(parsed.getTime())) {
+      return new Date('2017-01-01T00:00:00Z').toISOString()
+    }
+
+    return parsed.toISOString()
   }
 
   const generateHistoricalSignals = async () => {
@@ -519,9 +563,11 @@ export default function Admin() {
 
       const jobLaunches = await Promise.all(
         earliestBySymbol.map(async ({ symbol, start }) => {
+          const normalizedStart = normalizeToIsoUtc(start)
+
           const response = await axios.post(`${API_URL}/api/v1/signals/historical/generate`, {
             symbol,
-            start_date: start,
+            start_date: normalizedStart,
             end_date: endDateIso,
             timeframe: '15m',
           })
@@ -532,7 +578,7 @@ export default function Admin() {
 
           return {
             symbol,
-            startDate: start,
+            startDate: normalizedStart,
             jobId: response.data.job_id as string,
             status: placeholderStatus as string,
           }
@@ -731,7 +777,12 @@ export default function Admin() {
             {trainingJobs.map((job) => (
               <div key={job.job_id} className="bg-gray-700 rounded-lg p-4">
                 <div className="flex justify-between items-center mb-2">
-                  <div className="font-bold">Training Job</div>
+                  <div>
+                    <div className="font-bold">{job.symbol || 'Training Job'}</div>
+                    {job.timeframe && (
+                      <div className="text-sm text-gray-300">{job.timeframe}</div>
+                    )}
+                  </div>
                   <div className="flex gap-2 items-center">
                     <div className={`px-3 py-1 rounded text-sm ${
                       job.status === 'completed' ? 'bg-green-600' :

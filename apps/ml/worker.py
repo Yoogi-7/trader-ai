@@ -19,7 +19,7 @@ from apps.ml.signal_engine import SignalEngine
 from apps.ml.summaries import generate_signal_summary
 from apps.ml.drift import DriftDetector
 from sqlalchemy import and_, text
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.exc import ProgrammingError
 import pandas as pd
 import numpy as np
@@ -1238,16 +1238,22 @@ def generate_historical_signals_task(self, symbol: str, start_date: str, end_dat
         # Parse dates (handle Z suffix and timezone-aware strings)
         def _parse_dt(value):
             if isinstance(value, dt):
-                return value
-            if isinstance(value, str):
+                parsed = value
+            elif isinstance(value, str):
                 cleaned = value.strip()
                 if cleaned.endswith('Z'):
                     cleaned = cleaned[:-1] + '+00:00'
                 try:
-                    return dt.fromisoformat(cleaned)
+                    parsed = dt.fromisoformat(cleaned)
                 except ValueError as exc:
                     raise ValueError(f"Invalid datetime format: {value}") from exc
-            raise TypeError(f"Unsupported datetime value: {value!r}")
+            else:
+                raise TypeError(f"Unsupported datetime value: {value!r}")
+
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+
+            return parsed
 
         start = _parse_dt(start_date)
         end = _parse_dt(end_date)
