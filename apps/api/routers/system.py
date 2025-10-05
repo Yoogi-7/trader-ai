@@ -3,7 +3,8 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import and_, func
+from sqlalchemy import and_, func, case, text
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.orm import Session
 
 from apps.api import cache
@@ -13,9 +14,11 @@ from apps.api.db.models import (
     OHLCV,
     RiskProfile,
     Signal,
+    SignalStatus,
     TimeFrame,
     TradeResult,
 )
+from apps.api.config import settings
 
 
 ANALYTICS_CACHE_TTL_SECONDS = 300
@@ -30,6 +33,10 @@ class SystemStatusResponse(BaseModel):
     total_signals: int = 0
     total_trades: int = 0
     win_rate: Optional[float] = None
+    total_net_profit_usd: Optional[float] = None
+    avg_trade_duration_minutes: Optional[float] = None
+    metrics_source: str = "trade_results"
+    metrics_sample_size: int = 0
 
 
 class CandleInfo(BaseModel):
@@ -63,44 +70,95 @@ async def get_system_status(db: Session = Depends(get_db)):
         ModelRegistry.is_active == True
     ).count()
 
-    # Get hit rate from active models (average)
-    hit_rate_query = db.query(
-        func.avg(ModelRegistry.hit_rate_tp1)
-    ).filter(
-        ModelRegistry.is_active == True,
-        ModelRegistry.hit_rate_tp1.isnot(None)
-    ).scalar()
-
-    # Get average net profit from active models
-    avg_profit_query = db.query(
-        func.avg(ModelRegistry.avg_net_profit_pct)
-    ).filter(
-        ModelRegistry.is_active == True,
-        ModelRegistry.avg_net_profit_pct.isnot(None)
-    ).scalar()
-
     # Count total signals
     total_signals = db.query(Signal).count()
 
-    # Count total trades with results
-    total_trades = db.query(TradeResult).count()
+    # Aggregate executed trade performance
+    tp_statuses = [
+        SignalStatus.TP1_HIT,
+        SignalStatus.TP2_HIT,
+        SignalStatus.TP3_HIT,
+    ]
 
-    # Calculate win rate from actual trade results
-    profitable_trades = db.query(TradeResult).filter(
-        TradeResult.net_pnl_pct > 0
-    ).count()
+    trade_stats = db.query(
+        func.count(TradeResult.id).label("total"),
+        func.sum(case((TradeResult.net_pnl_pct > 0, 1), else_=0)).label("wins"),
+        func.sum(case((TradeResult.final_status.in_(tp_statuses), 1), else_=0)).label("tp_hits"),
+        func.avg(TradeResult.net_pnl_pct).label("avg_pct"),
+        func.sum(TradeResult.net_pnl_usd).label("total_usd"),
+        func.avg(TradeResult.duration_minutes).label("avg_duration"),
+    ).one()
 
-    win_rate = None
-    if total_trades > 0:
-        win_rate = profitable_trades / total_trades
+    total_trades = int(trade_stats.total or 0)
+    wins = float(trade_stats.wins or 0)
+    tp_hits = float(trade_stats.tp_hits or 0)
+    avg_net_profit_pct = float(trade_stats.avg_pct) if trade_stats.avg_pct is not None else None
+    total_net_profit_usd = float(trade_stats.total_usd) if trade_stats.total_usd is not None else None
+    avg_duration = float(trade_stats.avg_duration) if trade_stats.avg_duration is not None else None
+
+    win_rate = wins / total_trades if total_trades else None
+    hit_rate_tp1 = tp_hits / total_trades if total_trades else None
+
+    metrics_source = "trade_results"
+    sample_size = total_trades
+
+    if total_trades == 0:
+        try:
+            fallback_sql = text(
+                """
+                SELECT
+                    COUNT(*) AS total_samples,
+                    AVG(actual_net_pnl_pct) AS avg_pct,
+                    SUM(actual_net_pnl_usd) AS total_usd,
+                    AVG(duration_minutes) AS avg_duration,
+                    SUM(CASE WHEN actual_net_pnl_usd > 0 THEN 1 ELSE 0 END) AS winning_samples,
+                    SUM(CASE WHEN final_status IN ('tp1_hit','tp2_hit','tp3_hit') THEN 1 ELSE 0 END) AS tp_hits
+                FROM (
+                    SELECT actual_net_pnl_pct,
+                           actual_net_pnl_usd,
+                           duration_minutes,
+                           final_status
+                    FROM historical_signal_snapshots
+                    WHERE actual_net_pnl_pct IS NOT NULL
+                    ORDER BY created_at DESC
+                    LIMIT :limit
+                ) recent
+                """
+            )
+            row = db.execute(
+                fallback_sql,
+                {"limit": settings.HISTORICAL_PERFORMANCE_SAMPLE},
+            ).first()
+        except ProgrammingError:
+            row = None
+
+        if row and row.total_samples:
+            sample_size = int(row.total_samples)
+            metrics_source = "historical_snapshots"
+
+            if row.avg_pct is not None:
+                avg_net_profit_pct = float(row.avg_pct)
+            if row.total_usd is not None:
+                total_net_profit_usd = float(row.total_usd)
+            if row.avg_duration is not None:
+                avg_duration = float(row.avg_duration)
+
+            wins = float(row.winning_samples or 0)
+            tp_hits = float(row.tp_hits or 0)
+            win_rate = wins / sample_size if sample_size else None
+            hit_rate_tp1 = tp_hits / sample_size if sample_size else None
 
     return SystemStatusResponse(
-        hit_rate_tp1=hit_rate_query if hit_rate_query else None,
-        avg_net_profit_pct=avg_profit_query if avg_profit_query else None,
+        hit_rate_tp1=hit_rate_tp1,
+        avg_net_profit_pct=avg_net_profit_pct,
         active_models=active_models,
         total_signals=total_signals,
         total_trades=total_trades,
-        win_rate=win_rate
+        win_rate=win_rate,
+        total_net_profit_usd=total_net_profit_usd,
+        avg_trade_duration_minutes=avg_duration,
+        metrics_source=metrics_source,
+        metrics_sample_size=sample_size,
     )
 
 

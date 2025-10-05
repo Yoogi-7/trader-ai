@@ -11,6 +11,21 @@ const SystemAnalytics = dynamic(() => import('../components/SystemAnalytics'), {
 // Use empty string for relative URLs (proxied through Next.js rewrites)
 const API_URL = ''
 
+const TRACKED_PAIRS = [
+  'BTC/USDT',
+  'ETH/USDT',
+  'BNB/USDT',
+  'XRP/USDT',
+  'ADA/USDT',
+  'SOL/USDT',
+  'DOGE/USDT',
+  'POL/USDT',
+  'DOT/USDT',
+  'AVAX/USDT',
+  'LINK/USDT',
+  'UNI/USDT',
+]
+
 interface BackfillStatus {
   job_id: string
   symbol: string
@@ -45,6 +60,7 @@ interface HistoricalSignal {
   symbol: string
   side: string
   entry_price: number
+  timeframe?: string
   timestamp: string
   confidence: number
   expected_net_profit_pct: number
@@ -60,6 +76,7 @@ interface SignalGenerationStatus {
   job_id: string
   status: string
   symbol: string
+  timeframe: string
   start_date: string
   end_date: string
   progress_pct?: number
@@ -78,6 +95,10 @@ interface SystemStatus {
   total_signals: number
   total_trades: number
   win_rate?: number
+  total_net_profit_usd?: number
+  avg_trade_duration_minutes?: number
+  metrics_source?: string
+  metrics_sample_size?: number
 }
 
 interface CandleInfo {
@@ -95,7 +116,7 @@ export default function Admin() {
   const [historicalSignals, setHistoricalSignals] = useState<HistoricalSignal[]>([])
   const [activeBackfillId, setActiveBackfillId] = useState<string | null>(null)
   const [activeTrainingId, setActiveTrainingId] = useState<string | null>(null)
-  const [activeSignalGenId, setActiveSignalGenId] = useState<string | null>(null)
+  const [activeSignalGenIds, setActiveSignalGenIds] = useState<string[]>([])
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
   const [candlesInfo, setCandlesInfo] = useState<CandleInfo[]>([])
   const [pnlAnalytics, setPnlAnalytics] = useState<AggregatedPnlPoint[]>([])
@@ -154,11 +175,11 @@ export default function Admin() {
         const jobs: SignalGenerationStatus[] = response.data
         setSignalGenJobs(jobs)
 
-        // Set active job if any is generating
-        const genJob = jobs.find(j => j.status === 'generating')
-        if (genJob) {
-          setActiveSignalGenId(genJob.job_id)
-        }
+        // Track all active jobs
+        const activeIds = jobs
+          .filter(job => job.status === 'generating' || job.status === 'pending')
+          .map(job => job.job_id)
+        setActiveSignalGenIds(activeIds)
       } catch (error) {
         console.error('Error loading signal generation jobs:', error)
       }
@@ -289,38 +310,34 @@ export default function Admin() {
 
   // Poll for signal generation status
   useEffect(() => {
-    if (!activeSignalGenId) return
+    if (activeSignalGenIds.length === 0) return
 
     const interval = setInterval(async () => {
       try {
-        const response = await axios.get(`${API_URL}/api/v1/signals/historical/status/${activeSignalGenId}`)
-        const status: SignalGenerationStatus = response.data
+        const response = await axios.get(`${API_URL}/api/v1/signals/historical/jobs`)
+        const jobs: SignalGenerationStatus[] = response.data
+        setSignalGenJobs(jobs)
 
-        setSignalGenJobs(prev => {
-          const existing = prev.findIndex(j => j.job_id === status.job_id)
-          if (existing >= 0) {
-            const updated = [...prev]
-            updated[existing] = status
-            return updated
-          }
-          return [...prev, status]
-        })
+        const activeIds = jobs
+          .filter(job => job.status === 'generating' || job.status === 'pending')
+          .map(job => job.job_id)
 
-        // Stop polling if completed or failed
-        if (status.status === 'completed' || status.status === 'failed') {
-          setActiveSignalGenId(null)
-          // Auto-load results when completed
-          if (status.status === 'completed') {
-            setTimeout(loadHistoricalSignals, 2000)
-          }
+        if (activeIds.length === 0) {
+          setActiveSignalGenIds([])
+          setTimeout(() => {
+            loadHistoricalSignals()
+            loadSystemStatus()
+          }, 2000)
+        } else {
+          setActiveSignalGenIds(activeIds)
         }
       } catch (error) {
-        console.error('Error fetching signal generation status:', error)
+        console.error('Error fetching signal generation jobs:', error)
       }
-    }, 2000) // Poll every 2 seconds
+    }, 2000)
 
     return () => clearInterval(interval)
-  }, [activeSignalGenId])
+  }, [activeSignalGenIds.length])
 
   const startBackfill = async () => {
     try {
@@ -408,7 +425,7 @@ export default function Admin() {
       // Reload jobs
       const jobsResponse = await axios.get(`${API_URL}/api/v1/signals/historical/jobs`)
       setSignalGenJobs(jobsResponse.data)
-      setActiveSignalGenId(null)
+      setActiveSignalGenIds(prev => prev.filter(id => id !== jobId))
     } catch (error: any) {
       console.error('Error cancelling signal generation:', error)
       alert(`Error: ${error.response?.data?.detail || error.message}`)
@@ -434,42 +451,78 @@ export default function Admin() {
 
   const generateHistoricalSignals = async () => {
     try {
-      // Get earliest available date from backfill data
-      const infoResponse = await axios.get(`${API_URL}/api/v1/backfill/earliest?symbol=BTC/USDT&timeframe=15m`)
-      const earliestDate = infoResponse.data.earliest_date || '2017-01-01T00:00:00'
+      const knownSymbols = candlesInfo.length
+        ? Array.from(new Set(candlesInfo.map(info => info.symbol)))
+        : TRACKED_PAIRS
 
-      const endDate = new Date()
+      if (knownSymbols.length === 0) {
+        alert('No trading pairs configured for historical generation')
+        return
+      }
 
-      const response = await axios.post(`${API_URL}/api/v1/signals/historical/generate`, {
-        symbol: 'BTC/USDT',
-        start_date: earliestDate,
-        end_date: endDate.toISOString(),
-        timeframe: '15m'
-      })
+      const endDateIso = new Date().toISOString()
 
-      // Set active job ID to start polling
-      setActiveSignalGenId(response.data.job_id)
+      const earliestBySymbol = await Promise.all(
+        knownSymbols.map(async (symbol) => {
+          try {
+            const response = await axios.get(`${API_URL}/api/v1/backfill/earliest`, {
+              params: { symbol, timeframe: '15m' },
+            })
+            return {
+              symbol,
+              start: response.data.earliest_date || '2017-01-01T00:00:00Z',
+            }
+          } catch (error) {
+            console.error(`Failed to load earliest backfill for ${symbol}`, error)
+            return { symbol, start: '2017-01-01T00:00:00Z' }
+          }
+        })
+      )
+
+      const jobLaunches = await Promise.all(
+        earliestBySymbol.map(async ({ symbol, start }) => {
+          const response = await axios.post(`${API_URL}/api/v1/signals/historical/generate`, {
+            symbol,
+            start_date: start,
+            end_date: endDateIso,
+            timeframe: '15m',
+          })
+
+          const placeholderStatus = response.data.status && response.data.status !== 'queued'
+            ? response.data.status
+            : 'generating'
+
+          return {
+            symbol,
+            startDate: start,
+            jobId: response.data.job_id as string,
+            status: placeholderStatus as string,
+          }
+        })
+      )
+
+      const activeIds = jobLaunches.map(job => job.jobId)
+      setActiveSignalGenIds(activeIds)
+
       setSignalGenJobs(prev => {
-        const placeholderStatus = response.data.status && response.data.status !== 'queued'
-          ? response.data.status
-          : 'generating';
-        const placeholderJob: SignalGenerationStatus = {
-          job_id: response.data.job_id,
-          status: placeholderStatus,
-          symbol: 'BTC/USDT',
-          start_date: earliestDate,
-          end_date: endDate.toISOString(),
+        const filtered = prev.filter(job => !activeIds.includes(job.job_id))
+        const placeholders: SignalGenerationStatus[] = jobLaunches.map(job => ({
+          job_id: job.jobId,
+          status: job.status,
+          symbol: job.symbol,
+          timeframe: '15m',
+          start_date: job.startDate,
+          end_date: endDateIso,
           progress_pct: 0,
           signals_generated: 0,
           signals_backtested: 0,
-        }
+        }))
+        return [...placeholders, ...filtered]
+      })
 
-        const filtered = prev.filter(job => job.job_id !== placeholderJob.job_id)
-        return [placeholderJob, ...filtered]
-      });
-
-      // Refresh latest historical signals so the table stays visible while generation runs
+      // Refresh existing data while jobs run
       loadHistoricalSignals()
+      loadSystemStatus()
     } catch (error: any) {
       console.error('Error generating historical signals:', error)
       alert(`Error: ${error.message}`)
@@ -478,7 +531,7 @@ export default function Admin() {
 
   const loadHistoricalSignals = async () => {
     try {
-      const response = await axios.get(`${API_URL}/api/v1/signals/historical/results?symbol=BTC/USDT&limit=50`)
+      const response = await axios.get(`${API_URL}/api/v1/signals/historical/results?limit=150`)
       setHistoricalSignals(response.data)
     } catch (error) {
       console.error('Error loading historical signals:', error)
@@ -486,7 +539,7 @@ export default function Admin() {
   }
 
   const formatETA = (minutes?: number) => {
-    if (!minutes) return 'N/A'
+    if (minutes === undefined || minutes === null) return 'N/A'
     const hours = Math.floor(minutes / 60)
     const mins = Math.floor(minutes % 60)
     return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`
@@ -746,10 +799,10 @@ export default function Admin() {
           <div className="flex gap-4 mb-6">
             <button
               onClick={generateHistoricalSignals}
-              disabled={activeSignalGenId !== null}
+              disabled={activeSignalGenIds.length > 0}
               className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-6 py-2 rounded font-medium"
             >
-              {activeSignalGenId ? 'Generating Signals...' : 'Generate Historical Signals (Full History)'}
+              {activeSignalGenIds.length > 0 ? 'Generating Signals...' : 'Generate Historical Signals (All Pairs)'}
             </button>
           </div>
 
@@ -760,6 +813,7 @@ export default function Admin() {
                 <div className="flex justify-between items-center mb-2">
                   <div>
                     <span className="font-bold">{job.symbol}</span>
+                    <span className="text-gray-400 ml-2">{job.timeframe}</span>
                     <span className="text-gray-400 ml-2">Signal Generation</span>
                   </div>
                   <div className="flex gap-2 items-center">
@@ -857,7 +911,10 @@ export default function Admin() {
                     </div>
                     <div>
                       <p className="text-xs text-gray-400">Symbol</p>
-                      <p className="text-sm font-bold">{signal.symbol}</p>
+                      <p className="text-sm font-bold">
+                        {signal.symbol}
+                        {signal.timeframe ? ` (${signal.timeframe})` : ''}
+                      </p>
                     </div>
                     <div>
                       <p className="text-xs text-gray-400">Side</p>
@@ -986,7 +1043,15 @@ export default function Admin() {
             </div>
             <div className="bg-gray-700 p-4 rounded">
               <p className="text-gray-400 text-sm">Avg Net Profit</p>
-              <p className="text-3xl font-bold text-green-400">
+              <p
+                className={`text-3xl font-bold ${
+                  systemStatus && systemStatus.avg_net_profit_pct !== null && systemStatus.avg_net_profit_pct !== undefined
+                    ? systemStatus.avg_net_profit_pct >= 0
+                      ? 'text-green-400'
+                      : 'text-red-400'
+                    : 'text-gray-400'
+                }`}
+              >
                 {systemStatus && systemStatus.avg_net_profit_pct !== null && systemStatus.avg_net_profit_pct !== undefined
                   ? `${systemStatus.avg_net_profit_pct.toFixed(1)}%`
                   : 'N/A'}
@@ -1015,6 +1080,41 @@ export default function Admin() {
               </p>
             </div>
           </div>
+          <div className="grid grid-cols-3 gap-4 mt-4">
+            <div className="bg-gray-700 p-4 rounded">
+              <p className="text-gray-400 text-sm">Total Net Profit</p>
+              <p
+                className={`text-2xl font-bold ${
+                  systemStatus && systemStatus.total_net_profit_usd !== null && systemStatus.total_net_profit_usd !== undefined
+                    ? systemStatus.total_net_profit_usd >= 0
+                      ? 'text-green-400'
+                      : 'text-red-400'
+                    : 'text-gray-400'
+                }`}
+              >
+                {systemStatus && systemStatus.total_net_profit_usd !== null && systemStatus.total_net_profit_usd !== undefined
+                  ? `$${systemStatus.total_net_profit_usd.toFixed(2)}`
+                  : 'N/A'}
+              </p>
+            </div>
+            <div className="bg-gray-700 p-4 rounded">
+              <p className="text-gray-400 text-sm">Avg Trade Duration</p>
+              <p className="text-2xl font-bold">
+                {systemStatus && systemStatus.avg_trade_duration_minutes !== null && systemStatus.avg_trade_duration_minutes !== undefined
+                  ? formatETA(systemStatus.avg_trade_duration_minutes)
+                  : 'N/A'}
+              </p>
+            </div>
+            <div className="bg-gray-700 p-4 rounded">
+              <p className="text-gray-400 text-sm">Metrics Sample Size</p>
+              <p className="text-2xl font-bold">{systemStatus?.metrics_sample_size ?? 0}</p>
+            </div>
+          </div>
+          {systemStatus?.metrics_source && (
+            <p className="text-xs text-gray-500 mt-3">
+              Metrics based on {systemStatus.metrics_source.replace(/_/g, ' ')} ({systemStatus.metrics_sample_size ?? 0} samples).
+            </p>
+          )}
         </div>
       </div>
     </div>

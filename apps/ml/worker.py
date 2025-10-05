@@ -1,7 +1,17 @@
+from typing import Optional
+
 from celery import Celery
 from apps.api.config import settings
 from apps.api.db.session import SessionLocal
-from apps.api.db.models import OHLCV, Signal, SignalStatus, RiskProfile, Side, SignalRejection
+from apps.api.db.models import (
+    OHLCV,
+    Signal,
+    SignalStatus,
+    RiskProfile,
+    Side,
+    SignalRejection,
+    ModelRegistry as ModelRecord,
+)
 from apps.ml.backfill import BackfillService
 from apps.ml.training import train_model_pipeline
 from apps.ml.model_registry import ModelRegistry
@@ -288,6 +298,33 @@ def train_model_task(
                 if feature_importance:
                     db_model.feature_importance = feature_importance
 
+            if db_model:
+                # Promote the latest model to production and retire older ones for this pair
+                siblings = db.query(ModelRecord).filter(
+                    ModelRecord.symbol == symbol,
+                    ModelRecord.timeframe == timeframe_enum,
+                    ModelRecord.model_id != db_model.model_id,
+                ).all()
+                for sibling in siblings:
+                    sibling.is_active = False
+                    sibling.is_production = False
+
+                db_model.is_active = True
+                db_model.is_production = True
+                db_model.deployed_at = datetime.utcnow()
+
+                if registry_version:
+                    try:
+                        registry.deploy_model(symbol, timeframe, registry_version)
+                    except Exception as exc:  # pragma: no cover - defensive logging
+                        logger.error(
+                            "Failed to auto-deploy model %s %s %s: %s",
+                            symbol,
+                            timeframe,
+                            registry_version,
+                            exc,
+                        )
+
             return db_model
 
         results = train_model_pipeline(
@@ -391,14 +428,79 @@ def generate_signals_task():
     confidences = []
     processed_deployments = 0
     skipped_filters = 0
+    skipped_low_performance = 0
+    performance_cache: dict[tuple[str, str], Optional[dict]] = {}
+    min_performance_samples = max(30, settings.HISTORICAL_PERFORMANCE_SAMPLE // 5)
 
     try:
         deployments = registry.index.get('deployments', {}) if hasattr(registry, 'index') else {}
 
         if not deployments:
-            logger.info("No active model deployments found for signal generation")
-            summary["metrics"]["deployments_processed"] = 0
-            return summary
+            logger.info(
+                "No active model deployments found for signal generation; attempting to bootstrap from registry table"
+            )
+
+            candidates = db.query(ModelRecord).filter(ModelRecord.is_active == True).all()
+            updated_candidates = False
+
+            if not candidates:
+                all_models = db.query(ModelRecord).order_by(ModelRecord.created_at.desc()).all()
+                best_by_pair: dict[tuple[str, str], ModelRecord] = {}
+                for model in all_models:
+                    timeframe_value = (
+                        model.timeframe.value if hasattr(model.timeframe, "value") else str(model.timeframe)
+                    )
+                    key = (model.symbol, timeframe_value)
+                    score = model.hit_rate_tp1 or 0.0
+                    existing = best_by_pair.get(key)
+                    if not existing:
+                        best_by_pair[key] = model
+                        continue
+
+                    existing_score = existing.hit_rate_tp1 or 0.0
+                    if score > existing_score:
+                        best_by_pair[key] = model
+                        continue
+                    if score == existing_score:
+                        if model.created_at and (not existing.created_at or model.created_at > existing.created_at):
+                            best_by_pair[key] = model
+
+                candidates = list(best_by_pair.values())
+
+            for candidate in candidates:
+                timeframe_value = (
+                    candidate.timeframe.value if hasattr(candidate.timeframe, "value") else str(candidate.timeframe)
+                )
+                try:
+                    registry.deploy_model(candidate.symbol, timeframe_value, candidate.version)
+                except Exception as exc:
+                    logger.error(
+                        "Failed to bootstrap deployment for %s %s: %s",
+                        candidate.symbol,
+                        timeframe_value,
+                        exc,
+                    )
+                    continue
+
+                if not candidate.is_active:
+                    candidate.is_active = True
+                    updated_candidates = True
+                if not candidate.is_production:
+                    candidate.is_production = True
+                    updated_candidates = True
+
+            if updated_candidates:
+                try:
+                    db.commit()
+                except Exception:
+                    db.rollback()
+
+            deployments = registry.index.get('deployments', {}) if hasattr(registry, 'index') else {}
+
+            if not deployments:
+                summary["metrics"]["deployments_processed"] = 0
+                summary["details"].append({"reason": "no_deployments_available"})
+                return summary
 
         for _, deployment in deployments.items():
             symbol = deployment.get('symbol')
@@ -408,6 +510,72 @@ def generate_signals_task():
             if not symbol or not timeframe:
                 logger.warning("Deployment missing symbol or timeframe: %s", deployment)
                 summary['skipped'] += 1
+                continue
+
+            timeframe_value = timeframe.value if hasattr(timeframe, 'value') else str(timeframe)
+
+            perf_key = (symbol, timeframe_value)
+            if perf_key not in performance_cache:
+                stats = None
+                try:
+                    perf_sql = text(
+                        """
+                        SELECT
+                            COUNT(*) AS total_samples,
+                            SUM(CASE WHEN actual_net_pnl_usd > 0 THEN 1 ELSE 0 END) AS winning_samples,
+                            AVG(actual_net_pnl_pct) AS avg_pct
+                        FROM (
+                            SELECT actual_net_pnl_pct,
+                                   actual_net_pnl_usd
+                            FROM historical_signal_snapshots
+                            WHERE symbol = :symbol
+                              AND timeframe = :timeframe
+                              AND actual_net_pnl_pct IS NOT NULL
+                            ORDER BY created_at DESC
+                            LIMIT :limit
+                        ) recent
+                        """
+                    )
+                    row = db.execute(
+                        perf_sql,
+                        {
+                            'symbol': symbol,
+                            'timeframe': timeframe_value,
+                            'limit': settings.HISTORICAL_PERFORMANCE_SAMPLE,
+                        },
+                    ).first()
+                except ProgrammingError:
+                    db.rollback()
+                    row = None
+
+                if row and row.total_samples:
+                    total_samples = int(row.total_samples)
+                    win_rate_recent = (
+                        float(row.winning_samples or 0) / total_samples if total_samples else None
+                    )
+                    stats = {
+                        'total': total_samples,
+                        'win_rate': win_rate_recent,
+                        'avg_net_pnl_pct': float(row.avg_pct) if row.avg_pct is not None else None,
+                    }
+                performance_cache[perf_key] = stats
+
+            stats = performance_cache.get(perf_key)
+            if (
+                stats
+                and stats.get('total', 0) >= min_performance_samples
+                and stats.get('win_rate') is not None
+                and stats['win_rate'] < settings.MIN_HISTORICAL_WIN_RATE
+            ):
+                skipped_low_performance += 1
+                summary['skipped'] += 1
+                summary['details'].append({
+                    'symbol': symbol,
+                    'timeframe': timeframe_value,
+                    'reason': 'low_recent_win_rate',
+                    'recent_win_rate': stats['win_rate'],
+                    'sample_size': stats['total'],
+                })
                 continue
 
             processed_deployments += 1
@@ -572,6 +740,7 @@ def generate_signals_task():
 
         summary['metrics']['deployments_processed'] = processed_deployments
         summary['metrics']['skipped_due_to_filters'] = skipped_filters
+        summary['metrics']['skipped_low_performance'] = skipped_low_performance
 
         return summary
     except Exception as exc:

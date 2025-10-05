@@ -39,6 +39,7 @@ class HistoricalSignalResponse(BaseModel):
     symbol: str
     side: str
     entry_price: float
+    timeframe: Optional[str] = None
     tp1_price: float
     tp2_price: float
     tp3_price: float
@@ -71,6 +72,7 @@ class SignalGenerationStatus(BaseModel):
     job_id: str
     status: str
     symbol: str
+    timeframe: str
     start_date: str
     end_date: str
     progress_pct: Optional[float] = None
@@ -184,6 +186,7 @@ def get_signal_generation_status(job_id: str, db: Session = Depends(get_db)):
         job_id=job.job_id,
         status=job.status,
         symbol=job.symbol,
+        timeframe=job.timeframe.value if hasattr(job.timeframe, "value") else str(job.timeframe),
         start_date=job.start_date.isoformat(),
         end_date=job.end_date.isoformat(),
         progress_pct=job.progress_pct,
@@ -242,6 +245,7 @@ def list_signal_generation_jobs(db: Session = Depends(get_db)):
             job_id=job.job_id,
             status=job.status,
             symbol=job.symbol,
+            timeframe=job.timeframe.value if hasattr(job.timeframe, "value") else str(job.timeframe),
             start_date=job.start_date.isoformat(),
             end_date=job.end_date.isoformat(),
             progress_pct=job.progress_pct,
@@ -264,15 +268,16 @@ def get_historical_signals(
 ):
     """Get historical signals with their actual results"""
     try:
-        query = db.query(Signal).outerjoin(TradeResult, Signal.signal_id == TradeResult.signal_id)
+    query = db.query(Signal).outerjoin(TradeResult, Signal.signal_id == TradeResult.signal_id)
 
-        if symbol:
+    if symbol:
+        if symbol.upper() != "ALL":
             query = query.filter(Signal.symbol == symbol)
 
-        query = query.order_by(desc(Signal.timestamp)).limit(limit)
-        signals = query.all()
+    query = query.order_by(desc(Signal.timestamp)).limit(limit)
+    signals = query.all()
 
-        results = []
+    results = []
         for signal in signals:
             trade_result = signal.trade_results[0] if signal.trade_results else None
 
@@ -281,6 +286,7 @@ def get_historical_signals(
                 symbol=signal.symbol,
                 side=signal.side.value,
                 entry_price=signal.entry_price,
+                timeframe=signal.model.timeframe.value if signal.model and signal.model.timeframe else None,
                 tp1_price=signal.tp1_price,
                 tp2_price=signal.tp2_price,
                 tp3_price=signal.tp3_price,
@@ -339,12 +345,13 @@ def get_historical_signals(
                 symbol=row['symbol'],
                 side=row['side'],
                 entry_price=row['entry_price'],
+                timeframe=row['timeframe'],
                 tp1_price=row['tp1_price'] or row['entry_price'],
                 tp2_price=row['tp2_price'] or row['entry_price'],
                 tp3_price=row['tp3_price'] or row['entry_price'],
                 sl_price=row['sl_price'] or row['entry_price'],
                 timestamp=row['timestamp'],
-                status='time_stop',
+                status=row['final_status'] or 'time_stop',
                 confidence=row['confidence'] or 0.0,
                 expected_net_profit_pct=row['expected_net_profit_pct'] or 0.0,
                 ai_summary=None,
