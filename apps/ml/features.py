@@ -29,7 +29,11 @@ class FeatureEngineering:
     def __init__(self):
         self.feature_columns = []
 
-    def compute_all_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def compute_all_features(
+        self,
+        df: pd.DataFrame,
+        market_metrics: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
         """
         Compute all features for a given OHLCV DataFrame.
 
@@ -57,14 +61,12 @@ class FeatureEngineering:
         # Market regime
         df = self._add_regime_detection(df)
 
-        # Microstructure (requires market_metrics join in production)
-        # Placeholder columns for now
-        df['spread_bps'] = 0.0
-        df['depth_imbalance'] = 0.0
-        df['realized_vol'] = df['close'].pct_change().rolling(20).std() * np.sqrt(365 * 24)
+        # Microstructure & market metrics
+        df = self._add_market_metrics(df, market_metrics)
 
         # Sentiment (plugin interface - placeholder)
-        df['sentiment_score'] = 0.0
+        if 'sentiment_score' not in df.columns:
+            df['sentiment_score'] = 0.0
 
         return df
 
@@ -184,6 +186,57 @@ class FeatureEngineering:
         df['bb_width'] = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
         return df
 
+    def _add_market_metrics(
+        self,
+        df: pd.DataFrame,
+        market_metrics: Optional[pd.DataFrame]
+    ) -> pd.DataFrame:
+        """Join market microstructure metrics when available"""
+        df = df.copy()
+
+        if market_metrics is None or market_metrics.empty:
+            # Fall back to safe defaults if no external data provided
+            df['spread_bps'] = df.get('spread_bps', pd.Series(0.0, index=df.index))
+            df['depth_imbalance'] = df.get('depth_imbalance', pd.Series(0.0, index=df.index))
+            df['realized_vol'] = df.get(
+                'realized_vol',
+                df['close'].pct_change().rolling(20).std() * np.sqrt(365 * 24)
+            )
+            df['funding_rate'] = df.get('funding_rate', pd.Series(0.0, index=df.index))
+            df['open_interest'] = df.get('open_interest', pd.Series(0.0, index=df.index))
+            return df
+
+        metrics = market_metrics.sort_values('timestamp')
+        base = df.sort_values('timestamp')
+
+        merged = pd.merge_asof(
+            base,
+            metrics,
+            on='timestamp',
+            direction='backward',
+            tolerance=pd.Timedelta(minutes=15)
+        )
+
+        # Forward fill to smooth missing values between updates
+        for col, default in [
+            ('spread_bps', 0.0),
+            ('depth_imbalance', 0.0),
+            ('realized_volatility', np.nan),
+            ('funding_rate', 0.0),
+            ('open_interest', np.nan)
+        ]:
+            if col not in merged:
+                merged[col] = default
+            merged[col] = merged[col].fillna(method='ffill').fillna(default)
+
+        df['spread_bps'] = merged['spread_bps']
+        df['depth_imbalance'] = merged['depth_imbalance']
+        df['realized_vol'] = merged['realized_volatility']
+        df['funding_rate'] = merged['funding_rate']
+        df['open_interest'] = merged['open_interest']
+
+        return df
+
     def _add_ichimoku(self, df: pd.DataFrame) -> pd.DataFrame:
         """Add Ichimoku Cloud indicators"""
         if PANDAS_TA_AVAILABLE:
@@ -280,7 +333,20 @@ class FeatureEngineering:
 
     def get_feature_columns(self, df: pd.DataFrame) -> list:
         """Return list of feature column names (only numeric types)"""
-        exclude = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'symbol', 'timeframe', 'label']
+        exclude = [
+            'timestamp',
+            'open',
+            'high',
+            'low',
+            'close',
+            'volume',
+            'symbol',
+            'timeframe',
+            'label',
+            'hit_barrier',
+            'return_pct',
+            'bars_to_hit'
+        ]
         # Only return columns that are numeric (int, float, bool)
         feature_cols = []
         for col in df.columns:

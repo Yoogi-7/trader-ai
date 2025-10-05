@@ -16,7 +16,11 @@ class TripleBarrierLabeling:
         self,
         tp_pct: float = 0.02,
         sl_pct: float = 0.01,
-        time_bars: int = 24
+        time_bars: int = 24,
+        use_atr: bool = False,
+        atr_column: str = 'atr_14',
+        tp_atr_multiplier: float = 1.0,
+        sl_atr_multiplier: float = 1.5
     ):
         """
         Args:
@@ -27,6 +31,10 @@ class TripleBarrierLabeling:
         self.tp_pct = tp_pct
         self.sl_pct = sl_pct
         self.time_bars = time_bars
+        self.use_atr = use_atr
+        self.atr_column = atr_column
+        self.tp_atr_multiplier = tp_atr_multiplier
+        self.sl_atr_multiplier = sl_atr_multiplier
 
     def label_data(self, df: pd.DataFrame, side: str = 'long', progress_callback=None) -> pd.DataFrame:
         """
@@ -60,12 +68,26 @@ class TripleBarrierLabeling:
 
             entry_price = df.iloc[i]['close']
 
-            if side == 'long':
-                tp_price = entry_price * (1 + self.tp_pct)
-                sl_price = entry_price * (1 - self.sl_pct)
-            else:  # short
-                tp_price = entry_price * (1 - self.tp_pct)
-                sl_price = entry_price * (1 + self.sl_pct)
+            atr_value = None
+            if self.use_atr and self.atr_column in df.columns:
+                atr_value = df.iloc[i][self.atr_column]
+                if pd.isna(atr_value) or atr_value <= 0:
+                    atr_value = None
+
+            if atr_value is not None:
+                if side == 'long':
+                    tp_price = entry_price + (atr_value * self.tp_atr_multiplier)
+                    sl_price = entry_price - (atr_value * self.sl_atr_multiplier)
+                else:
+                    tp_price = entry_price - (atr_value * self.tp_atr_multiplier)
+                    sl_price = entry_price + (atr_value * self.sl_atr_multiplier)
+            else:
+                if side == 'long':
+                    tp_price = entry_price * (1 + self.tp_pct)
+                    sl_price = entry_price * (1 - self.sl_pct)
+                else:  # short
+                    tp_price = entry_price * (1 - self.tp_pct)
+                    sl_price = entry_price * (1 + self.sl_pct)
 
             # Look forward to find which barrier is hit first
             hit_barrier = 'time'

@@ -167,7 +167,7 @@ class EnsembleModel:
         self.xgb_model = xgb.Booster()
         self.xgb_model.load_model(str(path / 'xgb_model.json'))
 
-        metadata = joblib.dump(path / 'metadata.pkl')
+        metadata = joblib.load(path / 'metadata.pkl')
         self.feature_names = metadata['feature_names']
         self.lgbm_params = metadata['lgbm_params']
         self.xgb_params = metadata['xgb_params']
@@ -212,13 +212,20 @@ class ConformalPredictor:
         # Compute conformal p-values
         confidence = np.zeros(len(probas))
 
-        for i, proba in enumerate(probas):
-            # Count how many calibration scores are >= current score
-            score = np.abs(proba - 1)  # Nonconformity for positive class
-            p_value = (self.calibration_scores <= score).sum() / len(self.calibration_scores)
-            confidence[i] = p_value
-
         predictions = (probas >= 0.5).astype(int)
+
+        if self.calibration_scores is None or len(self.calibration_scores) == 0:
+            logger.warning("Conformal predictor used before calibration; returning raw probabilities")
+            return predictions, probas
+
+        for i, proba in enumerate(probas):
+            # Nonconformity distance to the predicted class (0 or 1)
+            target = predictions[i]
+            score = np.abs(proba - target)
+            # Higher nonconformity => lower confidence; use >= for p-value
+            confidence[i] = (
+                (self.calibration_scores >= score).sum() / len(self.calibration_scores)
+            )
 
         return predictions, confidence
 

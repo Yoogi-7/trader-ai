@@ -6,7 +6,7 @@ from apps.ml.labeling import TripleBarrierLabeling
 from apps.ml.walkforward import WalkForwardValidator
 from apps.ml.model_registry import ModelRegistry
 from apps.ml.performance_tracker import PerformanceTracker
-from apps.api.db.models import OHLCV, TimeFrame
+from apps.api.db.models import OHLCV, TimeFrame, MarketMetrics
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -32,6 +32,9 @@ class WalkForwardPipeline:
         tp_pct: float = 0.02,
         sl_pct: float = 0.01,
         time_bars: int = 24,
+        use_atr_labeling: bool = True,
+        tp_atr_multiplier: float = 1.0,
+        sl_atr_multiplier: float = 1.5,
         target_confidence: float = 0.55
     ):
         self.model_dir = Path(model_dir)
@@ -49,7 +52,10 @@ class WalkForwardPipeline:
         self.labeler = TripleBarrierLabeling(
             tp_pct=tp_pct,
             sl_pct=sl_pct,
-            time_bars=time_bars
+            time_bars=time_bars,
+            use_atr=use_atr_labeling,
+            tp_atr_multiplier=tp_atr_multiplier,
+            sl_atr_multiplier=sl_atr_multiplier
         )
         self.target_confidence = target_confidence
 
@@ -92,31 +98,80 @@ class WalkForwardPipeline:
         logger.info(f"Fetched {len(df)} OHLCV bars")
         return df
 
+    def fetch_market_metrics(
+        self,
+        db: Session,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime
+    ) -> pd.DataFrame:
+        """Fetch market microstructure metrics"""
+        logger.info(
+            f"Fetching market metrics for {symbol} from {start_date} to {end_date}"
+        )
+
+        query = db.query(MarketMetrics).filter(
+            and_(
+                MarketMetrics.symbol == symbol,
+                MarketMetrics.timestamp >= start_date,
+                MarketMetrics.timestamp <= end_date
+            )
+        ).order_by(MarketMetrics.timestamp)
+
+        data = query.all()
+
+        if not data:
+            logger.warning(f"No market metrics found for {symbol}")
+            return pd.DataFrame()
+
+        df = pd.DataFrame([
+            {
+                'timestamp': row.timestamp,
+                'funding_rate': row.funding_rate,
+                'open_interest': row.open_interest,
+                'spread_bps': row.spread_bps,
+                'depth_imbalance': row.depth_imbalance,
+                'realized_volatility': row.realized_volatility
+            }
+            for row in data
+        ])
+
+        logger.info(f"Fetched {len(df)} market metric rows")
+        return df
+
     def prepare_features_and_labels(
         self,
         df: pd.DataFrame,
+        market_metrics: pd.DataFrame = None,
         side: str = 'long',
         labeling_progress_callback=None
     ) -> pd.DataFrame:
         """Compute features and labels"""
         logger.info("Computing features...")
-        df_features = self.feature_eng.compute_all_features(df)
+        df_features = self.feature_eng.compute_all_features(df, market_metrics=market_metrics)
 
         logger.info("Computing labels...")
-        labels_df = self.labeler.label_data(df_features, side=side, progress_callback=labeling_progress_callback)
-        binary_labels = self.labeler.create_binary_labels(labels_df)
+        labels_df = self.labeler.label_data(
+            df_features,
+            side=side,
+            progress_callback=labeling_progress_callback
+        )
+        labels_df['label'] = self.labeler.create_binary_labels(labels_df)
 
-        # Merge features and labels
-        df_features['label'] = 0
-        df_features.loc[labels_df.index, 'label'] = binary_labels.values
+        # Merge on timestamp to avoid leaking unlabeled rows
+        merged = pd.merge(
+            df_features,
+            labels_df[['timestamp', 'label', 'hit_barrier', 'return_pct', 'bars_to_hit']],
+            on='timestamp',
+            how='inner'
+        )
 
-        # Drop rows with NaN (from feature engineering)
-        df_features = df_features.dropna()
+        merged = merged.dropna()
 
-        logger.info(f"Features and labels prepared: {len(df_features)} samples")
-        logger.info(f"Label distribution: {df_features['label'].value_counts().to_dict()}")
+        logger.info(f"Features and labels prepared: {len(merged)} samples")
+        logger.info(f"Label distribution: {merged['label'].value_counts().to_dict()}")
 
-        return df_features
+        return merged
 
     def run_walk_forward_validation(
         self,
@@ -141,8 +196,16 @@ class WalkForwardPipeline:
         # 1. Fetch data
         df = self.fetch_ohlcv_data(db, symbol, timeframe, start_date, end_date)
 
+        # 1b. Fetch supplemental data
+        market_metrics = self.fetch_market_metrics(db, symbol, start_date, end_date)
+
         # 2. Prepare features and labels
-        df_prepared = self.prepare_features_and_labels(df, side=side, labeling_progress_callback=labeling_progress_callback)
+        df_prepared = self.prepare_features_and_labels(
+            df,
+            market_metrics=market_metrics,
+            side=side,
+            labeling_progress_callback=labeling_progress_callback
+        )
 
         # 3. Generate walk-forward splits
         splits = self.validator.generate_splits(df_prepared, start_date, end_date)
@@ -167,7 +230,7 @@ class WalkForwardPipeline:
 
             # Update progress callback if provided
             if progress_callback:
-                progress = (i / len(splits)) * 100
+                progress = ((i + 1) / len(splits)) * 100
                 progress_callback(
                     progress_pct=progress,
                     current_fold=i + 1,
@@ -245,6 +308,13 @@ class WalkForwardPipeline:
         # 5. Aggregate results
         if not split_results:
             raise ValueError("No valid splits completed")
+
+        if progress_callback:
+            progress_callback(
+                progress_pct=100.0,
+                current_fold=len(splits),
+                total_folds=len(splits)
+            )
 
         avg_metrics = self._aggregate_split_results(split_results)
 

@@ -131,7 +131,8 @@ class SignalGenerator:
             'expected_net_profit_usd': expected_net_profit_usd,
             'valid_until': timestamp + timedelta(hours=4),
             'risk_profile': risk_profile,
-            'passed_profit_filter': True
+            'passed_profit_filter': True,
+            'atr': atr
         }
 
         return signal
