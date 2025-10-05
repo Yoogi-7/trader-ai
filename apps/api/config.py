@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     MED_MAX_POSITIONS: int = 4
     HIGH_MAX_POSITIONS: int = 6
 
+    # Defaults
+    DEFAULT_RISK_PROFILE: str = "medium"
+    DEFAULT_CAPITAL_USD: float = 1000.0
+
     # Monitoring
     DRIFT_PSI_THRESHOLD: float = 0.15
     DRIFT_KS_THRESHOLD: float = 0.1

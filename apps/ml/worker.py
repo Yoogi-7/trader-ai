@@ -215,6 +215,37 @@ def generate_signals_task():
     processed_deployments = 0
     skipped_filters = 0
 
+    def _resolve_risk_profile(value):
+        if isinstance(value, RiskProfile):
+            return value
+
+        if isinstance(value, str):
+            try:
+                return RiskProfile(value)
+            except ValueError:
+                try:
+                    return RiskProfile(value.lower())
+                except ValueError:
+                    return None
+
+        return None
+
+    default_risk_profile = (
+        _resolve_risk_profile(getattr(settings, 'DEFAULT_RISK_PROFILE', RiskProfile.MEDIUM))
+        or RiskProfile.MEDIUM
+    )
+
+    default_capital_setting = getattr(settings, 'DEFAULT_CAPITAL_USD', 1000.0)
+
+    try:
+        default_capital_usd = float(default_capital_setting)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid DEFAULT_CAPITAL_USD configuration value %r, falling back to 1000.0",
+            default_capital_setting,
+        )
+        default_capital_usd = 1000.0
+
     try:
         deployments = registry.index.get('deployments', {}) if hasattr(registry, 'index') else {}
 
@@ -235,13 +266,29 @@ def generate_signals_task():
 
             processed_deployments += 1
 
+            risk_profile_value = deployment.get('risk_profile')
+            risk_profile = _resolve_risk_profile(risk_profile_value) or default_risk_profile
+
+            capital_value = deployment.get('capital_usd', default_capital_usd)
+
+            try:
+                capital_usd = float(capital_value)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid capital_usd value %r for deployment %s, using default %.2f",
+                    capital_value,
+                    f"{symbol}_{timeframe}_{environment}",
+                    default_capital_usd,
+                )
+                capital_usd = default_capital_usd
+
             try:
                 result = engine.generate_for_deployment(
                     symbol=symbol,
                     timeframe=timeframe,
                     environment=environment,
-                    risk_profile=RiskProfile.MEDIUM,
-                    capital_usd=1000.0
+                    risk_profile=risk_profile,
+                    capital_usd=capital_usd
                 )
             except Exception as exc:
                 logger.error("Failed to generate signal for %s %s: %s", symbol, timeframe, exc)

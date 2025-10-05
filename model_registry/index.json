@@ -397,5 +397,17 @@
       }
     ]
   },
-  "deployments": {}
+  "deployments": {
+    "BTC_USDT_15m_production": {
+      "symbol": "BTC/USDT",
+      "timeframe": "15m",
+      "version": "v5",
+      "model_id": "BTC_USDT_15m_20251005_095855",
+      "environment": "production",
+      "deployed_at": "2025-10-05T10:00:00",
+      "deployed_by": "system",
+      "risk_profile": "medium",
+      "capital_usd": 1000.0
+    }
+  }
 }

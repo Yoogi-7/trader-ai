@@ -16,6 +16,7 @@ from apps.api.db.models import (
     SignalStatus,
     TimeFrame
 )
+from apps.ml.model_registry import ModelRegistry
 from apps.ml.signal_engine import SignalEngine
 from apps.ml.signal_engine import SignalGenerator
 from apps.ml.worker import generate_signals_task
@@ -389,4 +390,81 @@ def test_generate_signals_task_skips_when_position_limit_reached(monkeypatch):
     session = SessionLocal()
     assert session.query(Signal).count() == settings.MED_MAX_POSITIONS
     session.close()
+    engine.dispose()
+
+
+def test_generate_signals_task_uses_deployment_parameters(monkeypatch, tmp_path):
+    SessionLocal, engine = create_sqlite_session()
+
+    session = SessionLocal()
+    insert_mock_ohlcv(session)
+    session.close()
+
+    def session_factory():
+        return SessionLocal()
+
+    monkeypatch.setattr('apps.ml.worker.SessionLocal', session_factory)
+
+    registry_dir = tmp_path / "registry"
+    model_src = tmp_path / "model_src"
+    model_src.mkdir()
+    (model_src / "model.bin").write_text("binary")
+
+    registry = ModelRegistry(str(registry_dir))
+    version = registry.register_model(
+        model_id='model123',
+        symbol='BTC/USDT',
+        timeframe='15m',
+        model_path=model_src,
+        metrics={},
+        metadata={}
+    )
+
+    registry.deploy_model(
+        symbol='BTC/USDT',
+        timeframe='15m',
+        version=version,
+        environment='production',
+        risk_profile=RiskProfile.HIGH,
+        capital_usd=5000.0
+    )
+
+    monkeypatch.setattr('apps.ml.worker.ModelRegistry', lambda: registry)
+
+    captured = {}
+
+    class CaptureSignalEngine:
+        def __init__(self, db, registry=None, **kwargs):
+            self.db = db
+            self.registry = registry
+
+        def generate_for_deployment(
+            self,
+            symbol,
+            timeframe,
+            environment='production',
+            risk_profile=None,
+            capital_usd=None,
+            **kwargs
+        ):
+            captured.setdefault('calls', []).append(
+                {'risk_profile': risk_profile, 'capital_usd': capital_usd}
+            )
+            return SimpleNamespace(
+                signal=None,
+                accepted=False,
+                risk_filters={},
+                inference_metadata={},
+                model_info={}
+            )
+
+    monkeypatch.setattr('apps.ml.worker.SignalEngine', CaptureSignalEngine)
+
+    result = generate_signals_task.run()
+
+    assert result['signals_generated'] == 0
+    assert result['skipped'] == 1
+    assert captured['calls'][0]['risk_profile'] == RiskProfile.HIGH
+    assert captured['calls'][0]['capital_usd'] == pytest.approx(5000.0)
+
     engine.dispose()

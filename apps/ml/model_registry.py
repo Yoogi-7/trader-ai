@@ -2,8 +2,11 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 import logging
+
+from apps.api.config import settings
+from apps.api.db.models import RiskProfile
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +166,9 @@ class ModelRegistry:
         symbol: str,
         timeframe: str,
         version: str,
-        environment: str = 'production'
+        environment: str = 'production',
+        risk_profile: Union[RiskProfile, str, None] = None,
+        capital_usd: Optional[float] = None
     ) -> bool:
         """
         Deploy a model version to an environment.
@@ -173,6 +178,8 @@ class ModelRegistry:
             timeframe: Timeframe
             version: Model version to deploy
             environment: Target environment (production/staging)
+            risk_profile: Risk profile to apply for this deployment
+            capital_usd: Available capital in USD for this deployment
 
         Returns:
             True if successful
@@ -186,6 +193,45 @@ class ModelRegistry:
         key = f"{symbol}_{timeframe}"
         deployment_key = f"{key}_{environment}"
 
+        def _resolve_risk(value: Union[RiskProfile, str, None]) -> Optional[RiskProfile]:
+            if isinstance(value, RiskProfile):
+                return value
+
+            if isinstance(value, str):
+                try:
+                    return RiskProfile(value)
+                except ValueError:
+                    try:
+                        return RiskProfile(value.lower())
+                    except ValueError:
+                        return None
+
+            return None
+
+        default_risk = _resolve_risk(getattr(settings, 'DEFAULT_RISK_PROFILE', RiskProfile.MEDIUM)) or RiskProfile.MEDIUM
+        deployment_risk = _resolve_risk(risk_profile) or default_risk
+
+        default_capital = getattr(settings, 'DEFAULT_CAPITAL_USD', 1000.0)
+
+        try:
+            default_capital_value = float(default_capital)
+        except (TypeError, ValueError):
+            logger.warning("Invalid DEFAULT_CAPITAL_USD configuration value %r, falling back to 1000.0", default_capital)
+            default_capital_value = 1000.0
+
+        if capital_usd is None:
+            capital_value = default_capital_value
+        else:
+            try:
+                capital_value = float(capital_usd)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid capital_usd provided for deployment %s, falling back to default %.2f",
+                    deployment_key,
+                    default_capital_value,
+                )
+                capital_value = default_capital_value
+
         # Update deployment
         self.index['deployments'][deployment_key] = {
             'symbol': symbol,
@@ -194,7 +240,9 @@ class ModelRegistry:
             'model_id': model['model_id'],
             'environment': environment,
             'deployed_at': datetime.utcnow().isoformat(),
-            'deployed_by': 'system'
+            'deployed_by': 'system',
+            'risk_profile': deployment_risk.value,
+            'capital_usd': capital_value
         }
 
         # Update model status
