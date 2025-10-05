@@ -17,6 +17,7 @@ from apps.api.routers import (
 )
 from apps.api.security import hash_token
 from sqlalchemy import select
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 from starlette import status
 import logging
 
@@ -64,30 +65,56 @@ async def api_key_middleware(request: Request, call_next):
     if path in UNPROTECTED_PATHS or any(path.startswith(prefix) for prefix in UNPROTECTED_PREFIXES):
         return await call_next(request)
 
-    api_key = request.headers.get("X-API-Key")
-
-    if not api_key:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            api_key = auth_header.split(" ", 1)[1]
-
-    if not api_key:
-        return JSONResponse(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            content={"detail": "Missing API key"},
-        )
-
-    token_hash = hash_token(api_key)
     session_maker = getattr(request.app.state, "session_maker", AsyncSessionLocal)
 
     async with session_maker() as session:
-        result = await session.execute(
-            select(UserToken).where(
-                UserToken.token_hash == token_hash,
-                UserToken.revoked.is_(False),
+        try:
+            existing_token_result = await session.execute(
+                select(UserToken.id).where(UserToken.revoked.is_(False)).limit(1)
             )
-        )
-        token = result.scalar_one_or_none()
+            has_tokens = existing_token_result.scalar_one_or_none() is not None
+        except ProgrammingError:
+            await session.rollback()
+            logger.info("User tokens table missing; skipping API key enforcement")
+            has_tokens = False
+        except SQLAlchemyError as exc:
+            await session.rollback()
+            logger.error("Error checking user tokens: %s", exc)
+            has_tokens = False
+
+        if not has_tokens:
+            return await call_next(request)
+
+        api_key = request.headers.get("X-API-Key")
+
+        if not api_key:
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                api_key = auth_header.split(" ", 1)[1]
+
+        if not api_key:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "Missing API key"},
+            )
+
+        token_hash = hash_token(api_key)
+
+        try:
+            result = await session.execute(
+                select(UserToken).where(
+                    UserToken.token_hash == token_hash,
+                    UserToken.revoked.is_(False),
+                )
+            )
+            token = result.scalar_one_or_none()
+        except SQLAlchemyError as exc:
+            await session.rollback()
+            logger.error("Error validating API key: %s", exc)
+            return JSONResponse(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                content={"detail": "Error validating API key"},
+            )
 
         if not token:
             return JSONResponse(
