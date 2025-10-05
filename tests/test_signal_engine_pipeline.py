@@ -356,6 +356,139 @@ def test_generate_signals_task_returns_statistics(monkeypatch):
     engine.dispose()
 
 
+def test_generate_signals_task_includes_ai_summary(monkeypatch):
+    SessionLocal, engine = create_sqlite_session()
+    session = SessionLocal()
+    insert_mock_ohlcv(session)
+
+    registry_record = ModelRegistryRecord(
+        model_id='model123',
+        symbol='BTC/USDT',
+        timeframe=TimeFrame.M15,
+        model_type='ensemble',
+        version='v1',
+        train_start=datetime.utcnow() - timedelta(days=200),
+        train_end=datetime.utcnow() - timedelta(days=60),
+        oos_start=datetime.utcnow() - timedelta(days=60),
+        oos_end=datetime.utcnow() - timedelta(days=1),
+        hyperparameters={}
+    )
+    session.add(registry_record)
+    session.commit()
+    session.close()
+
+    def session_factory():
+        return SessionLocal()
+
+    monkeypatch.setattr('apps.ml.worker.SessionLocal', session_factory)
+
+    class StubRegistry:
+        def __init__(self):
+            self.index = {
+                'deployments': {
+                    'BTC_USDT_15m_production': {
+                        'symbol': 'BTC/USDT',
+                        'timeframe': '15m',
+                        'environment': 'production',
+                        'model_id': 'model123',
+                        'version': 'v1',
+                        'path': 'unused'
+                    }
+                }
+            }
+
+        def get_deployed_model(self, symbol, timeframe, environment='production'):
+            return {
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'environment': environment,
+                'model_id': 'model123',
+                'version': 'v1',
+                'path': 'unused'
+            }
+
+    generator = SignalGenerator()
+
+    class StubSignalEngine:
+        def __init__(self, db, registry=None, **kwargs):
+            self.db = db
+            self.registry = registry
+
+        def generate_for_deployment(self, symbol, timeframe, environment='production', **kwargs):
+            timestamp = datetime.utcnow()
+            signal = generator.generate_signal(
+                symbol=symbol,
+                side=Side.LONG,
+                entry_price=52000.0,
+                atr=1500.0,
+                risk_profile=RiskProfile.MEDIUM,
+                capital_usd=1000.0,
+                confidence=0.75,
+                timestamp=timestamp
+            )
+
+            if not signal:
+                return None
+
+            signal['model_id'] = 'model123'
+            signal['model_version'] = 'v1'
+
+            return SimpleNamespace(
+                signal=signal,
+                model_info={
+                    'model_id': 'model123',
+                    'version': 'v1',
+                    'path': 'unused'
+                },
+                risk_filters={
+                    'spread': True,
+                    'liquidity': True,
+                    'profit': True,
+                    'correlation': True,
+                    'confidence': True,
+                    'position_limit': True
+                },
+                inference_metadata={'probability': 0.75, 'confidence': 0.75, 'side': 'long', 'timestamp': timestamp},
+                accepted=True
+            )
+
+    monkeypatch.setattr('apps.ml.worker.ModelRegistry', lambda: StubRegistry())
+    monkeypatch.setattr('apps.ml.worker.SignalEngine', StubSignalEngine)
+
+    summary_calls = []
+
+    def fake_generate_summary(signal_data, model_info=None, inference_metadata=None):
+        summary_calls.append({
+            'signal_id': signal_data.get('signal_id'),
+            'model_id': model_info.get('model_id') if model_info else None
+        })
+        return "Mock summary"
+
+    monkeypatch.setattr('apps.ml.worker.generate_signal_summary', fake_generate_summary)
+
+    broadcasts = []
+
+    async def fake_broadcast(message):
+        broadcasts.append(message)
+
+    monkeypatch.setattr('apps.api.main.manager.broadcast', fake_broadcast)
+
+    result = generate_signals_task.run()
+
+    assert result['signals_generated'] == 1
+    assert summary_calls and summary_calls[0]['signal_id']
+
+    session = SessionLocal()
+    stored_signals = session.query(Signal).all()
+    assert len(stored_signals) == 1
+    assert stored_signals[0].ai_summary == "Mock summary"
+    session.close()
+
+    assert broadcasts
+    assert broadcasts[0]['data']['ai_summary'] == "Mock summary"
+
+    engine.dispose()
+
 def test_generate_signals_task_skips_when_position_limit_reached(monkeypatch):
     SessionLocal, engine = create_sqlite_session()
     session = SessionLocal()
