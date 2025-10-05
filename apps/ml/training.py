@@ -54,8 +54,8 @@ class WalkForwardPipeline:
             sl_pct=sl_pct,
             time_bars=time_bars,
             use_atr=use_atr_labeling,
-            tp_atr_multiplier=tp_atr_multiplier,
-            sl_atr_multiplier=sl_atr_multiplier
+            tp_atr_multiplier=1.5,  # Higher TP for better signals
+            sl_atr_multiplier=1.2   # Tighter SL to match signal generation
         )
         self.target_confidence = target_confidence
 
@@ -156,7 +156,15 @@ class WalkForwardPipeline:
             side=side,
             progress_callback=labeling_progress_callback
         )
+
+        logger.info(f"Labeling produced {len(labels_df)} labeled rows")
+
+        if labels_df.empty:
+            logger.error("Labeling returned empty DataFrame - insufficient data for time barrier")
+            raise ValueError("Labeling failed: insufficient data rows for time barrier")
+
         labels_df['label'] = self.labeler.create_binary_labels(labels_df)
+        logger.info(f"Binary labels created, proceeding to merge...")
 
         # Merge on timestamp to avoid leaking unlabeled rows
         merged = pd.merge(
@@ -166,9 +174,11 @@ class WalkForwardPipeline:
             how='inner'
         )
 
+        logger.info(f"After merge: {len(merged)} samples (from {len(df_features)} features, {len(labels_df)} labels)")
+
         if merged.empty:
-            logger.warning("Merged feature/label frame is empty after join")
-            return merged
+            logger.error("Merged feature/label frame is empty after join - timestamp mismatch?")
+            raise ValueError("Feature/label merge failed: no matching timestamps")
 
         # Ensure essential label columns are present and non-null
         label_cols = ['label', 'hit_barrier', 'return_pct', 'bars_to_hit']
@@ -232,12 +242,14 @@ class WalkForwardPipeline:
         )
 
         # 3. Generate walk-forward splits
+        logger.info(f"Generating walk-forward splits from prepared data ({len(df_prepared)} samples)...")
         splits = self.validator.generate_splits(df_prepared, start_date, end_date)
 
         if not splits:
-            raise ValueError("No walk-forward splits generated")
+            logger.error("No walk-forward splits could be generated - insufficient data or date range too short")
+            raise ValueError("No walk-forward splits generated - check data availability and date ranges")
 
-        logger.info(f"Generated {len(splits)} walk-forward splits")
+        logger.info(f"Generated {len(splits)} walk-forward splits - starting training...")
 
         # 4. Train and evaluate on each split
         split_results = []
@@ -245,6 +257,7 @@ class WalkForwardPipeline:
         best_oos_auc = 0.0
 
         feature_cols = self.feature_eng.get_feature_columns(df_prepared)
+        logger.info(f"Selected {len(feature_cols)} feature columns for training")
 
         def _train_on_split(train_df, test_df, split_index: int, total_splits: int, train_bounds, test_bounds):
             nonlocal best_model, best_oos_auc
@@ -336,6 +349,14 @@ class WalkForwardPipeline:
             logger.info(f"Split {i+1}/{len(splits)}")
             logger.info(f"Train: {split['train'][0].date()} to {split['train'][1].date()}")
             logger.info(f"Test: {split['test'][0].date()} to {split['test'][1].date()}")
+
+            # Update progress to show we're now training (not labeling)
+            if i == 0 and progress_callback:
+                progress_callback(
+                    progress_pct=5.0,
+                    current_fold=1,
+                    total_folds=len(splits)
+                )
 
             # Get train/test data
             train_df, test_df = self.validator.get_train_test_data(df_prepared, split)

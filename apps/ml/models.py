@@ -66,9 +66,9 @@ class EnsembleModel:
         self.lgbm_model = lgb.train(
             self.lgbm_params,
             train_data,
-            num_boost_round=1000,
+            num_boost_round=1500,
             valid_sets=[val_data],
-            callbacks=[lgb.early_stopping(stopping_rounds=50), lgb.log_evaluation(period=100)]
+            callbacks=[lgb.early_stopping(stopping_rounds=150), lgb.log_evaluation(period=375)]
         )
 
         logger.info("Training XGBoost model...")
@@ -78,10 +78,10 @@ class EnsembleModel:
         self.xgb_model = xgb.train(
             self.xgb_params,
             dtrain,
-            num_boost_round=1000,
+            num_boost_round=1500,
             evals=[(dval, 'val')],
-            early_stopping_rounds=50,
-            verbose_eval=100
+            early_stopping_rounds=150,
+            verbose_eval=375
         )
 
         logger.info("Ensemble training completed")

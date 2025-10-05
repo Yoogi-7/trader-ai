@@ -159,10 +159,11 @@ class SignalGenerator:
         Returns:
             (tp_levels, sl_price)
         """
-        atr_multiplier_sl = 1.5
-        atr_multiplier_tp1 = 1.0
-        atr_multiplier_tp2 = 2.0
-        atr_multiplier_tp3 = 3.0
+        # Improved ATR multipliers for better profitability
+        atr_multiplier_sl = 1.2  # Tighter stop loss
+        atr_multiplier_tp1 = 1.5  # Higher TP1 for better R:R
+        atr_multiplier_tp2 = 2.5  # Higher TP2
+        atr_multiplier_tp3 = 4.0  # Higher TP3
 
         if side == Side.LONG:
             sl_price = entry_price - (atr * atr_multiplier_sl)
@@ -662,7 +663,12 @@ class SignalEngine:
 
         features_df = self.feature_engineering.compute_all_features(df)
 
-        registry_entry = self.registry.get_best_model(symbol, timeframe_value)
+        # Try to get deployed model first, fallback to best model
+        registry_entry = self.registry.get_deployed_model(symbol, timeframe_value, 'production')
+        if not registry_entry:
+            logger.info("No deployed model for %s %s, using best available model", symbol, timeframe_value)
+            registry_entry = self.registry.get_best_model(symbol, timeframe_value)
+
         if not registry_entry:
             logger.warning("No registered models for %s %s", symbol, timeframe_value)
             return []
@@ -678,7 +684,7 @@ class SignalEngine:
             ]
 
         feature_matrix = features_df[feature_columns].copy()
-        feature_matrix = feature_matrix.fillna(method='ffill').fillna(method='bfill').fillna(0)
+        feature_matrix = feature_matrix.ffill().bfill().fillna(0)
 
         raw_probabilities = model.predict_proba(feature_matrix)
         prob_array = np.asarray(raw_probabilities)
@@ -779,7 +785,7 @@ class SignalEngine:
         ]) if market_metrics_row else pd.DataFrame()
 
         features_df = self.feature_engineering.compute_all_features(df, market_metrics=market_metrics_df)
-        features_df = features_df.fillna(method='ffill').fillna(method='bfill')
+        features_df = features_df.ffill().bfill()
 
         latest_row = features_df.iloc[-1]
 
@@ -856,10 +862,11 @@ class SignalEngine:
         Returns:
             (tp_levels, sl_price)
         """
-        atr_multiplier_sl = 1.5
-        atr_multiplier_tp1 = 1.0
-        atr_multiplier_tp2 = 2.0
-        atr_multiplier_tp3 = 3.0
+        # Improved ATR multipliers for better profitability
+        atr_multiplier_sl = 1.2  # Tighter stop loss
+        atr_multiplier_tp1 = 1.5  # Higher TP1 for better R:R
+        atr_multiplier_tp2 = 2.5  # Higher TP2
+        atr_multiplier_tp3 = 4.0  # Higher TP3
 
         if side == Side.LONG:
             sl_price = entry_price - (atr * atr_multiplier_sl)

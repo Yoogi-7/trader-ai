@@ -55,7 +55,7 @@ services:
       context: .
       dockerfile: infra/dockerfiles/api.Dockerfile
     container_name: traderai-worker
-    command: celery -A apps.ml.worker worker --loglevel=info
+    command: celery -A apps.ml.worker worker --loglevel=info --concurrency=3 --max-tasks-per-child=1 -Q backfill,training,historical,default
     environment:
       DATABASE_URL: postgresql://traderai:traderai@db:5432/traderai
       REDIS_URL: redis://redis:6379/0

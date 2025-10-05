@@ -153,6 +153,10 @@ class TripleBarrierLabeling:
                 'return_pct': return_pct
             })
 
+        # Call progress callback with 100% when labeling is complete
+        if progress_callback:
+            progress_callback(100.0)
+
         logger.info(f"Labeling complete: {len(labels)} labels created")
         return pd.DataFrame(labels)
 

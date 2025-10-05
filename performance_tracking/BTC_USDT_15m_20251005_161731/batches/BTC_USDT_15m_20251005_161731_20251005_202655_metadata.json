@@ -1,0 +1,19 @@
+{
+  "batch_id": "BTC_USDT_15m_20251005_161731_20251005_202655",
+  "model_id": "BTC_USDT_15m_20251005_161731",
+  "symbol": "BTC/USDT",
+  "timeframe": "15m",
+  "timestamp": "2025-10-05T20:26:55.460352",
+  "num_predictions": 1,
+  "metadata": {
+    "probability": 0.638675451611797,
+    "confidence": 0.638675451611797,
+    "side": "long",
+    "environment": "production",
+    "timestamp": "2025-10-05 20:15:00",
+    "risk_profile": "medium",
+    "capital_usd": 1000.0,
+    "model_version": "v9"
+  },
+  "predictions_path": "performance_tracking/BTC_USDT_15m_20251005_161731/batches/BTC_USDT_15m_20251005_161731_20251005_202655_predictions.csv"
+}

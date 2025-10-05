@@ -91,6 +91,19 @@ celery_app.conf.update(
     result_serializer='json',
     timezone='UTC',
     enable_utc=True,
+    task_routes={
+        'backfill.execute': {'queue': 'backfill', 'priority': 10},
+        'backfill.update_latest': {'queue': 'backfill', 'priority': 9},
+        'training.train_model': {'queue': 'training', 'priority': 5},
+        'signals.generate_historical': {'queue': 'historical', 'priority': 1},
+        'signals.generate': {'queue': 'default', 'priority': 7},
+        'signals.expire': {'queue': 'default', 'priority': 8},
+        'drift.monitor': {'queue': 'default', 'priority': 3},
+    },
+    task_default_queue='default',
+    task_default_priority=5,
+    worker_prefetch_multiplier=1,
+    worker_max_tasks_per_child=1,
 )
 
 
