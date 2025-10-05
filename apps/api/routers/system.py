@@ -1,10 +1,24 @@
+from datetime import date
+from typing import List, Optional
+
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from sqlalchemy import func, and_
-from apps.api.db import get_db
-from apps.api.db.models import ModelRegistry, TradeResult, Signal, OHLCV, TimeFrame
 from pydantic import BaseModel
-from typing import Optional, List
+from sqlalchemy import and_, func
+from sqlalchemy.orm import Session
+
+from apps.api import cache
+from apps.api.db import get_db
+from apps.api.db.models import (
+    ModelRegistry,
+    OHLCV,
+    RiskProfile,
+    Signal,
+    TimeFrame,
+    TradeResult,
+)
+
+
+ANALYTICS_CACHE_TTL_SECONDS = 300
 
 router = APIRouter()
 
@@ -24,6 +38,20 @@ class CandleInfo(BaseModel):
     total_candles: int
     first_candle: Optional[str] = None
     last_candle: Optional[str] = None
+
+
+class AggregatedPNLResponse(BaseModel):
+    date: date
+    risk_profile: RiskProfile
+    net_pnl_usd: float
+    avg_net_pnl_pct: Optional[float] = None
+    trade_count: int
+
+
+class AggregatedExposureResponse(BaseModel):
+    date: date
+    risk_profile: RiskProfile
+    exposure_usd: float
 
 
 @router.get("/status", response_model=SystemStatusResponse)
@@ -122,3 +150,94 @@ async def get_candles_info(db: Session = Depends(get_db)):
         ))
 
     return result
+@router.get("/pnl", response_model=List[AggregatedPNLResponse])
+async def get_system_pnl(db: Session = Depends(get_db)) -> List[AggregatedPNLResponse]:
+    cache_key = "system:pnl"
+    cached = cache.get_cached_json(cache_key)
+    if cached:
+        return [AggregatedPNLResponse(**item) for item in cached]
+
+    date_column = func.date(TradeResult.closed_at)
+    query = (
+        db.query(
+            date_column.label("date"),
+            Signal.risk_profile.label("risk_profile"),
+            func.sum(TradeResult.net_pnl_usd).label("net_pnl_usd"),
+            func.avg(TradeResult.net_pnl_pct).label("avg_net_pnl_pct"),
+            func.count(TradeResult.id).label("trade_count"),
+        )
+        .join(Signal, Signal.signal_id == TradeResult.signal_id)
+        .filter(TradeResult.closed_at.isnot(None))
+        .group_by(date_column, Signal.risk_profile)
+        .order_by(date_column.asc(), Signal.risk_profile.asc())
+    )
+
+    rows = query.all()
+
+    response = [
+        AggregatedPNLResponse(
+            date=row.date,
+            risk_profile=RiskProfile(row.risk_profile)
+            if not isinstance(row.risk_profile, RiskProfile)
+            else row.risk_profile,
+            net_pnl_usd=float(row.net_pnl_usd or 0.0),
+            avg_net_pnl_pct=float(row.avg_net_pnl_pct)
+            if row.avg_net_pnl_pct is not None
+            else None,
+            trade_count=int(row.trade_count),
+        )
+        for row in rows
+    ]
+
+    cache.set_cached_json(
+        cache_key,
+        [record.model_dump(mode="json") for record in response],
+        ANALYTICS_CACHE_TTL_SECONDS,
+    )
+
+    return response
+
+
+@router.get("/exposure", response_model=List[AggregatedExposureResponse])
+async def get_system_exposure(db: Session = Depends(get_db)) -> List[AggregatedExposureResponse]:
+    cache_key = "system:exposure"
+    cached = cache.get_cached_json(cache_key)
+    if cached:
+        return [AggregatedExposureResponse(**item) for item in cached]
+
+    date_column = func.date(TradeResult.closed_at)
+    query = (
+        db.query(
+            date_column.label("date"),
+            Signal.risk_profile.label("risk_profile"),
+            func.sum(Signal.position_size_usd).label("exposure_usd"),
+        )
+        .join(Signal, Signal.signal_id == TradeResult.signal_id)
+        .filter(
+            TradeResult.closed_at.isnot(None),
+            Signal.position_size_usd.isnot(None),
+        )
+        .group_by(date_column, Signal.risk_profile)
+        .order_by(date_column.asc(), Signal.risk_profile.asc())
+    )
+
+    rows = query.all()
+
+    response = [
+        AggregatedExposureResponse(
+            date=row.date,
+            risk_profile=RiskProfile(row.risk_profile)
+            if not isinstance(row.risk_profile, RiskProfile)
+            else row.risk_profile,
+            exposure_usd=float(row.exposure_usd or 0.0),
+        )
+        for row in rows
+    ]
+
+    cache.set_cached_json(
+        cache_key,
+        [record.model_dump(mode="json") for record in response],
+        ANALYTICS_CACHE_TTL_SECONDS,
+    )
+
+    return response
