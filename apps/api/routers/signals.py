@@ -93,7 +93,7 @@ async def get_live_signals(
     """
     query = select(Signal).where(
         and_(
-            Signal.status == SignalStatus.PENDING,
+            Signal.status.in_([SignalStatus.PENDING, SignalStatus.ACTIVE]),
             Signal.valid_until > datetime.utcnow(),
             Signal.passed_profit_filter == True
         )
