@@ -250,32 +250,44 @@ class FeatureEngineering:
     def _add_regime_detection(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Detect market regime: trend (uptrend/downtrend/sideways) and volatility (low/med/high).
+        Returns numeric encodings instead of strings.
         """
         # Trend detection using EMA crossovers
+        # 1 = uptrend, -1 = downtrend, 0 = sideways
         if 'ema_21' in df.columns and 'ema_50' in df.columns:
             ema_diff = df['ema_21'] - df['ema_50']
             df['regime_trend'] = np.where(
-                ema_diff > 0, 'uptrend',
-                np.where(ema_diff < 0, 'downtrend', 'sideways')
+                ema_diff > 0, 1,
+                np.where(ema_diff < 0, -1, 0)
             )
         else:
-            df['regime_trend'] = 'sideways'
+            df['regime_trend'] = 0
 
         # Volatility regime using ATR percentile
+        # 2 = high, 1 = medium, 0 = low
         if 'atr_14' in df.columns and df['close'].notna().any():
             atr_pct = df['atr_14'] / df['close']
             atr_percentile = atr_pct.rolling(100).apply(lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 0 else 0.5)
 
             df['regime_volatility'] = np.where(
-                atr_percentile > 0.66, 'high',
-                np.where(atr_percentile > 0.33, 'medium', 'low')
+                atr_percentile > 0.66, 2,
+                np.where(atr_percentile > 0.33, 1, 0)
             )
         else:
-            df['regime_volatility'] = 'medium'
+            df['regime_volatility'] = 1
 
         return df
 
     def get_feature_columns(self, df: pd.DataFrame) -> list:
-        """Return list of feature column names"""
-        exclude = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'symbol', 'timeframe']
-        return [col for col in df.columns if col not in exclude]
+        """Return list of feature column names (only numeric types)"""
+        exclude = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'symbol', 'timeframe', 'label']
+        # Only return columns that are numeric (int, float, bool)
+        feature_cols = []
+        for col in df.columns:
+            if col not in exclude:
+                # Check if column is numeric
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    feature_cols.append(col)
+                else:
+                    logger.warning(f"Skipping non-numeric column: {col} (dtype: {df[col].dtype})")
+        return feature_cols

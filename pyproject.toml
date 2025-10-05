@@ -3,6 +3,7 @@ name = "traderai"
 version = "1.0.0"
 description = "AI-powered crypto futures trading signal system"
 authors = ["TraderAI Team"]
+packages = [{include = "apps"}]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
