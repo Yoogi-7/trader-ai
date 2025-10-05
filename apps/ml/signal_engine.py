@@ -7,9 +7,9 @@ from enum import Enum
 import logging
 import uuid
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, func
 
-from apps.api.db.models import RiskProfile, Side, OHLCV, MarketMetrics
+from apps.api.db.models import RiskProfile, Side, OHLCV, MarketMetrics, Signal, SignalStatus
 from apps.api.config import settings
 from apps.ml.features import FeatureEngineering
 from apps.ml.model_registry import ModelRegistry
@@ -457,7 +457,8 @@ class SignalEngine:
             'liquidity': volume >= self.min_volume,
             'spread': spread_bps <= self.max_spread_bps,
             'correlation': True,
-            'profit': False  # updated after generator run
+            'profit': False,  # updated after generator run
+            'position_limit': True
         }
 
         inference_metadata = {
@@ -474,6 +475,42 @@ class SignalEngine:
                 symbol,
                 timeframe,
                 {k: v for k, v in risk_filters.items() if not v}
+            )
+            return SignalInferenceResult(
+                signal=None,
+                model_info=self._build_model_info(deployment),
+                risk_filters=risk_filters,
+                inference_metadata=inference_metadata,
+                accepted=False
+            )
+
+        max_positions_map = {
+            RiskProfile.LOW: settings.LOW_MAX_POSITIONS,
+            RiskProfile.MEDIUM: settings.MED_MAX_POSITIONS,
+            RiskProfile.HIGH: settings.HIGH_MAX_POSITIONS
+        }
+
+        active_positions_query = self.db.query(func.count(Signal.id)).filter(
+            Signal.risk_profile == risk_profile,
+            Signal.status == SignalStatus.ACTIVE,
+            Signal.valid_until > datetime.utcnow()
+        )
+
+        if symbol:
+            active_positions_query = active_positions_query.filter(Signal.symbol == symbol)
+
+        active_positions = active_positions_query.scalar() or 0
+        max_positions_allowed = max_positions_map.get(risk_profile, 0)
+
+        if max_positions_allowed and active_positions >= max_positions_allowed:
+            risk_filters['position_limit'] = False
+            logger.info(
+                "Signal for %s %s rejected due to position limit (%s >= %s) for profile %s",
+                symbol,
+                timeframe,
+                active_positions,
+                max_positions_allowed,
+                risk_profile.value
             )
             return SignalInferenceResult(
                 signal=None,

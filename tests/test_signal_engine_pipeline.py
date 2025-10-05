@@ -104,6 +104,76 @@ def test_signal_engine_pipeline_generates_profitable_signal():
     engine.dispose()
 
 
+def test_signal_engine_pipeline_respects_position_limit():
+    SessionLocal, engine = create_sqlite_session()
+    session = SessionLocal()
+    insert_mock_ohlcv(session)
+
+    for idx in range(settings.MED_MAX_POSITIONS):
+        session.add(
+            Signal(
+                signal_id=f"existing_{idx}",
+                symbol="BTC/USDT",
+                side=Side.LONG,
+                entry_price=52000.0,
+                timestamp=datetime.utcnow() - timedelta(minutes=5),
+                tp1_price=53000.0,
+                tp1_pct=30.0,
+                tp2_price=54000.0,
+                tp2_pct=40.0,
+                tp3_price=55000.0,
+                tp3_pct=30.0,
+                sl_price=51000.0,
+                leverage=5.0,
+                margin_mode="ISOLATED",
+                position_size_usd=100.0,
+                quantity=0.01,
+                risk_reward_ratio=2.0,
+                estimated_liquidation=45000.0,
+                max_loss_usd=50.0,
+                model_id=None,
+                confidence=0.7,
+                expected_net_profit_pct=3.0,
+                expected_net_profit_usd=30.0,
+                valid_until=datetime.utcnow() + timedelta(hours=1),
+                status=SignalStatus.ACTIVE,
+                risk_profile=RiskProfile.MEDIUM
+            )
+        )
+
+    session.commit()
+
+    deployment = {
+        'model_id': 'model123',
+        'version': 'v1',
+        'path': 'unused',
+        'symbol': 'BTC/USDT',
+        'timeframe': '15m'
+    }
+
+    engine_service = SignalEngine(
+        db=session,
+        registry=DummyRegistry(deployment),
+        model_factory=lambda: DummyModel(0.8),
+        lookback_bars=90
+    )
+
+    result = engine_service.generate_for_deployment(
+        symbol='BTC/USDT',
+        timeframe='15m',
+        risk_profile=RiskProfile.MEDIUM,
+        capital_usd=1000.0
+    )
+
+    assert result is not None
+    assert result.accepted is False
+    assert result.signal is None
+    assert result.risk_filters['position_limit'] is False
+
+    session.close()
+    engine.dispose()
+
+
 def test_generate_signals_task_returns_statistics(monkeypatch):
     SessionLocal, engine = create_sqlite_session()
     session = SessionLocal()
@@ -189,7 +259,14 @@ def test_generate_signals_task_returns_statistics(monkeypatch):
                     'version': 'v1',
                     'path': 'unused'
                 },
-                risk_filters={'spread': True, 'liquidity': True, 'profit': True, 'correlation': True, 'confidence': True},
+                risk_filters={
+                    'spread': True,
+                    'liquidity': True,
+                    'profit': True,
+                    'correlation': True,
+                    'confidence': True,
+                    'position_limit': True
+                },
                 inference_metadata={'probability': 0.7, 'confidence': 0.7, 'side': 'long', 'timestamp': timestamp},
                 accepted=True
             )
@@ -218,5 +295,98 @@ def test_generate_signals_task_returns_statistics(monkeypatch):
     assert len(broadcasts) == 1
     assert broadcasts[0]['type'] == 'signal.created'
 
+    session.close()
+    engine.dispose()
+
+
+def test_generate_signals_task_skips_when_position_limit_reached(monkeypatch):
+    SessionLocal, engine = create_sqlite_session()
+    session = SessionLocal()
+    insert_mock_ohlcv(session)
+
+    for idx in range(settings.MED_MAX_POSITIONS):
+        session.add(
+            Signal(
+                signal_id=f"active_{idx}",
+                symbol="BTC/USDT",
+                side=Side.LONG,
+                entry_price=52000.0,
+                timestamp=datetime.utcnow() - timedelta(minutes=5),
+                tp1_price=53000.0,
+                tp1_pct=30.0,
+                tp2_price=54000.0,
+                tp2_pct=40.0,
+                tp3_price=55000.0,
+                tp3_pct=30.0,
+                sl_price=51000.0,
+                leverage=5.0,
+                margin_mode="ISOLATED",
+                position_size_usd=100.0,
+                quantity=0.01,
+                risk_reward_ratio=2.0,
+                estimated_liquidation=45000.0,
+                max_loss_usd=50.0,
+                model_id=None,
+                confidence=0.7,
+                expected_net_profit_pct=3.0,
+                expected_net_profit_usd=30.0,
+                valid_until=datetime.utcnow() + timedelta(hours=1),
+                status=SignalStatus.ACTIVE,
+                risk_profile=RiskProfile.MEDIUM
+            )
+        )
+
+    session.commit()
+    session.close()
+
+    def session_factory():
+        return SessionLocal()
+
+    monkeypatch.setattr('apps.ml.worker.SessionLocal', session_factory)
+
+    class StubRegistry:
+        def __init__(self):
+            self.index = {
+                'deployments': {
+                    'BTC_USDT_15m_production': {
+                        'symbol': 'BTC/USDT',
+                        'timeframe': '15m',
+                        'environment': 'production',
+                        'model_id': 'model123',
+                        'version': 'v1',
+                        'path': 'unused'
+                    }
+                }
+            }
+
+        def get_deployed_model(self, symbol, timeframe, environment='production'):
+            return {
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'environment': environment,
+                'model_id': 'model123',
+                'version': 'v1',
+                'path': 'unused'
+            }
+
+    def signal_engine_factory(db, registry=None, **kwargs):
+        return SignalEngine(
+            db=db,
+            registry=registry,
+            model_factory=lambda: DummyModel(0.8),
+            lookback_bars=90
+        )
+
+    monkeypatch.setattr('apps.ml.worker.ModelRegistry', lambda: StubRegistry())
+    monkeypatch.setattr('apps.ml.worker.SignalEngine', signal_engine_factory)
+
+    result = generate_signals_task.run()
+
+    assert result['signals_generated'] == 0
+    assert result['skipped'] == 1
+    assert result['metrics']['skipped_due_to_filters'] == 1
+
+    session = SessionLocal()
+    assert session.query(Signal).count() == settings.MED_MAX_POSITIONS
     session.close()
     engine.dispose()
