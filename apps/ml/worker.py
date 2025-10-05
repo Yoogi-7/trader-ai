@@ -59,18 +59,30 @@ def train_model_task(
     training_job = None
 
     try:
-        # Create training job record
-        training_job = TrainingJob(
-            job_id=self.request.id,
-            symbol=symbol,
-            timeframe=TimeFrame(timeframe),
-            test_period_days=test_period_days,
-            min_train_days=min_train_days,
-            use_expanding_window=use_expanding_window,
-            status='training',
-            started_at=datetime.utcnow()
-        )
-        db.add(training_job)
+        # Create or reuse training job record (signals may pre-create it)
+        training_job = db.query(TrainingJob).filter_by(job_id=self.request.id).first()
+
+        if training_job is None:
+            training_job = TrainingJob(
+                job_id=self.request.id,
+                symbol=symbol,
+                timeframe=TimeFrame(timeframe),
+                test_period_days=test_period_days,
+                min_train_days=min_train_days,
+                use_expanding_window=use_expanding_window,
+                status='training',
+                started_at=datetime.utcnow()
+            )
+            db.add(training_job)
+        else:
+            training_job.symbol = symbol
+            training_job.timeframe = TimeFrame(timeframe)
+            training_job.test_period_days = test_period_days
+            training_job.min_train_days = min_train_days
+            training_job.use_expanding_window = use_expanding_window
+            training_job.status = 'training'
+            training_job.started_at = datetime.utcnow()
+
         db.commit()
 
         logger.info(
@@ -136,6 +148,7 @@ def train_model_task(
         avg_metrics = results.get('avg_metrics', {})
         training_job.accuracy = avg_metrics.get('avg_accuracy')
         training_job.avg_roc_auc = avg_metrics.get('avg_roc_auc')
+        training_job.hit_rate_tp1 = avg_metrics.get('avg_hit_rate_tp1')
         training_job.progress_pct = 100.0
 
         if training_job.started_at:

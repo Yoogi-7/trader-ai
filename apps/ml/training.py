@@ -284,6 +284,8 @@ class WalkForwardPipeline:
             preds, conf, mask = conformal.filter_by_confidence(X_test)
             filtered_test_metrics = model.evaluate(X_test[mask], y_test[mask]) if mask.sum() > 0 else {}
 
+            hit_rate_tp1 = float(test_df['label'].mean()) if len(test_df) > 0 else 0.0
+
             split_result = {
                 'split_id': i,
                 'train_start': split['train'][0],
@@ -293,6 +295,7 @@ class WalkForwardPipeline:
                 'train_samples': len(train_df),
                 'test_samples': len(test_df),
                 'oos_metrics': test_metrics,
+                'hit_rate_tp1': hit_rate_tp1,
                 'filtered_coverage': mask.sum() / len(mask) if len(mask) > 0 else 0,
                 'filtered_metrics': filtered_test_metrics
             }
@@ -386,6 +389,14 @@ class WalkForwardPipeline:
             values = [s['oos_metrics'].get(key, 0) for s in split_results if key in s['oos_metrics']]
             avg_metrics[f'avg_{key}'] = sum(values) / len(values) if values else 0.0
             avg_metrics[f'std_{key}'] = pd.Series(values).std() if len(values) > 1 else 0.0
+
+        hit_rates = [s.get('hit_rate_tp1') for s in split_results if s.get('hit_rate_tp1') is not None]
+        if hit_rates:
+            avg_metrics['avg_hit_rate_tp1'] = float(sum(hit_rates) / len(hit_rates))
+            avg_metrics['std_hit_rate_tp1'] = float(pd.Series(hit_rates).std()) if len(hit_rates) > 1 else 0.0
+        else:
+            avg_metrics['avg_hit_rate_tp1'] = 0.0
+            avg_metrics['std_hit_rate_tp1'] = 0.0
 
         return avg_metrics
 

@@ -78,6 +78,7 @@ def training_task_success(sender=None, result=None, **kwargs):
                 avg_metrics = result.get('avg_metrics', {})
                 training_job.accuracy = avg_metrics.get('avg_accuracy')
                 training_job.avg_roc_auc = avg_metrics.get('avg_roc_auc')
+                training_job.hit_rate_tp1 = avg_metrics.get('avg_hit_rate_tp1')
 
             training_job.progress_pct = 100.0
             db.commit()
