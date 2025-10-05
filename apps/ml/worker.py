@@ -659,6 +659,14 @@ def update_latest_candles_task():
 
                     if not df.empty:
                         service._upsert_ohlcv(symbol, TimeFrame.M15, df)
+
+                        metrics_timestamp = df['timestamp'].max()
+                        if hasattr(metrics_timestamp, 'to_pydatetime'):
+                            metrics_timestamp = metrics_timestamp.to_pydatetime()
+
+                        market_metrics = service.collect_market_metrics(symbol)
+                        service.upsert_market_metrics(symbol, metrics_timestamp, market_metrics)
+
                         logger.info(f"Updated {len(df)} latest candles for {symbol} 15m")
                         total_updated += len(df)
                 else:
