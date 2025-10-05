@@ -96,7 +96,6 @@ export default function Admin() {
   const [activeBackfillId, setActiveBackfillId] = useState<string | null>(null)
   const [activeTrainingId, setActiveTrainingId] = useState<string | null>(null)
   const [activeSignalGenId, setActiveSignalGenId] = useState<string | null>(null)
-  const [showHistoricalSignals, setShowHistoricalSignals] = useState(false)
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
   const [candlesInfo, setCandlesInfo] = useState<CandleInfo[]>([])
   const [pnlAnalytics, setPnlAnalytics] = useState<AggregatedPnlPoint[]>([])
@@ -171,6 +170,7 @@ export default function Admin() {
     loadSystemStatus()
     loadCandlesInfo()
     loadAnalytics()
+    loadHistoricalSignals()
   }, [])
 
   // Load system status
@@ -449,6 +449,27 @@ export default function Admin() {
 
       // Set active job ID to start polling
       setActiveSignalGenId(response.data.job_id)
+      setSignalGenJobs(prev => {
+        const placeholderStatus = response.data.status && response.data.status !== 'queued'
+          ? response.data.status
+          : 'generating';
+        const placeholderJob: SignalGenerationStatus = {
+          job_id: response.data.job_id,
+          status: placeholderStatus,
+          symbol: 'BTC/USDT',
+          start_date: earliestDate,
+          end_date: endDate.toISOString(),
+          progress_pct: 0,
+          signals_generated: 0,
+          signals_backtested: 0,
+        }
+
+        const filtered = prev.filter(job => job.job_id !== placeholderJob.job_id)
+        return [placeholderJob, ...filtered]
+      });
+
+      // Refresh latest historical signals so the table stays visible while generation runs
+      loadHistoricalSignals()
     } catch (error: any) {
       console.error('Error generating historical signals:', error)
       alert(`Error: ${error.message}`)
@@ -459,7 +480,6 @@ export default function Admin() {
     try {
       const response = await axios.get(`${API_URL}/api/v1/signals/historical/results?symbol=BTC/USDT&limit=50`)
       setHistoricalSignals(response.data)
-      setShowHistoricalSignals(true)
     } catch (error) {
       console.error('Error loading historical signals:', error)
     }
@@ -731,12 +751,6 @@ export default function Admin() {
             >
               {activeSignalGenId ? 'Generating Signals...' : 'Generate Historical Signals (Full History)'}
             </button>
-            <button
-              onClick={loadHistoricalSignals}
-              className="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded font-medium"
-            >
-              View Historical Signals
-            </button>
           </div>
 
           {/* Signal Generation Jobs */}
@@ -828,9 +842,13 @@ export default function Admin() {
           </div>
 
           {/* Historical Signals Table */}
-          {showHistoricalSignals && historicalSignals.length > 0 && (
-            <div className="mt-6 space-y-4">
-              {historicalSignals.map((signal) => (
+          <div className="mt-6 space-y-4">
+            {historicalSignals.length === 0 ? (
+              <div className="bg-gray-700 rounded-lg p-4 text-sm text-gray-300">
+                No historical signals available yet. Generate to populate this section.
+              </div>
+            ) : (
+              historicalSignals.map((signal) => (
                 <div key={signal.signal_id} className="bg-gray-700 rounded-lg p-4">
                   <div className="grid grid-cols-5 gap-4 mb-3">
                     <div>
@@ -907,9 +925,9 @@ export default function Admin() {
                     </div>
                   )}
                 </div>
-              ))}
-            </div>
-          )}
+              ))
+            )}
+          </div>
         </div>
 
         <SystemAnalytics
