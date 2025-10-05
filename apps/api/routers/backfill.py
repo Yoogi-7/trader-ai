@@ -26,8 +26,10 @@ class BackfillStatus(BaseModel):
     status: str
     progress_pct: float
     candles_fetched: int
+    total_candles_estimate: Optional[int] = None
     candles_per_minute: Optional[float]
     eta_minutes: Optional[float]
+    detected_gaps: Optional[list[dict[str, str]]] = None
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     created_at: Optional[str] = None

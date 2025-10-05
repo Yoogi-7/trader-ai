@@ -18,8 +18,10 @@ interface BackfillStatus {
   status: string
   progress_pct: number
   candles_fetched: number
+  total_candles_estimate?: number
   candles_per_minute?: number
   eta_minutes?: number
+  detected_gaps?: { start: string; end: string }[]
   started_at?: string
   completed_at?: string
   created_at?: string
@@ -470,6 +472,12 @@ export default function Admin() {
     return hours > 0 ? `${hours}h ${mins}m` : `${mins}m`
   }
 
+  const formatGapTimestamp = (iso?: string) => {
+    if (!iso) return 'Unknown'
+    const date = new Date(iso)
+    return isNaN(date.getTime()) ? iso : date.toLocaleString()
+  }
+
   return (
     <div className="min-h-screen bg-gray-900 text-white p-8">
       <div className="max-w-7xl mx-auto">
@@ -538,7 +546,7 @@ export default function Admin() {
 
                 {/* Stats */}
                 {job.status !== 'failed' && (
-                  <div className="grid grid-cols-3 gap-4 mt-3 text-sm">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-3 text-sm">
                     <div>
                       <p className="text-gray-400">Candles Fetched</p>
                       <p className="font-bold">{job.candles_fetched.toLocaleString()}</p>
@@ -551,6 +559,33 @@ export default function Admin() {
                       <p className="text-gray-400">ETA</p>
                       <p className="font-bold">{formatETA(job.eta_minutes)}</p>
                     </div>
+                    {job.total_candles_estimate !== undefined && (
+                      <div>
+                        <p className="text-gray-400">Est. Total</p>
+                        <p className="font-bold">{job.total_candles_estimate.toLocaleString()}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {job.detected_gaps && job.detected_gaps.length > 0 && (
+                  <div className="mt-4 rounded border border-yellow-600/60 bg-yellow-900/20 p-3 text-xs space-y-2">
+                    <p className="text-yellow-300 font-semibold">Detected Data Gaps ({job.detected_gaps.length})</p>
+                    <ul className="space-y-1">
+                      {job.detected_gaps.slice(0, 3).map((gap, index) => (
+                        <li key={`${job.job_id}-gap-${index}`} className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-1">
+                          <span className="text-yellow-200">Gap #{index + 1}</span>
+                          <span className="text-gray-200">
+                            {formatGapTimestamp(gap.start)}
+                            <span className="mx-1 text-gray-400">→</span>
+                            {formatGapTimestamp(gap.end)}
+                          </span>
+                        </li>
+                      ))}
+                      {job.detected_gaps.length > 3 && (
+                        <li className="text-gray-400">+{job.detected_gaps.length - 3} more gap{job.detected_gaps.length - 3 === 1 ? '' : 's'} detected</li>
+                      )}
+                    </ul>
                   </div>
                 )}
 
