@@ -45,6 +45,8 @@ interface BackfillStatus {
 interface TrainingStatus {
   job_id: string
   status: string
+  symbol?: string
+  timeframe?: string
   progress_pct?: number
   labeling_progress_pct?: number
   current_fold?: number
@@ -115,7 +117,7 @@ export default function Admin() {
   const [signalGenJobs, setSignalGenJobs] = useState<SignalGenerationStatus[]>([])
   const [historicalSignals, setHistoricalSignals] = useState<HistoricalSignal[]>([])
   const [activeBackfillId, setActiveBackfillId] = useState<string | null>(null)
-  const [activeTrainingId, setActiveTrainingId] = useState<string | null>(null)
+  const [activeTrainingIds, setActiveTrainingIds] = useState<string[]>([])
   const [activeSignalGenIds, setActiveSignalGenIds] = useState<string[]>([])
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
   const [candlesInfo, setCandlesInfo] = useState<CandleInfo[]>([])
@@ -159,11 +161,10 @@ export default function Admin() {
         const jobs: TrainingStatus[] = response.data
         setTrainingJobs(jobs)
 
-        // Set active job if any is training
-        const trainingJob = jobs.find(j => j.status === 'training')
-        if (trainingJob) {
-          setActiveTrainingId(trainingJob.job_id)
-        }
+        const activeIds = jobs
+          .filter(job => ['training', 'pending', 'queued'].includes(job.status))
+          .map(job => job.job_id)
+        setActiveTrainingIds(activeIds)
       } catch (error) {
         console.error('Error loading training jobs:', error)
       }
@@ -277,36 +278,33 @@ export default function Admin() {
     return () => clearInterval(interval)
   }, [activeBackfillId])
 
-  // Poll for training status
+  // Poll for training status while there are active jobs
   useEffect(() => {
-    if (!activeTrainingId) return
+    if (activeTrainingIds.length === 0) return
 
     const interval = setInterval(async () => {
       try {
-        const response = await axios.get(`${API_URL}/api/v1/train/status/${activeTrainingId}`)
-        const status: TrainingStatus = response.data
+        const response = await axios.get(`${API_URL}/api/v1/train/jobs`)
+        const jobs: TrainingStatus[] = response.data
+        setTrainingJobs(jobs)
 
-        setTrainingJobs(prev => {
-          const existing = prev.findIndex(j => j.job_id === status.job_id)
-          if (existing >= 0) {
-            const updated = [...prev]
-            updated[existing] = status
-            return updated
+        const stillActive = jobs
+          .filter(job => ['training', 'pending', 'queued'].includes(job.status))
+          .map(job => job.job_id)
+
+        setActiveTrainingIds(prev => {
+          if (prev.length === stillActive.length && prev.every(id => stillActive.includes(id))) {
+            return prev
           }
-          return [...prev, status]
+          return stillActive
         })
-
-        // Stop polling if completed or failed
-        if (status.status === 'completed' || status.status === 'failed') {
-          setActiveTrainingId(null)
-        }
       } catch (error) {
         console.error('Error fetching training status:', error)
       }
     }, 2000) // Poll every 2 seconds
 
     return () => clearInterval(interval)
-  }, [activeTrainingId])
+  }, [activeTrainingIds.length])
 
   // Poll for signal generation status
   useEffect(() => {
@@ -410,8 +408,12 @@ export default function Admin() {
       alert('Training job cancelled')
       // Reload jobs
       const jobsResponse = await axios.get(`${API_URL}/api/v1/train/jobs`)
-      setTrainingJobs(jobsResponse.data)
-      setActiveTrainingId(null)
+      const jobs: TrainingStatus[] = jobsResponse.data
+      setTrainingJobs(jobs)
+      const activeIds = jobs
+        .filter(job => ['training', 'pending', 'queued'].includes(job.status))
+        .map(job => job.job_id)
+      setActiveTrainingIds(activeIds)
     } catch (error: any) {
       console.error('Error cancelling training:', error)
       alert(`Error: ${error.response?.data?.detail || error.message}`)
@@ -434,18 +436,54 @@ export default function Admin() {
 
   const startTraining = async () => {
     try {
-      console.log('Starting training, API_URL:', API_URL)
-      const response = await axios.post(`${API_URL}/api/v1/train/start`, {
-        symbol: 'BTC/USDT',
-        timeframe: '15m',
-        force_retrain: false
+      const knownSymbols = candlesInfo.length
+        ? Array.from(new Set(candlesInfo.map(info => info.symbol)))
+        : TRACKED_PAIRS
+
+      if (knownSymbols.length === 0) {
+        alert('No trading pairs configured for training')
+        return
+      }
+
+      const uniqueSymbols = Array.from(new Set(knownSymbols))
+
+      const launches = await Promise.all(
+        uniqueSymbols.map(async (symbol) => {
+          const response = await axios.post(`${API_URL}/api/v1/train/start`, {
+            symbol,
+            timeframe: '15m',
+            force_retrain: false,
+          })
+
+          const jobId: string = response.data.job_id || `train_${symbol.replace('/', '_')}_${Date.now()}`
+          const status: string = response.data.status || 'queued'
+
+          return {
+            job_id: jobId,
+            status,
+            symbol: response.data.symbol || symbol,
+            timeframe: response.data.timeframe || '15m',
+            progress_pct: 0,
+            labeling_progress_pct: 0,
+          } as TrainingStatus
+        })
+      )
+
+      setTrainingJobs(prev => {
+        const merged = new Map(prev.map(job => [job.job_id, job]))
+        launches.forEach(job => {
+          merged.set(job.job_id, { ...merged.get(job.job_id), ...job })
+        })
+        return Array.from(merged.values())
       })
-      console.log('Training response:', response.data)
-      setActiveTrainingId(response.data.job_id || 'train_' + Date.now())
+
+      setActiveTrainingIds(prev => {
+        const combined = [...prev, ...launches.map(job => job.job_id)]
+        return Array.from(new Set(combined))
+      })
     } catch (error: any) {
       console.error('Error starting training:', error)
-      console.error('Error details:', error.response?.data)
-      alert(`Error starting training: ${error.message}`)
+      alert(`Error starting training: ${error.response?.data?.detail || error.message}`)
     }
   }
 
@@ -682,10 +720,10 @@ export default function Admin() {
           </p>
           <button
             onClick={startTraining}
-            disabled={activeTrainingId !== null}
+            disabled={activeTrainingIds.length > 0}
             className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-6 py-2 rounded font-medium"
           >
-            {activeTrainingId ? 'Training Running...' : 'Train BTC/USDT Model'}
+            {activeTrainingIds.length > 0 ? 'Training Running...' : 'Train All Models'}
           </button>
 
           {/* Active Training Jobs */}

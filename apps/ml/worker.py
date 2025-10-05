@@ -1235,9 +1235,25 @@ def generate_historical_signals_task(self, symbol: str, start_date: str, end_dat
         from apps.ml.signal_engine import SignalEngine
         from apps.ml.backtest import backtest_signals
 
-        # Parse dates
-        start = dt.fromisoformat(start_date)
-        end = dt.fromisoformat(end_date)
+        # Parse dates (handle Z suffix and timezone-aware strings)
+        def _parse_dt(value):
+            if isinstance(value, dt):
+                return value
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if cleaned.endswith('Z'):
+                    cleaned = cleaned[:-1] + '+00:00'
+                try:
+                    return dt.fromisoformat(cleaned)
+                except ValueError as exc:
+                    raise ValueError(f"Invalid datetime format: {value}") from exc
+            raise TypeError(f"Unsupported datetime value: {value!r}")
+
+        start = _parse_dt(start_date)
+        end = _parse_dt(end_date)
+
+        if end <= start:
+            raise ValueError("end_date must be after start_date")
 
         # Create job record
         signal_job = SignalGenerationJob(

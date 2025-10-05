@@ -713,9 +713,19 @@
           }
         },
         "registered_at": "2025-10-05T16:17:31.692952",
-        "status": "registered"
+        "status": "deployed"
       }
     ]
   },
-  "deployments": {}
+  "deployments": {
+    "BTC/USDT_15m_production": {
+      "symbol": "BTC/USDT",
+      "timeframe": "15m",
+      "version": "v9",
+      "model_id": "BTC_USDT_15m_20251005_161731",
+      "environment": "production",
+      "deployed_at": "2025-10-05T18:11:06.801772",
+      "deployed_by": "system"
+    }
+  }
 }

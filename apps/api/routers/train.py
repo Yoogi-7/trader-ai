@@ -24,12 +24,16 @@ class TrainRequest(BaseModel):
 class TrainResponse(BaseModel):
     job_id: str
     status: str
+    symbol: str
+    timeframe: str
     model_id: Optional[str] = None
 
 
 class TrainingStatus(BaseModel):
     job_id: str
     status: str
+    symbol: Optional[str] = None
+    timeframe: Optional[str] = None
     progress_pct: Optional[float] = None
     labeling_progress_pct: Optional[float] = None
     current_fold: Optional[int] = None
@@ -78,6 +82,8 @@ async def start_training(request: TrainRequest, db: Session = Depends(get_db)):
     return TrainResponse(
         job_id=task.id,
         status="queued",
+        symbol=request.symbol,
+        timeframe=request.timeframe,
         model_id=None
     )
 
@@ -95,6 +101,8 @@ async def get_training_status(job_id: str, db: Session = Depends(get_db)):
         response = TrainingStatus(
             job_id=job_id,
             status=training_job.status,
+            symbol=training_job.symbol,
+            timeframe=training_job.timeframe.value if training_job.timeframe else None,
             progress_pct=training_job.progress_pct,
             labeling_progress_pct=training_job.labeling_progress_pct,
             current_fold=training_job.current_fold,
@@ -188,6 +196,8 @@ async def list_training_jobs(db: Session = Depends(get_db)):
         TrainingStatus(
             job_id=job.job_id,
             status=job.status,
+            symbol=job.symbol,
+            timeframe=job.timeframe.value if job.timeframe else None,
             progress_pct=job.progress_pct,
             labeling_progress_pct=job.labeling_progress_pct,
             current_fold=job.current_fold,

@@ -63,8 +63,8 @@ class HistoricalSignalResponse(BaseModel):
 
 class GenerateHistoricalSignalsRequest(BaseModel):
     symbol: str
-    start_date: str
-    end_date: str
+    start_date: datetime
+    end_date: datetime
     timeframe: str = "15m"
 
 
@@ -155,12 +155,15 @@ async def generate_historical_signals(
     """Generate historical signals and backtest them"""
     from apps.ml.worker import celery_app
 
+    if request.end_date <= request.start_date:
+        raise HTTPException(status_code=400, detail="end_date must be after start_date")
+
     task = celery_app.send_task(
         'signals.generate_historical',
         kwargs={
             'symbol': request.symbol,
-            'start_date': request.start_date,
-            'end_date': request.end_date,
+            'start_date': request.start_date.isoformat(),
+            'end_date': request.end_date.isoformat(),
             'timeframe': request.timeframe
         }
     )
@@ -268,16 +271,16 @@ def get_historical_signals(
 ):
     """Get historical signals with their actual results"""
     try:
-    query = db.query(Signal).outerjoin(TradeResult, Signal.signal_id == TradeResult.signal_id)
+        query = db.query(Signal).outerjoin(TradeResult, Signal.signal_id == TradeResult.signal_id)
 
-    if symbol:
-        if symbol.upper() != "ALL":
-            query = query.filter(Signal.symbol == symbol)
+        if symbol:
+            if symbol.upper() != "ALL":
+                query = query.filter(Signal.symbol == symbol)
 
-    query = query.order_by(desc(Signal.timestamp)).limit(limit)
-    signals = query.all()
+        query = query.order_by(desc(Signal.timestamp)).limit(limit)
+        signals = query.all()
 
-    results = []
+        results = []
         for signal in signals:
             trade_result = signal.trade_results[0] if signal.trade_results else None
 
