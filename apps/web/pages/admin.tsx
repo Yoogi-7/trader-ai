@@ -1,5 +1,12 @@
 import { useState, useEffect } from 'react'
+import dynamic from 'next/dynamic'
 import axios from 'axios'
+import type {
+  AggregatedExposurePoint,
+  AggregatedPnlPoint,
+} from '../components/SystemAnalytics'
+
+const SystemAnalytics = dynamic(() => import('../components/SystemAnalytics'), { ssr: false })
 
 // Use empty string for relative URLs (proxied through Next.js rewrites)
 const API_URL = ''
@@ -90,6 +97,9 @@ export default function Admin() {
   const [showHistoricalSignals, setShowHistoricalSignals] = useState(false)
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
   const [candlesInfo, setCandlesInfo] = useState<CandleInfo[]>([])
+  const [pnlAnalytics, setPnlAnalytics] = useState<AggregatedPnlPoint[]>([])
+  const [exposureAnalytics, setExposureAnalytics] = useState<AggregatedExposurePoint[]>([])
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
 
   // Load existing jobs on mount
   useEffect(() => {
@@ -158,6 +168,7 @@ export default function Admin() {
     loadSignalGenJobs()
     loadSystemStatus()
     loadCandlesInfo()
+    loadAnalytics()
   }, [])
 
   // Load system status
@@ -180,12 +191,35 @@ export default function Admin() {
     }
   }
 
+  const loadAnalytics = async () => {
+    setAnalyticsLoading(true)
+    try {
+      const [pnlResponse, exposureResponse] = await Promise.all([
+        axios.get(`${API_URL}/api/v1/system/pnl`),
+        axios.get(`${API_URL}/api/v1/system/exposure`)
+      ])
+      setPnlAnalytics(pnlResponse.data)
+      setExposureAnalytics(exposureResponse.data)
+    } catch (error) {
+      console.error('Error loading analytics:', error)
+    } finally {
+      setAnalyticsLoading(false)
+    }
+  }
+
   // Poll system status every 10 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       loadSystemStatus()
       loadCandlesInfo()
     }, 10000)
+    return () => clearInterval(interval)
+  }, [])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadAnalytics()
+    }, 60000)
     return () => clearInterval(interval)
   }, [])
 
@@ -842,6 +876,12 @@ export default function Admin() {
             </div>
           )}
         </div>
+
+        <SystemAnalytics
+          pnl={pnlAnalytics}
+          exposure={exposureAnalytics}
+          loading={analyticsLoading}
+        />
 
         {/* Database Candles Info */}
         <div className="bg-gray-800 rounded-lg p-6 mb-8">
