@@ -1261,17 +1261,36 @@ def generate_historical_signals_task(self, symbol: str, start_date: str, end_dat
         if end <= start:
             raise ValueError("end_date must be after start_date")
 
-        # Create job record
-        signal_job = SignalGenerationJob(
-            job_id=self.request.id,
-            symbol=symbol,
-            timeframe=TimeFrame(timeframe),
-            start_date=start,
-            end_date=end,
-            status='generating',
-            started_at=dt.utcnow()
-        )
-        db.add(signal_job)
+        timeframe_enum = TimeFrame(timeframe)
+
+        # Create or reuse job record (API may have pre-created it)
+        signal_job = db.query(SignalGenerationJob).filter_by(job_id=self.request.id).first()
+
+        if signal_job is None:
+            signal_job = SignalGenerationJob(
+                job_id=self.request.id,
+                symbol=symbol,
+                timeframe=timeframe_enum,
+                start_date=start,
+                end_date=end,
+                status='generating',
+                started_at=dt.utcnow()
+            )
+            db.add(signal_job)
+        else:
+            signal_job.symbol = symbol
+            signal_job.timeframe = timeframe_enum
+            signal_job.start_date = start
+            signal_job.end_date = end
+            signal_job.status = 'generating'
+            signal_job.started_at = dt.utcnow()
+            signal_job.progress_pct = 0.0
+            signal_job.signals_generated = 0
+            signal_job.signals_backtested = 0
+            signal_job.error_message = None
+            signal_job.elapsed_seconds = None
+            signal_job.completed_at = None
+
         db.commit()
 
         logger.info(f"Generating historical signals for {symbol} from {start_date} to {end_date}")
@@ -1423,15 +1442,29 @@ def generate_historical_signals_task(self, symbol: str, start_date: str, end_dat
                 """
             )
             for trade in trade_results:
-                minutes = None
-                duration_hours = trade.get('duration_hours')
-                if duration_hours is not None:
-                    minutes = int(duration_hours * 60)
+                minutes = trade.get('duration_minutes')
+                if minutes is None:
+                    duration_hours = trade.get('duration_hours')
+                    if duration_hours is not None:
+                        minutes = int(duration_hours * 60)
+
+                actual_pct = trade.get('event_net_pnl_pct')
+                if actual_pct is None:
+                    actual_pct = trade.get('net_pnl_pct')
+
+                actual_usd = trade.get('event_net_pnl_usd')
+                if actual_usd is None:
+                    actual_usd = trade.get('net_pnl')
+
+                final_status = trade.get('status')
+                if isinstance(final_status, SignalStatus):
+                    final_status = final_status.value
+
                 params = {
                     'signal_id': trade.get('signal_id'),
-                    'actual_net_pnl_pct': trade.get('net_pnl_pct'),
-                    'actual_net_pnl_usd': trade.get('net_pnl'),
-                    'final_status': trade.get('status'),
+                    'actual_net_pnl_pct': actual_pct,
+                    'actual_net_pnl_usd': actual_usd,
+                    'final_status': final_status,
                     'duration_minutes': minutes,
                 }
                 logger.info(

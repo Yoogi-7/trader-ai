@@ -3,7 +3,7 @@ Celery signal handlers for tracking training jobs
 """
 from celery.signals import task_prerun, task_postrun, task_failure, task_success
 from apps.api.db.session import SessionLocal
-from apps.api.db.models import TrainingJob
+from apps.api.db.models import TrainingJob, TimeFrame
 from datetime import datetime
 import logging
 
@@ -22,6 +22,16 @@ def training_task_prerun(sender=None, task_id=None, task=None, args=None, kwargs
             logger.warning(f"Cannot create TrainingJob record: missing symbol or timeframe")
             return
 
+        try:
+            timeframe_enum = TimeFrame(timeframe)
+        except ValueError:
+            logger.error(
+                "Cannot create TrainingJob record %s: invalid timeframe %s",
+                task_id,
+                timeframe,
+            )
+            return
+
         # Create or update training job record
         training_job = db.query(TrainingJob).filter_by(job_id=task_id).first()
 
@@ -29,7 +39,7 @@ def training_task_prerun(sender=None, task_id=None, task=None, args=None, kwargs
             training_job = TrainingJob(
                 job_id=task_id,
                 symbol=symbol,
-                timeframe=timeframe,
+                timeframe=timeframe_enum,
                 test_period_days=kwargs.get('test_period_days', 30),
                 min_train_days=kwargs.get('min_train_days', 180),
                 use_expanding_window=kwargs.get('use_expanding_window', True),
@@ -40,6 +50,10 @@ def training_task_prerun(sender=None, task_id=None, task=None, args=None, kwargs
         else:
             training_job.status = 'training'
             training_job.started_at = datetime.utcnow()
+            training_job.timeframe = timeframe_enum
+            training_job.test_period_days = kwargs.get('test_period_days', training_job.test_period_days)
+            training_job.min_train_days = kwargs.get('min_train_days', training_job.min_train_days)
+            training_job.use_expanding_window = kwargs.get('use_expanding_window', training_job.use_expanding_window)
 
         db.commit()
         logger.info(f"Training job {task_id} started for {symbol} {timeframe}")

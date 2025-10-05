@@ -260,27 +260,99 @@ class Backtester:
         entry = position['entry']
         exits = position['exits']
 
-        # Calculate gross PnL
+        # Calculate gross PnL and track intermediate results
         gross_pnl = 0.0
 
+        total_position_size = signal.get('position_size_usd') or 0.0
+        total_quantity = signal.get('quantity') or 0.0
+        entry_fee_total = entry.get('fee', 0.0) or 0.0
+        funding_rate_per_hour = (self.funding_rate_hourly_bps or 0.0) / 10000
+
+        cumulative_net = 0.0
+        cumulative_pct = 0.0
+        event_net = None
+        event_pct = None
+        event_duration_minutes = None
+
+        exit_types = [exit.get('type') for exit in exits]
+
+        if any(t == 'SL' for t in exit_types):
+            final_status = SignalStatus.SL_HIT.value
+            event_marker = 'SL'
+        elif any(t == 'TP3' for t in exit_types):
+            final_status = SignalStatus.TP3_HIT.value
+            event_marker = 'TP3'
+        elif any(t == 'TP2' for t in exit_types):
+            final_status = SignalStatus.TP2_HIT.value
+            event_marker = 'TP2'
+        elif any(t == 'TP1' for t in exit_types):
+            final_status = SignalStatus.TP1_HIT.value
+            event_marker = 'TP1'
+        elif any(t in {'TIME', 'END', 'FORCED'} for t in exit_types):
+            final_status = SignalStatus.TIME_STOP.value
+            preferred = next((t for t in exit_types if t in {'TIME', 'FORCED', 'END'}), None)
+            event_marker = preferred or (exit_types[-1] if exit_types else None)
+        else:
+            final_status = SignalStatus.CANCELLED.value
+            event_marker = exit_types[-1] if exit_types else None
+
         for exit in exits:
-            exit_value = exit['quantity'] * exit['price']
-            entry_value = exit['quantity'] * entry['price']
+            exit_qty = exit.get('quantity', 0.0) or 0.0
+            exit_price = exit.get('price', 0.0) or 0.0
+            exit_value = exit_qty * exit_price
+            entry_value = exit_qty * entry['price']
 
             if signal['side'] == Side.LONG:
-                gross_pnl += (exit_value - entry_value)
+                pnl_component = exit_value - entry_value
+                gross_pnl += pnl_component
             else:
-                gross_pnl += (entry_value - exit_value)
+                pnl_component = entry_value - exit_value
+                gross_pnl += pnl_component
+
+            pct_value = exit.get('pct')
+            if isinstance(pct_value, (int, float)):
+                pct_allocation = max(min(pct_value, 100.0), 0.0) / 100.0
+            elif total_quantity:
+                pct_allocation = exit_qty / total_quantity
+            else:
+                pct_allocation = 0.0
+
+            exit_fee = exit.get('fee', 0.0) or 0.0
+            slippage_cost = exit.get('slippage', 0.0) or 0.0
+            entry_fee_component = entry_fee_total * pct_allocation
+
+            duration_seconds = max((exit['timestamp'] - entry['timestamp']).total_seconds(), 0.0) if exits else 0.0
+            duration_hours_partial = duration_seconds / 3600
+            funding_component = total_position_size * funding_rate_per_hour * duration_hours_partial * pct_allocation
+
+            net_component = pnl_component - (entry_fee_component + exit_fee + slippage_cost + funding_component)
+            cumulative_net += net_component
+            cumulative_pct = (cumulative_net / total_position_size * 100) if total_position_size else 0.0
+
+            if event_net is None and event_marker and exit.get('type') == event_marker:
+                event_net = cumulative_net
+                event_pct = cumulative_pct
+                event_duration_minutes = int(round(duration_seconds / 60)) if duration_seconds else 0
 
         # Total fees
-        total_fees = entry['fee'] + sum(e['fee'] + e.get('slippage', 0) for e in exits)
+        total_fees = entry_fee_total + sum((e.get('fee', 0.0) or 0.0) + (e.get('slippage', 0.0) or 0.0) for e in exits)
 
         # Funding fees (estimate based on duration)
         duration_hours = (exits[-1]['timestamp'] - entry['timestamp']).total_seconds() / 3600 if exits else 0
-        funding_fees = signal['position_size_usd'] * (self.funding_rate_hourly_bps / 10000) * duration_hours
+        funding_fees = total_position_size * funding_rate_per_hour * duration_hours
 
         # Net PnL
         net_pnl = gross_pnl - total_fees - funding_fees
+
+        if event_net is None:
+            event_net = net_pnl
+            event_pct = (net_pnl / total_position_size * 100) if total_position_size else 0.0
+            if exits:
+                duration_seconds = max((exits[-1]['timestamp'] - entry['timestamp']).total_seconds(), 0.0)
+                event_duration_minutes = int(round(duration_seconds / 60)) if duration_seconds else 0
+
+        # Update position status for downstream consumers
+        position['status'] = final_status
 
         # Return margin and PnL to capital
         self.capital += entry['margin'] + net_pnl
@@ -313,7 +385,10 @@ class Backtester:
             'net_pnl': net_pnl,
             'net_pnl_pct': (net_pnl / signal['position_size_usd']) * 100,
             'duration_hours': duration_hours,
-            'status': position['status']
+            'duration_minutes': event_duration_minutes,
+            'status': final_status,
+            'event_net_pnl_usd': event_net,
+            'event_net_pnl_pct': event_pct
         }
 
         self.trades.append(trade_result)

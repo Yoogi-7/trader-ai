@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, and_, desc, text
 from sqlalchemy.exc import ProgrammingError
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from apps.api.db import get_async_db, get_db
 from apps.api.db.models import Signal, RiskProfile, SignalStatus, TradeResult
 from pydantic import BaseModel
@@ -154,24 +154,65 @@ async def generate_historical_signals(
 ):
     """Generate historical signals and backtest them"""
     from apps.ml.worker import celery_app
+    from apps.api.db.models import SignalGenerationJob, TimeFrame
 
     if request.end_date <= request.start_date:
         raise HTTPException(status_code=400, detail="end_date must be after start_date")
+
+    try:
+        timeframe_enum = TimeFrame(request.timeframe)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Unsupported timeframe: {request.timeframe}") from exc
+
+    def _normalize_dt(value: datetime) -> datetime:
+        if value.tzinfo is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    start_dt = _normalize_dt(request.start_date)
+    end_dt = _normalize_dt(request.end_date)
 
     task = celery_app.send_task(
         'signals.generate_historical',
         kwargs={
             'symbol': request.symbol,
-            'start_date': request.start_date.isoformat(),
-            'end_date': request.end_date.isoformat(),
+            'start_date': start_dt.isoformat(),
+            'end_date': end_dt.isoformat(),
             'timeframe': request.timeframe
         }
     )
 
+    job = db.query(SignalGenerationJob).filter_by(job_id=task.id).first()
+    if job:
+        job.symbol = request.symbol
+        job.timeframe = timeframe_enum
+        job.start_date = start_dt
+        job.end_date = end_dt
+        job.status = 'pending'
+        job.progress_pct = 0.0
+        job.signals_generated = 0
+        job.signals_backtested = 0
+        job.error_message = None
+        job.elapsed_seconds = None
+        job.started_at = None
+        job.completed_at = None
+    else:
+        job = SignalGenerationJob(
+            job_id=task.id,
+            symbol=request.symbol,
+            timeframe=timeframe_enum,
+            start_date=start_dt,
+            end_date=end_dt,
+            status='pending',
+        )
+        db.add(job)
+
+    db.commit()
+
     return {
         "job_id": task.id,
         "status": "queued",
-        "message": f"Generating historical signals for {request.symbol} from {request.start_date} to {request.end_date}"
+        "message": f"Generating historical signals for {request.symbol} from {start_dt} to {end_dt}"
     }
 
 
