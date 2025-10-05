@@ -1,10 +1,14 @@
 from celery import Celery
 from apps.api.config import settings
 from apps.api.db.session import SessionLocal
-from apps.api.db.models import OHLCV
+from apps.api.db.models import OHLCV, Signal, SignalStatus, RiskProfile, Side
 from apps.ml.backfill import BackfillService
 from apps.ml.training import train_model_pipeline
+from apps.ml.model_registry import ModelRegistry
+from apps.ml.signal_engine import SignalEngine
 from sqlalchemy import and_
+from datetime import datetime
+import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
@@ -187,9 +191,211 @@ def train_model_task(
 @celery_app.task(name="signals.generate")
 def generate_signals_task():
     """Generate trading signals (runs every 5 minutes)"""
-    # Placeholder for signal generation logic
-    logger.info("Generating trading signals...")
-    return {"status": "completed", "signals_generated": 0}
+
+    from apps.api.main import manager as ws_manager
+
+    db = SessionLocal()
+    registry = ModelRegistry()
+    engine = SignalEngine(db, registry=registry)
+
+    summary = {
+        "status": "completed",
+        "signals_generated": 0,
+        "skipped": 0,
+        "errors": 0,
+        "broadcasts": 0,
+        "details": [],
+        "metrics": {}
+    }
+
+    confidences = []
+    processed_deployments = 0
+    skipped_filters = 0
+
+    try:
+        deployments = registry.index.get('deployments', {}) if hasattr(registry, 'index') else {}
+
+        if not deployments:
+            logger.info("No active model deployments found for signal generation")
+            summary["metrics"]["deployments_processed"] = 0
+            return summary
+
+        for _, deployment in deployments.items():
+            symbol = deployment.get('symbol')
+            timeframe = deployment.get('timeframe')
+            environment = deployment.get('environment', 'production')
+
+            if not symbol or not timeframe:
+                logger.warning("Deployment missing symbol or timeframe: %s", deployment)
+                summary['skipped'] += 1
+                continue
+
+            processed_deployments += 1
+
+            try:
+                result = engine.generate_for_deployment(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    environment=environment,
+                    risk_profile=RiskProfile.MEDIUM,
+                    capital_usd=1000.0
+                )
+            except Exception as exc:
+                logger.error("Failed to generate signal for %s %s: %s", symbol, timeframe, exc)
+                summary['errors'] += 1
+                db.rollback()
+                continue
+
+            if not result or not result.accepted or not result.signal:
+                summary['skipped'] += 1
+                if result and not result.accepted:
+                    skipped_filters += 1
+                continue
+
+            signal_data = result.signal
+            risk_filters = result.risk_filters
+            inference_metadata = result.inference_metadata
+            model_info = result.model_info
+
+            signal_record = Signal(
+                signal_id=signal_data['signal_id'],
+                symbol=signal_data['symbol'],
+                side=signal_data['side'] if isinstance(signal_data['side'], Side) else Side(signal_data['side']),
+                entry_price=signal_data['entry_price'],
+                timestamp=signal_data['timestamp'],
+                tp1_price=signal_data['tp1_price'],
+                tp1_pct=signal_data['tp1_pct'],
+                tp2_price=signal_data['tp2_price'],
+                tp2_pct=signal_data['tp2_pct'],
+                tp3_price=signal_data['tp3_price'],
+                tp3_pct=signal_data['tp3_pct'],
+                sl_price=signal_data['sl_price'],
+                leverage=signal_data['leverage'],
+                margin_mode=signal_data['margin_mode'],
+                position_size_usd=signal_data['position_size_usd'],
+                quantity=signal_data['quantity'],
+                risk_reward_ratio=signal_data['risk_reward_ratio'],
+                estimated_liquidation=signal_data['estimated_liquidation'],
+                max_loss_usd=signal_data['max_loss_usd'],
+                model_id=model_info.get('model_id'),
+                confidence=signal_data['confidence'],
+                expected_net_profit_pct=signal_data['expected_net_profit_pct'],
+                expected_net_profit_usd=signal_data['expected_net_profit_usd'],
+                valid_until=signal_data['valid_until'],
+                status=SignalStatus.ACTIVE,
+                passed_spread_check=risk_filters.get('spread', True),
+                passed_liquidity_check=risk_filters.get('liquidity', True),
+                passed_profit_filter=risk_filters.get('profit', True),
+                passed_correlation_check=risk_filters.get('correlation', True),
+                risk_profile=signal_data['risk_profile'] if isinstance(signal_data['risk_profile'], RiskProfile) else RiskProfile(signal_data['risk_profile']),
+                published_at=datetime.utcnow()
+            )
+
+            try:
+                db.add(signal_record)
+                db.commit()
+                db.refresh(signal_record)
+            except Exception as exc:
+                logger.error("Failed to persist signal %s: %s", signal_data['signal_id'], exc)
+                summary['errors'] += 1
+                db.rollback()
+                continue
+
+            confidences.append(signal_record.confidence or 0.0)
+
+            summary['signals_generated'] += 1
+            summary['details'].append({
+                'signal_id': signal_record.signal_id,
+                'symbol': signal_record.symbol,
+                'side': signal_record.side.value,
+                'confidence': signal_record.confidence,
+                'expected_net_profit_pct': signal_record.expected_net_profit_pct
+            })
+
+            broadcast_payload = _build_signal_broadcast_payload(
+                signal_record,
+                signal_data,
+                model_info,
+                inference_metadata,
+                risk_filters
+            )
+
+            try:
+                asyncio.run(ws_manager.broadcast(broadcast_payload))
+                summary['broadcasts'] += 1
+            except RuntimeError:
+                # Fallback for already running event loops (common in tests)
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(ws_manager.broadcast(broadcast_payload))
+                    summary['broadcasts'] += 1
+                finally:
+                    loop.close()
+            except Exception as exc:
+                logger.error("Failed to broadcast signal %s: %s", signal_record.signal_id, exc)
+
+        if confidences:
+            summary['metrics']['average_confidence'] = float(sum(confidences) / len(confidences))
+            summary['metrics']['max_confidence'] = float(max(confidences))
+
+        summary['metrics']['deployments_processed'] = processed_deployments
+        summary['metrics']['skipped_due_to_filters'] = skipped_filters
+
+        return summary
+    except Exception as exc:
+        logger.error("Signal generation task failed: %s", exc, exc_info=True)
+        db.rollback()
+        summary['status'] = 'failed'
+        summary['error'] = str(exc)
+        return summary
+    finally:
+        db.close()
+
+
+def _build_signal_broadcast_payload(signal_record, signal_data, model_info, inference_metadata, risk_filters):
+    """Build websocket payload for a generated signal."""
+
+    metadata = dict(inference_metadata or {})
+    ts = metadata.get('timestamp')
+    if isinstance(ts, datetime):
+        metadata['timestamp'] = ts.isoformat()
+
+    payload_data = {
+        'signal_id': signal_record.signal_id,
+        'symbol': signal_record.symbol,
+        'side': signal_record.side.value,
+        'entry_price': signal_record.entry_price,
+        'timestamp': signal_record.timestamp.isoformat(),
+        'tp1_price': signal_record.tp1_price,
+        'tp1_pct': signal_record.tp1_pct,
+        'tp2_price': signal_record.tp2_price,
+        'tp2_pct': signal_record.tp2_pct,
+        'tp3_price': signal_record.tp3_price,
+        'tp3_pct': signal_record.tp3_pct,
+        'sl_price': signal_record.sl_price,
+        'leverage': signal_record.leverage,
+        'margin_mode': signal_record.margin_mode,
+        'position_size_usd': signal_record.position_size_usd,
+        'quantity': signal_record.quantity,
+        'risk_reward_ratio': signal_record.risk_reward_ratio,
+        'estimated_liquidation': signal_record.estimated_liquidation,
+        'max_loss_usd': signal_record.max_loss_usd,
+        'model_id': model_info.get('model_id'),
+        'model_version': model_info.get('version'),
+        'confidence': signal_record.confidence,
+        'expected_net_profit_pct': signal_record.expected_net_profit_pct,
+        'expected_net_profit_usd': signal_record.expected_net_profit_usd,
+        'valid_until': signal_record.valid_until.isoformat(),
+        'status': signal_record.status.value,
+        'risk_profile': signal_record.risk_profile.value,
+        'risk_filters': risk_filters,
+        'inference': metadata
+    }
+
+    return {
+        'type': 'signal.created',
+        'data': payload_data
+    }
 
 
 @celery_app.task(name="backfill.update_latest")
