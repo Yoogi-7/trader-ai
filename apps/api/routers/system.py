@@ -83,7 +83,7 @@ async def get_candles_info(db: Session = Depends(get_db)):
     # List of tracked pairs (same as in worker.py)
     TRACKED_PAIRS = [
         'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT',
-        'ADA/USDT', 'SOL/USDT', 'DOGE/USDT', 'MATIC/USDT',
+        'ADA/USDT', 'SOL/USDT', 'DOGE/USDT', 'POL/USDT',
         'DOT/USDT', 'AVAX/USDT', 'LINK/USDT', 'UNI/USDT'
     ]
 

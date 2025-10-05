@@ -313,6 +313,30 @@ export default function Admin() {
     }
   }
 
+  const startAllBackfills = async () => {
+    try {
+      console.log('Starting backfill for all pairs, API_URL:', API_URL)
+
+      const response = await axios.post(`${API_URL}/api/v1/backfill/start-all`)
+      console.log('Backfill all response:', response.data)
+
+      const { jobs_created, jobs_skipped, created } = response.data
+
+      if (jobs_created > 0) {
+        alert(`Started ${jobs_created} backfill jobs. Skipped ${jobs_skipped} pairs (already have data).`)
+        // Reload jobs list
+        const jobsResponse = await axios.get(`${API_URL}/api/v1/backfill/jobs`)
+        setBackfillJobs(jobsResponse.data)
+      } else {
+        alert(`No backfill jobs started. All ${jobs_skipped} pairs already have data.`)
+      }
+    } catch (error: any) {
+      console.error('Error starting all backfills:', error)
+      console.error('Error details:', error.response?.data)
+      alert(`Error starting backfills: ${error.message}`)
+    }
+  }
+
   const startTraining = async () => {
     try {
       console.log('Starting training, API_URL:', API_URL)
@@ -378,13 +402,21 @@ export default function Admin() {
         {/* Backfill Panel */}
         <div className="bg-gray-800 rounded-lg p-6 mb-8">
           <h2 className="text-2xl font-bold mb-4">Data Backfill</h2>
-          <button
-            onClick={startBackfill}
-            disabled={activeBackfillId !== null}
-            className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-6 py-2 rounded font-medium"
-          >
-            {activeBackfillId ? 'Backfill Running...' : 'Start BTC/USDT Backfill (Full History)'}
-          </button>
+          <div className="flex gap-4 mb-6">
+            <button
+              onClick={startBackfill}
+              disabled={activeBackfillId !== null}
+              className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-6 py-2 rounded font-medium"
+            >
+              {activeBackfillId ? 'Backfill Running...' : 'Start BTC/USDT Backfill (Full History)'}
+            </button>
+            <button
+              onClick={startAllBackfills}
+              className="bg-purple-600 hover:bg-purple-700 px-6 py-2 rounded font-medium"
+            >
+              Start All Pairs Backfill (12 pairs)
+            </button>
+          </div>
 
           {/* Active Backfill Jobs */}
           <div className="mt-6 space-y-4">
@@ -747,13 +779,13 @@ export default function Admin() {
                   {info.first_candle && (
                     <div className="flex justify-between">
                       <span className="text-gray-400">First:</span>
-                      <span className="text-gray-300">{new Date(info.first_candle).toLocaleDateString()}</span>
+                      <span className="text-gray-300">{new Date(info.first_candle).toLocaleString()}</span>
                     </div>
                   )}
                   {info.last_candle && (
                     <div className="flex justify-between">
                       <span className="text-gray-400">Last:</span>
-                      <span className="text-gray-300">{new Date(info.last_candle).toLocaleDateString()}</span>
+                      <span className="text-gray-300">{new Date(info.last_candle).toLocaleString()}</span>
                     </div>
                   )}
                   {!info.first_candle && !info.last_candle && (

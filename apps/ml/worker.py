@@ -188,7 +188,7 @@ def update_latest_candles_task():
         from apps.api.db.models import TimeFrame
         from datetime import datetime, timedelta
 
-        # List of trading pairs to track
+        # List of trading pairs to track (updated with current Binance symbols)
         TRACKED_PAIRS = [
             'BTC/USDT',
             'ETH/USDT',
@@ -197,7 +197,7 @@ def update_latest_candles_task():
             'ADA/USDT',
             'SOL/USDT',
             'DOGE/USDT',
-            'MATIC/USDT',
+            'POL/USDT',  # Previously MATIC
             'DOT/USDT',
             'AVAX/USDT',
             'LINK/USDT',
@@ -206,6 +206,7 @@ def update_latest_candles_task():
 
         service = BackfillService(db)
         total_updated = 0
+        backfills_triggered = 0
 
         for symbol in TRACKED_PAIRS:
             try:
@@ -237,13 +238,39 @@ def update_latest_candles_task():
                         logger.info(f"Updated {len(df)} latest candles for {symbol} 15m")
                         total_updated += len(df)
                 else:
-                    logger.info(f"No existing candles for {symbol}, skipping update (use backfill first)")
+                    # No candles exist - trigger initial backfill
+                    logger.info(f"No candles for {symbol}, triggering initial backfill")
+
+                    # Get earliest available date from exchange
+                    earliest_dt = service.client.get_earliest_timestamp(symbol, '15m')
+                    if not earliest_dt:
+                        earliest_dt = datetime(2020, 1, 1)  # Fallback to 2020
+
+                    end_date = datetime.utcnow()
+
+                    # Create and execute backfill job
+                    job = service.create_backfill_job(
+                        symbol=symbol,
+                        timeframe=TimeFrame.M15,
+                        start_date=earliest_dt,
+                        end_date=end_date
+                    )
+
+                    # Trigger async backfill
+                    execute_backfill_task.delay(job.job_id)
+                    backfills_triggered += 1
+                    logger.info(f"Triggered backfill job {job.job_id} for {symbol}")
 
             except Exception as e:
                 logger.error(f"Error updating {symbol}: {e}")
                 continue
 
-        return {"status": "completed", "candles_updated": total_updated, "pairs_tracked": len(TRACKED_PAIRS)}
+        return {
+            "status": "completed",
+            "candles_updated": total_updated,
+            "backfills_triggered": backfills_triggered,
+            "pairs_tracked": len(TRACKED_PAIRS)
+        }
 
     except Exception as e:
         logger.error(f"Update latest candles task failed: {e}")

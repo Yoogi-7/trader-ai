@@ -112,3 +112,80 @@ async def get_earliest_available_date(
     else:
         # Fallback to a reasonable default if unable to fetch
         return {"earliest_date": "2017-01-01T00:00:00", "symbol": symbol, "timeframe": timeframe}
+
+
+@router.post("/start-all")
+async def start_all_backfills(
+    db: Session = Depends(get_db)
+):
+    """Start backfill jobs for all tracked trading pairs"""
+    from apps.api.db.models import TimeFrame, OHLCV
+    from sqlalchemy import and_
+    from datetime import datetime
+
+    # List of trading pairs to track
+    TRACKED_PAIRS = [
+        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT',
+        'ADA/USDT', 'SOL/USDT', 'DOGE/USDT', 'POL/USDT',
+        'DOT/USDT', 'AVAX/USDT', 'LINK/USDT', 'UNI/USDT'
+    ]
+
+    service = BackfillService(db)
+    jobs_created = []
+    jobs_skipped = []
+
+    for symbol in TRACKED_PAIRS:
+        try:
+            # Check if pair already has data
+            existing_count = db.query(OHLCV).filter(
+                and_(
+                    OHLCV.symbol == symbol,
+                    OHLCV.timeframe == TimeFrame.M15
+                )
+            ).count()
+
+            if existing_count > 0:
+                jobs_skipped.append({
+                    "symbol": symbol,
+                    "reason": f"Already has {existing_count} candles"
+                })
+                continue
+
+            # Get earliest available date from exchange
+            earliest_dt = service.client.get_earliest_timestamp(symbol, '15m')
+            if not earliest_dt:
+                earliest_dt = datetime(2020, 1, 1)  # Fallback to 2020
+
+            end_date = datetime.utcnow()
+
+            # Create backfill job
+            job = service.create_backfill_job(
+                symbol=symbol,
+                timeframe=TimeFrame.M15,
+                start_date=earliest_dt,
+                end_date=end_date
+            )
+
+            # Trigger async backfill
+            from apps.ml.worker import execute_backfill_task
+            execute_backfill_task.delay(job.job_id)
+
+            jobs_created.append({
+                "symbol": symbol,
+                "job_id": job.job_id,
+                "start_date": earliest_dt.isoformat(),
+                "end_date": end_date.isoformat()
+            })
+
+        except Exception as e:
+            jobs_skipped.append({
+                "symbol": symbol,
+                "reason": f"Error: {str(e)}"
+            })
+
+    return {
+        "jobs_created": len(jobs_created),
+        "jobs_skipped": len(jobs_skipped),
+        "created": jobs_created,
+        "skipped": jobs_skipped
+    }
