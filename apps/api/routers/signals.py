@@ -195,6 +195,35 @@ def get_signal_generation_status(job_id: str, db: Session = Depends(get_db)):
     )
 
 
+@router.post("/historical/cancel/{job_id}")
+def cancel_signal_generation(job_id: str, db: Session = Depends(get_db)):
+    """Cancel a running signal generation job"""
+    from apps.api.db.models import SignalGenerationJob
+    from apps.ml.worker import celery_app
+
+    job = db.query(SignalGenerationJob).filter_by(job_id=job_id).first()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status not in ['generating', 'pending']:
+        raise HTTPException(status_code=400, detail=f"Cannot cancel job with status: {job.status}")
+
+    # Mark job as failed/cancelled
+    job.status = 'failed'
+    job.error_message = 'Cancelled by user'
+    job.completed_at = datetime.utcnow()
+    db.commit()
+
+    # Try to revoke Celery task
+    try:
+        celery_app.control.revoke(job_id, terminate=True, signal='SIGKILL')
+    except Exception as e:
+        print(f"Could not revoke Celery task {job_id}: {e}")
+
+    return {"job_id": job_id, "status": "cancelled"}
+
+
 @router.get("/historical/jobs", response_model=List[SignalGenerationStatus])
 def list_signal_generation_jobs(db: Session = Depends(get_db)):
     """List all recent signal generation jobs"""

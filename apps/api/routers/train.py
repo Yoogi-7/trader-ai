@@ -142,6 +142,36 @@ async def get_training_status(job_id: str, db: Session = Depends(get_db)):
     return response
 
 
+@router.post("/cancel/{job_id}")
+async def cancel_training(job_id: str, db: Session = Depends(get_db)):
+    """Cancel a running training job"""
+    from apps.api.db.models import TrainingJob
+    from datetime import datetime
+
+    # Get job from database
+    job = db.query(TrainingJob).filter_by(job_id=job_id).first()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status not in ['training', 'pending', 'queued']:
+        raise HTTPException(status_code=400, detail=f"Cannot cancel job with status: {job.status}")
+
+    # Mark job as failed/cancelled
+    job.status = 'failed'
+    job.error_message = 'Cancelled by user'
+    job.completed_at = datetime.utcnow()
+    db.commit()
+
+    # Try to revoke Celery task
+    try:
+        celery_app.control.revoke(job_id, terminate=True, signal='SIGKILL')
+    except Exception as e:
+        print(f"Could not revoke Celery task {job_id}: {e}")
+
+    return {"job_id": job_id, "status": "cancelled"}
+
+
 @router.get("/jobs", response_model=List[TrainingStatus])
 async def list_training_jobs(db: Session = Depends(get_db)):
     """List all recent training jobs from database"""

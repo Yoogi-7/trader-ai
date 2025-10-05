@@ -6,7 +6,9 @@ from datetime import datetime
 from apps.api.db import get_db
 from apps.api.db.models import BackfillJob, TimeFrame
 from apps.ml.backfill import BackfillService
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -80,6 +82,39 @@ async def get_backfill_status(
         raise HTTPException(status_code=404, detail="Job not found")
 
     return status
+
+
+@router.post("/cancel/{job_id}")
+async def cancel_backfill(
+    job_id: str,
+    db: Session = Depends(get_db)
+):
+    """Cancel a running backfill job"""
+    from apps.api.db.models import BackfillJob
+    from datetime import datetime
+
+    job = db.query(BackfillJob).filter(BackfillJob.job_id == job_id).first()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if job.status not in ['running', 'pending']:
+        raise HTTPException(status_code=400, detail=f"Cannot cancel job with status: {job.status}")
+
+    # Mark job as failed/cancelled
+    job.status = 'failed'
+    job.error_message = 'Cancelled by user'
+    job.completed_at = datetime.utcnow()
+    db.commit()
+
+    # Try to revoke Celery task if still running
+    try:
+        from apps.ml.worker import celery_app
+        celery_app.control.revoke(job_id, terminate=True)
+    except Exception as e:
+        logger.warning(f"Could not revoke Celery task {job_id}: {e}")
+
+    return {"job_id": job_id, "status": "cancelled"}
 
 
 @router.get("/jobs", response_model=list[BackfillStatus])

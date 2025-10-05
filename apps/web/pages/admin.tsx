@@ -337,6 +337,48 @@ export default function Admin() {
     }
   }
 
+  const cancelBackfill = async (jobId: string) => {
+    try {
+      await axios.post(`${API_URL}/api/v1/backfill/cancel/${jobId}`)
+      alert('Backfill job cancelled')
+      // Reload jobs
+      const jobsResponse = await axios.get(`${API_URL}/api/v1/backfill/jobs`)
+      setBackfillJobs(jobsResponse.data)
+      setActiveBackfillId(null)
+    } catch (error: any) {
+      console.error('Error cancelling backfill:', error)
+      alert(`Error: ${error.response?.data?.detail || error.message}`)
+    }
+  }
+
+  const cancelTraining = async (jobId: string) => {
+    try {
+      await axios.post(`${API_URL}/api/v1/train/cancel/${jobId}`)
+      alert('Training job cancelled')
+      // Reload jobs
+      const jobsResponse = await axios.get(`${API_URL}/api/v1/train/jobs`)
+      setTrainingJobs(jobsResponse.data)
+      setActiveTrainingId(null)
+    } catch (error: any) {
+      console.error('Error cancelling training:', error)
+      alert(`Error: ${error.response?.data?.detail || error.message}`)
+    }
+  }
+
+  const cancelSignalGeneration = async (jobId: string) => {
+    try {
+      await axios.post(`${API_URL}/api/v1/signals/historical/cancel/${jobId}`)
+      alert('Signal generation job cancelled')
+      // Reload jobs
+      const jobsResponse = await axios.get(`${API_URL}/api/v1/signals/historical/jobs`)
+      setSignalGenJobs(jobsResponse.data)
+      setActiveSignalGenId(null)
+    } catch (error: any) {
+      console.error('Error cancelling signal generation:', error)
+      alert(`Error: ${error.response?.data?.detail || error.message}`)
+    }
+  }
+
   const startTraining = async () => {
     try {
       console.log('Starting training, API_URL:', API_URL)
@@ -427,12 +469,22 @@ export default function Admin() {
                     <span className="font-bold">{job.symbol}</span>
                     <span className="text-gray-400 ml-2">{job.timeframe}</span>
                   </div>
-                  <div className={`px-3 py-1 rounded text-sm ${
-                    job.status === 'completed' ? 'bg-green-600' :
-                    job.status === 'running' ? 'bg-blue-600' :
-                    job.status === 'failed' ? 'bg-red-600' : 'bg-gray-600'
-                  }`}>
-                    {job.status.toUpperCase()}
+                  <div className="flex gap-2 items-center">
+                    <div className={`px-3 py-1 rounded text-sm ${
+                      job.status === 'completed' ? 'bg-green-600' :
+                      job.status === 'running' ? 'bg-blue-600' :
+                      job.status === 'failed' ? 'bg-red-600' : 'bg-gray-600'
+                    }`}>
+                      {job.status.toUpperCase()}
+                    </div>
+                    {(job.status === 'running' || job.status === 'pending') && (
+                      <button
+                        onClick={() => cancelBackfill(job.job_id)}
+                        className="px-3 py-1 bg-red-600 hover:bg-red-700 rounded text-sm"
+                      >
+                        Cancel
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -451,20 +503,30 @@ export default function Admin() {
                 </div>
 
                 {/* Stats */}
-                <div className="grid grid-cols-3 gap-4 mt-3 text-sm">
-                  <div>
-                    <p className="text-gray-400">Candles Fetched</p>
-                    <p className="font-bold">{job.candles_fetched.toLocaleString()}</p>
+                {job.status !== 'failed' && (
+                  <div className="grid grid-cols-3 gap-4 mt-3 text-sm">
+                    <div>
+                      <p className="text-gray-400">Candles Fetched</p>
+                      <p className="font-bold">{job.candles_fetched.toLocaleString()}</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-400">Speed</p>
+                      <p className="font-bold">{job.candles_per_minute?.toFixed(0) || 'N/A'} c/min</p>
+                    </div>
+                    <div>
+                      <p className="text-gray-400">ETA</p>
+                      <p className="font-bold">{formatETA(job.eta_minutes)}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-gray-400">Speed</p>
-                    <p className="font-bold">{job.candles_per_minute?.toFixed(0) || 'N/A'} c/min</p>
+                )}
+
+                {/* Error Message */}
+                {job.status === 'failed' && (
+                  <div className="mt-3 p-3 bg-red-900 border border-red-700 rounded text-sm">
+                    <p className="text-red-200 font-semibold">Error:</p>
+                    <p className="text-red-300">Job failed. Please check logs or try again.</p>
                   </div>
-                  <div>
-                    <p className="text-gray-400">ETA</p>
-                    <p className="font-bold">{formatETA(job.eta_minutes)}</p>
-                  </div>
-                </div>
+                )}
               </div>
             ))}
           </div>
@@ -490,12 +552,22 @@ export default function Admin() {
               <div key={job.job_id} className="bg-gray-700 rounded-lg p-4">
                 <div className="flex justify-between items-center mb-2">
                   <div className="font-bold">Training Job</div>
-                  <div className={`px-3 py-1 rounded text-sm ${
-                    job.status === 'completed' ? 'bg-green-600' :
-                    job.status === 'training' ? 'bg-blue-600' :
-                    job.status === 'failed' ? 'bg-red-600' : 'bg-gray-600'
-                  }`}>
-                    {job.status.toUpperCase()}
+                  <div className="flex gap-2 items-center">
+                    <div className={`px-3 py-1 rounded text-sm ${
+                      job.status === 'completed' ? 'bg-green-600' :
+                      job.status === 'training' ? 'bg-blue-600' :
+                      job.status === 'failed' ? 'bg-red-600' : 'bg-gray-600'
+                    }`}>
+                      {job.status.toUpperCase()}
+                    </div>
+                    {(job.status === 'training' || job.status === 'pending' || job.status === 'queued') && (
+                      <button
+                        onClick={() => cancelTraining(job.job_id)}
+                        className="px-3 py-1 bg-red-600 hover:bg-red-700 rounded text-sm"
+                      >
+                        Cancel
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -607,12 +679,22 @@ export default function Admin() {
                     <span className="font-bold">{job.symbol}</span>
                     <span className="text-gray-400 ml-2">Signal Generation</span>
                   </div>
-                  <div className={`px-3 py-1 rounded text-sm ${
-                    job.status === 'completed' ? 'bg-green-600' :
-                    job.status === 'generating' ? 'bg-purple-600' :
-                    job.status === 'failed' ? 'bg-red-600' : 'bg-gray-600'
-                  }`}>
-                    {job.status.toUpperCase()}
+                  <div className="flex gap-2 items-center">
+                    <div className={`px-3 py-1 rounded text-sm ${
+                      job.status === 'completed' ? 'bg-green-600' :
+                      job.status === 'generating' ? 'bg-purple-600' :
+                      job.status === 'failed' ? 'bg-red-600' : 'bg-gray-600'
+                    }`}>
+                      {job.status.toUpperCase()}
+                    </div>
+                    {(job.status === 'generating' || job.status === 'pending') && (
+                      <button
+                        onClick={() => cancelSignalGeneration(job.job_id)}
+                        className="px-3 py-1 bg-red-600 hover:bg-red-700 rounded text-sm"
+                      >
+                        Cancel
+                      </button>
+                    )}
                   </div>
                 </div>
 
