@@ -282,9 +282,11 @@ class Signal(Base):
 
     # Validity
     valid_until = Column(DateTime, nullable=False)
+    expired_at = Column(DateTime)
 
     # Status
     status = Column(Enum(SignalStatus), default=SignalStatus.PENDING, index=True)
+    closed_at = Column(DateTime)
 
     # Filters
     passed_spread_check = Column(Boolean, default=True)
