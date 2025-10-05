@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from typing import Dict, Optional, Tuple, Callable, Any
+from typing import Dict, Optional, Tuple, Callable, Any, List
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -369,6 +369,7 @@ class SignalInferenceResult:
     risk_filters: Dict[str, bool]
     inference_metadata: Dict[str, Any]
     accepted: bool
+    rejection_reasons: Optional[List[str]] = None
 
 
 class SignalEngine:
@@ -457,7 +458,7 @@ class SignalEngine:
             'liquidity': volume >= self.min_volume,
             'spread': spread_bps <= self.max_spread_bps,
             'correlation': True,
-            'profit': False,  # updated after generator run
+            'profit': True,
             'position_limit': True
         }
 
@@ -470,6 +471,7 @@ class SignalEngine:
         }
 
         if not all(risk_filters[key] for key in ['confidence', 'atr', 'liquidity', 'spread']):
+            failed_filters = [k for k, v in risk_filters.items() if not v]
             logger.info(
                 "Signal for %s %s rejected by pre-signal risk filters: %s",
                 symbol,
@@ -481,7 +483,8 @@ class SignalEngine:
                 model_info=self._build_model_info(deployment),
                 risk_filters=risk_filters,
                 inference_metadata=inference_metadata,
-                accepted=False
+                accepted=False,
+                rejection_reasons=failed_filters
             )
 
         max_positions_map = {
@@ -504,6 +507,7 @@ class SignalEngine:
 
         if max_positions_allowed and active_positions >= max_positions_allowed:
             risk_filters['position_limit'] = False
+            failed_filters = [k for k, v in risk_filters.items() if not v]
             logger.info(
                 "Signal for %s %s rejected due to position limit (%s >= %s) for profile %s",
                 symbol,
@@ -517,7 +521,8 @@ class SignalEngine:
                 model_info=self._build_model_info(deployment),
                 risk_filters=risk_filters,
                 inference_metadata=inference_metadata,
-                accepted=False
+                accepted=False,
+                rejection_reasons=failed_filters
             )
 
         leverage_cap = {
@@ -540,13 +545,15 @@ class SignalEngine:
 
         if not signal:
             risk_filters['profit'] = False
+            failed_filters = [k for k, v in risk_filters.items() if not v]
             logger.info("Signal for %s %s rejected by profit filter", symbol, timeframe)
             return SignalInferenceResult(
                 signal=None,
                 model_info=self._build_model_info(deployment),
                 risk_filters=risk_filters,
                 inference_metadata=inference_metadata,
-                accepted=False
+                accepted=False,
+                rejection_reasons=failed_filters
             )
 
         risk_filters['profit'] = True

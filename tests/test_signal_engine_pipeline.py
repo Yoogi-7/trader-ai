@@ -13,6 +13,7 @@ from apps.api.db.models import (
     RiskProfile,
     Side,
     Signal,
+    SignalRejection,
     SignalStatus,
     TimeFrame
 )
@@ -388,5 +389,83 @@ def test_generate_signals_task_skips_when_position_limit_reached(monkeypatch):
 
     session = SessionLocal()
     assert session.query(Signal).count() == settings.MED_MAX_POSITIONS
+    session.close()
+    engine.dispose()
+
+
+def test_generate_signals_task_persists_rejection_reason(monkeypatch):
+    SessionLocal, engine = create_sqlite_session()
+    session = SessionLocal()
+    insert_mock_ohlcv(session)
+
+    registry_record = ModelRegistryRecord(
+        model_id='model123',
+        symbol='BTC/USDT',
+        timeframe=TimeFrame.M15,
+        model_type='ensemble',
+        version='v1',
+        train_start=datetime.utcnow() - timedelta(days=200),
+        train_end=datetime.utcnow() - timedelta(days=60),
+        oos_start=datetime.utcnow() - timedelta(days=60),
+        oos_end=datetime.utcnow() - timedelta(days=1),
+        hyperparameters={}
+    )
+    session.add(registry_record)
+    session.commit()
+    session.close()
+
+    def session_factory():
+        return SessionLocal()
+
+    monkeypatch.setattr('apps.ml.worker.SessionLocal', session_factory)
+
+    class StubRegistry:
+        def __init__(self):
+            self.index = {
+                'deployments': {
+                    'BTC_USDT_15m_production': {
+                        'symbol': 'BTC/USDT',
+                        'timeframe': '15m',
+                        'environment': 'production',
+                        'model_id': 'model123',
+                        'version': 'v1',
+                        'path': 'unused'
+                    }
+                }
+            }
+
+        def get_deployed_model(self, symbol, timeframe, environment='production'):
+            return {
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'environment': environment,
+                'model_id': 'model123',
+                'version': 'v1',
+                'path': 'unused'
+            }
+
+    def signal_engine_factory(db, registry=None, **kwargs):
+        return SignalEngine(
+            db=db,
+            registry=registry,
+            model_factory=lambda: DummyModel(0.8),
+            lookback_bars=90,
+            min_volume=10_000.0
+        )
+
+    monkeypatch.setattr('apps.ml.worker.ModelRegistry', lambda: StubRegistry())
+    monkeypatch.setattr('apps.ml.worker.SignalEngine', signal_engine_factory)
+
+    result = generate_signals_task.run()
+
+    assert result['signals_generated'] == 0
+    assert result['skipped'] == 1
+    assert result['metrics']['skipped_due_to_filters'] == 1
+
+    session = SessionLocal()
+    rejections = session.query(SignalRejection).all()
+    assert len(rejections) == 1
+    assert rejections[0].failed_filters == ['liquidity']
+    assert rejections[0].rejection_reason == 'Failed risk filters: liquidity'
     session.close()
     engine.dispose()
