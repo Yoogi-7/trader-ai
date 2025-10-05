@@ -1,9 +1,12 @@
 import pandas as pd
 import numpy as np
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Iterable
 from datetime import datetime, timedelta
 import logging
-from apps.api.db.models import Side, RiskProfile, SignalStatus
+from collections import defaultdict
+from sqlalchemy import and_
+
+from apps.api.db.models import Side, RiskProfile, SignalStatus, OHLCV, TimeFrame
 from apps.api.config import settings
 
 logger = logging.getLogger(__name__)
@@ -408,3 +411,149 @@ class Backtester:
             'trades': self.trades,
             'equity_curve': self.equity_curve
         }
+
+
+def _coerce_timestamp(value) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        # Handle both naive and Z-suffixed ISO strings
+        try:
+            return datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except ValueError:
+            logger.warning("Unrecognized timestamp format for value %s", value)
+    return datetime.utcnow()
+
+
+def _load_market_data(
+    db,
+    symbol: str,
+    timeframe: str,
+    start: datetime,
+    end: datetime,
+) -> pd.DataFrame:
+    """Fetch OHLCV data for the requested window."""
+
+    buffer = timedelta(days=2)
+    query = (
+        db.query(OHLCV)
+        .filter(
+            and_(
+                OHLCV.symbol == symbol,
+                OHLCV.timeframe == TimeFrame(timeframe),
+                OHLCV.timestamp >= start - buffer,
+                OHLCV.timestamp <= end + buffer,
+            )
+        )
+        .order_by(OHLCV.timestamp.asc())
+    )
+
+    rows = query.all()
+    if not rows:
+        logger.warning("No OHLCV rows available for %s %s between %s and %s", symbol, timeframe, start, end)
+        return pd.DataFrame()
+
+    return pd.DataFrame(
+        [
+            {
+                'timestamp': row.timestamp,
+                'open': row.open,
+                'high': row.high,
+                'low': row.low,
+                'close': row.close,
+                'volume': row.volume,
+            }
+            for row in rows
+        ]
+    )
+
+
+def backtest_signals(db, signals: Iterable[Dict], default_timeframe: str = '15m') -> Dict:
+    """
+    Lightweight convenience wrapper used by the Celery worker to backtest freshly
+    generated historical signals. Returns aggregated metrics so the API can report
+    progress even if the comprehensive research backtester is not configured.
+    """
+
+    signals = list(signals or [])
+    if not signals:
+        logger.info("No historical signals supplied for backtest")
+        return {
+            'win_rate': 0.0,
+            'avg_profit_pct': 0.0,
+            'total_pnl_usd': 0.0,
+            'total_trades': 0,
+            'details': [],
+        }
+
+    grouped = defaultdict(list)
+    for signal in signals:
+        symbol = signal.get('symbol') or signal.get('pair') or 'BTC/USDT'
+        ts = _coerce_timestamp(signal.get('timestamp'))
+        signal['timestamp'] = ts
+        timeframe = signal.get('timeframe', default_timeframe)
+        signal['timeframe'] = timeframe
+
+        side_val = signal.get('side')
+        if isinstance(side_val, str):
+            try:
+                signal['side'] = Side(side_val.lower())
+            except ValueError:
+                signal['side'] = Side.LONG if side_val.upper() == 'LONG' else Side.SHORT
+
+        grouped[(symbol, timeframe)].append(signal)
+
+    aggregate_trades = 0
+    aggregate_win_weight = 0.0
+    aggregate_return_pct = 0.0
+    aggregate_pnl = 0.0
+    per_group_results = []
+    all_trades: list[dict] = []
+
+    for (symbol, timeframe), group_signals in grouped.items():
+        timestamps = [sig['timestamp'] for sig in group_signals]
+        start = min(timestamps)
+        end = max(timestamps)
+
+        market_df = _load_market_data(db, symbol, timeframe, start, end)
+        if market_df.empty:
+            continue
+
+        tester = Backtester()
+        metrics = tester.run(group_signals, market_df)
+        metrics['symbol'] = symbol
+        metrics['timeframe'] = timeframe
+        per_group_results.append(metrics)
+        all_trades.extend(metrics.get('trades', []))
+
+        trades = metrics.get('total_trades', 0)
+        aggregate_trades += trades
+        aggregate_win_weight += metrics.get('win_rate', 0.0) * trades
+        aggregate_return_pct += metrics.get('total_return_pct', 0.0)
+        aggregate_pnl += metrics.get('final_equity', tester.initial_capital) - tester.initial_capital
+
+    if not per_group_results or aggregate_trades == 0:
+        logger.warning("Historical backtest could not be completed due to missing data")
+        return {
+            'win_rate': 0.0,
+            'avg_profit_pct': 0.0,
+            'total_pnl_usd': 0.0,
+            'total_trades': aggregate_trades,
+            'details': per_group_results,
+            'trades': [],
+        }
+
+    win_rate = aggregate_win_weight / aggregate_trades if aggregate_trades else 0.0
+    avg_return_pct = aggregate_return_pct / len(per_group_results)
+
+    return {
+        'win_rate': win_rate,
+        'avg_profit_pct': avg_return_pct,
+        'total_pnl_usd': aggregate_pnl,
+        'total_trades': aggregate_trades,
+        'details': per_group_results,
+        'trades': all_trades,
+    }
+
+
+__all__ = ['Backtester', 'backtest_signals']

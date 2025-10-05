@@ -8,12 +8,61 @@ from apps.ml.model_registry import ModelRegistry
 from apps.ml.signal_engine import SignalEngine
 from apps.ml.summaries import generate_signal_summary
 from apps.ml.drift import DriftDetector
-from sqlalchemy import and_
+from sqlalchemy import and_, text
 from datetime import datetime
+from sqlalchemy.exc import ProgrammingError
 import pandas as pd
 import numpy as np
 import asyncio
 import logging
+import math
+
+_HISTORICAL_TABLE_INITIALIZED = False
+
+
+def _ensure_historical_table(db):
+    global _HISTORICAL_TABLE_INITIALIZED
+    if _HISTORICAL_TABLE_INITIALIZED:
+        return
+
+    create_sql = text(
+        """
+        CREATE TABLE IF NOT EXISTS historical_signal_snapshots (
+            signal_id TEXT PRIMARY KEY,
+            job_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            side TEXT NOT NULL,
+            entry_price DOUBLE PRECISION NOT NULL,
+            timestamp TIMESTAMP NOT NULL,
+            tp1_price DOUBLE PRECISION,
+            tp2_price DOUBLE PRECISION,
+            tp3_price DOUBLE PRECISION,
+            sl_price DOUBLE PRECISION,
+            expected_net_profit_pct DOUBLE PRECISION,
+            expected_net_profit_usd DOUBLE PRECISION,
+            confidence DOUBLE PRECISION,
+            model_id TEXT,
+            risk_profile TEXT,
+            actual_net_pnl_pct DOUBLE PRECISION,
+            actual_net_pnl_usd DOUBLE PRECISION,
+            final_status TEXT,
+            duration_minutes INTEGER,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """
+    )
+    db.execute(create_sql)
+
+    alter_statements = [
+        "ALTER TABLE historical_signal_snapshots ADD COLUMN IF NOT EXISTS actual_net_pnl_pct DOUBLE PRECISION",
+        "ALTER TABLE historical_signal_snapshots ADD COLUMN IF NOT EXISTS actual_net_pnl_usd DOUBLE PRECISION",
+        "ALTER TABLE historical_signal_snapshots ADD COLUMN IF NOT EXISTS final_status TEXT",
+        "ALTER TABLE historical_signal_snapshots ADD COLUMN IF NOT EXISTS duration_minutes INTEGER",
+    ]
+    for stmt in alter_statements:
+        db.execute(text(stmt))
+    _HISTORICAL_TABLE_INITIALIZED = True
 
 logger = logging.getLogger(__name__)
 
@@ -544,10 +593,18 @@ def expire_signals_task():
     try:
         now = datetime.utcnow()
 
-        expirable_signals = db.query(Signal).filter(
-            Signal.valid_until < now,
-            Signal.status.in_([SignalStatus.PENDING, SignalStatus.ACTIVE])
-        ).all()
+        try:
+            expirable_signals = db.query(Signal).filter(
+                Signal.valid_until < now,
+                Signal.status.in_([SignalStatus.PENDING, SignalStatus.ACTIVE])
+            ).all()
+        except ProgrammingError as exc:
+            db.rollback()
+            logger.warning(
+                "Skipping signal expiration because required columns are missing: %s",
+                exc,
+            )
+            return {"expired": 0, "skipped": True}
 
         if not expirable_signals:
             return {"expired": 0}
@@ -555,8 +612,6 @@ def expire_signals_task():
         expired_count = 0
         for signal in expirable_signals:
             signal.status = SignalStatus.TIME_STOP
-            signal.expired_at = now
-
             if signal.closed_at is None:
                 signal.closed_at = now
 
@@ -1041,6 +1096,99 @@ def generate_historical_signals_task(self, symbol: str, start_date: str, end_dat
             end_date=end
         )
 
+        # Persist a manageable subset of generated signals for inspection
+        max_records_to_store = 1000
+        if len(signals) > max_records_to_store:
+            signals_to_store = signals[-max_records_to_store:]
+        else:
+            signals_to_store = signals
+
+        _ensure_historical_table(db)
+        rows_to_insert = []
+        for payload in signals_to_store:
+            try:
+                required_numeric_fields = [
+                    'entry_price', 'tp1_price', 'tp2_price', 'tp3_price', 'sl_price',
+                    'leverage', 'position_size_usd', 'quantity',
+                    'expected_net_profit_pct', 'expected_net_profit_usd'
+                ]
+                if any(
+                    payload.get(field) is None or
+                    (isinstance(payload.get(field), float) and math.isnan(payload.get(field)))
+                    for field in required_numeric_fields
+                ):
+                    continue
+                rows_to_insert.append({
+                    'signal_id': payload['signal_id'],
+                    'job_id': signal_job.job_id,
+                    'symbol': payload['symbol'],
+                    'timeframe': timeframe,
+                    'side': (payload['side'].value if isinstance(payload['side'], Side) else str(payload['side'])).lower(),
+                    'entry_price': payload['entry_price'],
+                    'timestamp': payload['timestamp'],
+                    'tp1_price': payload['tp1_price'],
+                    'tp2_price': payload['tp2_price'],
+                    'tp3_price': payload['tp3_price'],
+                    'sl_price': payload['sl_price'],
+                    'expected_net_profit_pct': payload.get('expected_net_profit_pct'),
+                    'expected_net_profit_usd': payload.get('expected_net_profit_usd'),
+                    'confidence': payload.get('confidence'),
+                    'model_id': payload.get('model_id'),
+                    'risk_profile': (payload['risk_profile'].value if isinstance(payload['risk_profile'], RiskProfile) else str(payload['risk_profile'])).lower(),
+                })
+            except Exception as exc:
+                logger.error("Failed to prepare historical signal %s for persistence: %s", payload.get('signal_id'), exc)
+        if rows_to_insert:
+            try:
+                insert_stmt = text(
+                    """
+                    INSERT INTO historical_signal_snapshots (
+                        signal_id,
+                        job_id,
+                        symbol,
+                        timeframe,
+                        side,
+                        entry_price,
+                        timestamp,
+                        tp1_price,
+                        tp2_price,
+                        tp3_price,
+                        sl_price,
+                        expected_net_profit_pct,
+                        expected_net_profit_usd,
+                        confidence,
+                        model_id,
+                        risk_profile
+                    ) VALUES (
+                        :signal_id,
+                        :job_id,
+                        :symbol,
+                        :timeframe,
+                        :side,
+                        :entry_price,
+                        :timestamp,
+                        :tp1_price,
+                        :tp2_price,
+                        :tp3_price,
+                        :sl_price,
+                        :expected_net_profit_pct,
+                        :expected_net_profit_usd,
+                        :confidence,
+                        :model_id,
+                        :risk_profile
+                    )
+                    ON CONFLICT (signal_id) DO NOTHING
+                    """
+                )
+                with db.no_autoflush:
+                    db.execute(insert_stmt, rows_to_insert)
+                db.commit()
+            except Exception as exc:
+                logger.error("Failed to persist %s historical signals: %s", len(rows_to_insert), exc)
+                db.rollback()
+            else:
+                logger.info("Persisted %s historical signals for inspection", len(rows_to_insert))
+
         # Update progress
         signal_job.signals_generated = len(signals)
         signal_job.progress_pct = 50.0
@@ -1048,14 +1196,21 @@ def generate_historical_signals_task(self, symbol: str, start_date: str, end_dat
 
         # Backtest the generated signals
         backtest_results = backtest_signals(db, signals)
+        trade_results = backtest_results.get('trades', []) if isinstance(backtest_results, dict) else []
 
         # Update job as completed
         signal_job.status = 'completed'
         signal_job.completed_at = dt.utcnow()
-        signal_job.signals_backtested = len(backtest_results) if isinstance(backtest_results, list) else 0
-        signal_job.win_rate = backtest_results.get('win_rate', 0) if isinstance(backtest_results, dict) else 0
-        signal_job.avg_profit_pct = backtest_results.get('avg_profit_pct', 0) if isinstance(backtest_results, dict) else 0
-        signal_job.total_pnl_usd = backtest_results.get('total_pnl_usd', 0) if isinstance(backtest_results, dict) else 0
+        if isinstance(backtest_results, dict):
+            signal_job.signals_backtested = backtest_results.get('total_trades', 0)
+            signal_job.win_rate = backtest_results.get('win_rate', 0)
+            signal_job.avg_profit_pct = backtest_results.get('avg_profit_pct', 0)
+            signal_job.total_pnl_usd = backtest_results.get('total_pnl_usd', 0)
+        else:
+            signal_job.signals_backtested = len(backtest_results)
+            signal_job.win_rate = 0
+            signal_job.avg_profit_pct = 0
+            signal_job.total_pnl_usd = 0
         signal_job.progress_pct = 100.0
 
         if signal_job.started_at:
@@ -1063,6 +1218,53 @@ def generate_historical_signals_task(self, symbol: str, start_date: str, end_dat
             signal_job.elapsed_seconds = elapsed
 
         db.commit()
+
+        if trade_results:
+            logger.info("Historical job %s has %s trade results", signal_job.job_id, len(trade_results))
+            update_stmt = text(
+                """
+                UPDATE historical_signal_snapshots
+                SET actual_net_pnl_pct = :actual_net_pnl_pct,
+                    actual_net_pnl_usd = :actual_net_pnl_usd,
+                    final_status = :final_status,
+                    duration_minutes = :duration_minutes
+                WHERE signal_id = :signal_id
+                """
+            )
+            for trade in trade_results:
+                minutes = None
+                duration_hours = trade.get('duration_hours')
+                if duration_hours is not None:
+                    minutes = int(duration_hours * 60)
+                params = {
+                    'signal_id': trade.get('signal_id'),
+                    'actual_net_pnl_pct': trade.get('net_pnl_pct'),
+                    'actual_net_pnl_usd': trade.get('net_pnl'),
+                    'final_status': trade.get('status'),
+                    'duration_minutes': minutes,
+                }
+                logger.info(
+                    "Updating historical snapshot %s: pct=%s usd=%s status=%s duration=%s",
+                    params['signal_id'],
+                    params['actual_net_pnl_pct'],
+                    params['actual_net_pnl_usd'],
+                    params['final_status'],
+                    params['duration_minutes'],
+                )
+                try:
+                    result = db.execute(update_stmt, params)
+                    if result.rowcount == 0:
+                        logger.debug(
+                            "No snapshot row updated for historical signal %s",
+                            params['signal_id'],
+                        )
+                except Exception as exc:
+                    logger.error("Failed to update historical snapshot %s: %s", params['signal_id'], exc)
+            db.commit()
+            logger.info(
+                "Updated actual results for %s historical signals",
+                len(trade_results),
+            )
 
         logger.info(f"Generated {len(signals)} historical signals, {signal_job.signals_backtested} backtested")
 

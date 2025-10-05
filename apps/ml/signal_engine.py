@@ -47,7 +47,8 @@ class SignalGenerator:
         capital_usd: float,
         confidence: float,
         timestamp: datetime,
-        leverage_cap: Optional[int] = None
+        leverage_cap: Optional[int] = None,
+        enforce_risk_filters: bool = True,
     ) -> Optional[Dict]:
         """
         Generate a complete trading signal with TP/SL, sizing, and profit validation.
@@ -90,7 +91,7 @@ class SignalGenerator:
         )
 
         # CRITICAL FILTER: Minimum 2% net profit
-        if expected_net_profit_pct < settings.MIN_NET_PROFIT_PCT:
+        if enforce_risk_filters and expected_net_profit_pct < settings.MIN_NET_PROFIT_PCT:
             logger.info(
                 f"Signal rejected for {symbol}: Expected net profit {expected_net_profit_pct:.2f}% "
                 f"< minimum {settings.MIN_NET_PROFIT_PCT}%"
@@ -105,7 +106,7 @@ class SignalGenerator:
         )
 
         # Validate liquidation is sufficiently far from SL
-        if not self._validate_liquidation(sl_price, liquidation_price, side):
+        if enforce_risk_filters and not self._validate_liquidation(sl_price, liquidation_price, side):
             logger.warning(f"Signal rejected for {symbol}: Liquidation price too close to SL")
             return None
 
@@ -605,6 +606,123 @@ class SignalEngine:
             inference_metadata=inference_metadata,
             accepted=True
         )
+
+    # ------------------------------------------------------------------
+    # Historical helpers
+    # ------------------------------------------------------------------
+
+    def generate_signals_for_period(
+        self,
+        symbol: str,
+        timeframe: str,
+        start_date: datetime,
+        end_date: datetime,
+    ) -> List[Dict[str, Any]]:
+        """Generate signals for each bar between the supplied dates."""
+
+        timeframe_value = timeframe.value if isinstance(timeframe, Enum) else str(timeframe)
+
+        ohlcv_rows = (
+            self.db.query(OHLCV)
+            .filter(
+                and_(
+                    OHLCV.symbol == symbol,
+                    OHLCV.timeframe == timeframe_value,
+                    OHLCV.timestamp >= start_date,
+                    OHLCV.timestamp <= end_date,
+                )
+            )
+            .order_by(OHLCV.timestamp.asc())
+            .all()
+        )
+
+        if not ohlcv_rows:
+            logger.warning(
+                "No OHLCV rows available for %s %s between %s and %s",
+                symbol,
+                timeframe_value,
+                start_date,
+                end_date,
+            )
+            return []
+
+        df = pd.DataFrame(
+            [
+                {
+                    'timestamp': row.timestamp,
+                    'open': row.open,
+                    'high': row.high,
+                    'low': row.low,
+                    'close': row.close,
+                    'volume': row.volume,
+                }
+                for row in ohlcv_rows
+            ]
+        )
+
+        features_df = self.feature_engineering.compute_all_features(df)
+
+        registry_entry = self.registry.get_best_model(symbol, timeframe_value)
+        if not registry_entry:
+            logger.warning("No registered models for %s %s", symbol, timeframe_value)
+            return []
+
+        model = self._load_model(registry_entry)
+        feature_columns = self._determine_feature_columns(model, features_df.iloc[-1])
+
+        if not feature_columns:
+            logger.warning("Model lacks feature metadata; falling back to numeric columns")
+            feature_columns = [
+                col for col in features_df.columns
+                if pd.api.types.is_numeric_dtype(features_df[col]) and col != 'timestamp'
+            ]
+
+        feature_matrix = features_df[feature_columns].copy()
+        feature_matrix = feature_matrix.fillna(method='ffill').fillna(method='bfill').fillna(0)
+
+        raw_probabilities = model.predict_proba(feature_matrix)
+        prob_array = np.asarray(raw_probabilities)
+        if prob_array.ndim == 2:
+            prob_array = prob_array[:, -1]
+        elif prob_array.ndim == 0:
+            prob_array = np.full(len(feature_matrix), float(prob_array))
+
+        result_signals: List[Dict[str, Any]] = []
+        for idx, row in features_df.iterrows():
+            if idx >= len(prob_array):
+                break
+            probability = float(prob_array[idx])
+            side = Side.LONG if probability >= 0.5 else Side.SHORT
+            confidence = probability if side == Side.LONG else 1.0 - probability
+
+            entry_price = float(row['close'])
+            atr_value = float(row.get('atr_14') or 0.0)
+
+            signal_payload = self.signal_generator.generate_signal(
+                symbol=symbol,
+                side=side,
+                entry_price=entry_price,
+                atr=atr_value,
+                risk_profile=RiskProfile.MEDIUM,
+                capital_usd=100.0,
+                confidence=confidence,
+                timestamp=row['timestamp'],
+                leverage_cap=settings.MED_MAX_LEV,
+                enforce_risk_filters=False,
+            )
+
+            if not signal_payload:
+                continue
+
+            signal_payload['probability'] = probability
+            signal_payload['confidence'] = confidence
+            signal_payload['model_id'] = registry_entry.get('model_id')
+            signal_payload['model_version'] = registry_entry.get('version')
+            signal_payload['timeframe'] = timeframe_value
+
+            result_signals.append(signal_payload)
+
+        return result_signals
 
     def _prepare_latest_snapshot(self, symbol: str, timeframe: str) -> Dict[str, Any]:
         """Fetch latest OHLCV data and compute features/ATR."""

@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, desc
+from sqlalchemy import select, and_, desc, text
+from sqlalchemy.exc import ProgrammingError
 from typing import List, Optional
 from datetime import datetime, timedelta
 from apps.api.db import get_async_db, get_db
@@ -262,37 +263,96 @@ def get_historical_signals(
     db: Session = Depends(get_db)
 ):
     """Get historical signals with their actual results"""
-    query = db.query(Signal).outerjoin(TradeResult, Signal.signal_id == TradeResult.signal_id)
+    try:
+        query = db.query(Signal).outerjoin(TradeResult, Signal.signal_id == TradeResult.signal_id)
 
-    if symbol:
-        query = query.filter(Signal.symbol == symbol)
+        if symbol:
+            query = query.filter(Signal.symbol == symbol)
 
-    query = query.order_by(desc(Signal.timestamp)).limit(limit)
-    signals = query.all()
+        query = query.order_by(desc(Signal.timestamp)).limit(limit)
+        signals = query.all()
 
-    results = []
-    for signal in signals:
-        trade_result = signal.trade_results[0] if signal.trade_results else None
+        results = []
+        for signal in signals:
+            trade_result = signal.trade_results[0] if signal.trade_results else None
 
-        results.append(HistoricalSignalResponse(
-            signal_id=signal.signal_id,
-            symbol=signal.symbol,
-            side=signal.side.value,
-            entry_price=signal.entry_price,
-            tp1_price=signal.tp1_price,
-            tp2_price=signal.tp2_price,
-            tp3_price=signal.tp3_price,
-            sl_price=signal.sl_price,
-            timestamp=signal.timestamp,
-            status=signal.status.value,
-            confidence=signal.confidence or 0.0,
-            expected_net_profit_pct=signal.expected_net_profit_pct,
-            ai_summary=signal.ai_summary,
-            actual_net_pnl_pct=trade_result.net_pnl_pct if trade_result else None,
-            actual_net_pnl_usd=trade_result.net_pnl_usd if trade_result else None,
-            final_status=trade_result.final_status.value if trade_result and trade_result.final_status else None,
-            duration_minutes=trade_result.duration_minutes if trade_result else None,
-            was_profitable=trade_result.net_pnl_usd > 0 if trade_result and trade_result.net_pnl_usd is not None else None
-        ))
+            results.append(HistoricalSignalResponse(
+                signal_id=signal.signal_id,
+                symbol=signal.symbol,
+                side=signal.side.value,
+                entry_price=signal.entry_price,
+                tp1_price=signal.tp1_price,
+                tp2_price=signal.tp2_price,
+                tp3_price=signal.tp3_price,
+                sl_price=signal.sl_price,
+                timestamp=signal.timestamp,
+                status=signal.status.value,
+                confidence=signal.confidence or 0.0,
+                expected_net_profit_pct=signal.expected_net_profit_pct,
+                ai_summary=signal.ai_summary,
+                actual_net_pnl_pct=trade_result.net_pnl_pct if trade_result else None,
+                actual_net_pnl_usd=trade_result.net_pnl_usd if trade_result else None,
+                final_status=trade_result.final_status.value if trade_result and trade_result.final_status else None,
+                duration_minutes=trade_result.duration_minutes if trade_result else None,
+                was_profitable=trade_result.net_pnl_usd > 0 if trade_result and trade_result.net_pnl_usd is not None else None
+            ))
 
-    return results
+        return results
+    except ProgrammingError:
+        db.rollback()
+
+        base_query = """
+            SELECT signal_id,
+                   symbol,
+                   timeframe,
+                   side,
+                   entry_price,
+                   timestamp,
+                   tp1_price,
+                   tp2_price,
+                   tp3_price,
+                   sl_price,
+                   expected_net_profit_pct,
+                   expected_net_profit_usd,
+                   confidence,
+                   model_id,
+                   risk_profile,
+                   actual_net_pnl_pct,
+                   actual_net_pnl_usd,
+                   final_status,
+                   duration_minutes
+            FROM historical_signal_snapshots
+            WHERE (:symbol IS NULL OR symbol = :symbol)
+            ORDER BY created_at DESC, timestamp DESC
+            LIMIT :limit
+        """
+
+        rows = db.execute(text(base_query), {
+            'symbol': symbol,
+            'limit': limit
+        }).mappings().all()
+
+        responses = []
+        for row in rows:
+            responses.append(HistoricalSignalResponse(
+                signal_id=row['signal_id'],
+                symbol=row['symbol'],
+                side=row['side'],
+                entry_price=row['entry_price'],
+                tp1_price=row['tp1_price'] or row['entry_price'],
+                tp2_price=row['tp2_price'] or row['entry_price'],
+                tp3_price=row['tp3_price'] or row['entry_price'],
+                sl_price=row['sl_price'] or row['entry_price'],
+                timestamp=row['timestamp'],
+                status='time_stop',
+                confidence=row['confidence'] or 0.0,
+                expected_net_profit_pct=row['expected_net_profit_pct'] or 0.0,
+                ai_summary=None,
+                actual_net_pnl_pct=row['actual_net_pnl_pct'],
+                actual_net_pnl_usd=row['actual_net_pnl_usd'],
+                final_status=row['final_status'],
+                duration_minutes=row['duration_minutes'],
+                was_profitable=(row['actual_net_pnl_usd'] > 0) if row['actual_net_pnl_usd'] is not None else None,
+            ))
+
+        return responses
