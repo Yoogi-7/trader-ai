@@ -48,29 +48,50 @@ class TripleBarrierLabeling:
             DataFrame with labels: hit_barrier, bars_to_hit, return_pct
         """
         df = df.copy()
-        labels = []
+        df.sort_values('timestamp', inplace=True)
+        df.reset_index(drop=True, inplace=True)
 
-        total_rows = len(df) - self.time_bars
+        total_rows = max(len(df) - self.time_bars, 0)
         logger.info(f"Computing triple barrier labels for {total_rows} rows...")
 
-        # Log progress every 10%
+        if total_rows == 0:
+            logger.warning("Not enough rows to apply triple barrier labeling")
+            return pd.DataFrame(columns=[
+                'timestamp',
+                'side',
+                'tp_barrier',
+                'sl_barrier',
+                'time_barrier',
+                'hit_barrier',
+                'bars_to_hit',
+                'return_pct'
+            ])
+
+        timestamps = df['timestamp'].to_numpy()
+        close = df['close'].to_numpy()
+        high = df['high'].to_numpy()
+        low = df['low'].to_numpy()
+        atr = None
+
+        if self.use_atr and self.atr_column in df.columns:
+            atr = df[self.atr_column].to_numpy()
+
+        labels = []
+        time_bars = self.time_bars
         log_interval = max(1, total_rows // 10)
 
         for i in range(total_rows):
-            # Log progress
             if i > 0 and i % log_interval == 0:
                 progress = (i / total_rows) * 100
                 logger.info(f"Labeling progress: {progress:.1f}% ({i}/{total_rows})")
-
-                # Call progress callback if provided
                 if progress_callback:
                     progress_callback(progress)
 
-            entry_price = df.iloc[i]['close']
+            entry_price = close[i]
 
             atr_value = None
-            if self.use_atr and self.atr_column in df.columns:
-                atr_value = df.iloc[i][self.atr_column]
+            if atr is not None:
+                atr_value = atr[i]
                 if pd.isna(atr_value) or atr_value <= 0:
                     atr_value = None
 
@@ -85,57 +106,48 @@ class TripleBarrierLabeling:
                 if side == 'long':
                     tp_price = entry_price * (1 + self.tp_pct)
                     sl_price = entry_price * (1 - self.sl_pct)
-                else:  # short
+                else:
                     tp_price = entry_price * (1 - self.tp_pct)
                     sl_price = entry_price * (1 + self.sl_pct)
 
-            # Look forward to find which barrier is hit first
+            future_slice = slice(i + 1, i + 1 + time_bars)
+            future_high = high[future_slice]
+            future_low = low[future_slice]
+
             hit_barrier = 'time'
-            bars_to_hit = self.time_bars
-            exit_price = df.iloc[i + self.time_bars]['close']
+            bars_to_hit = time_bars
+            exit_price = close[i + time_bars]
 
-            for j in range(1, self.time_bars + 1):
-                if i + j >= len(df):
-                    break
+            if side == 'long':
+                tp_hits = np.where(future_high >= tp_price)[0]
+                sl_hits = np.where(future_low <= sl_price)[0]
+            else:
+                tp_hits = np.where(future_low <= tp_price)[0]
+                sl_hits = np.where(future_high >= sl_price)[0]
 
-                high = df.iloc[i + j]['high']
-                low = df.iloc[i + j]['low']
+            first_tp = tp_hits[0] + 1 if tp_hits.size else None
+            first_sl = sl_hits[0] + 1 if sl_hits.size else None
 
-                if side == 'long':
-                    if high >= tp_price:
-                        hit_barrier = 'tp'
-                        bars_to_hit = j
-                        exit_price = tp_price
-                        break
-                    elif low <= sl_price:
-                        hit_barrier = 'sl'
-                        bars_to_hit = j
-                        exit_price = sl_price
-                        break
-                else:  # short
-                    if low <= tp_price:
-                        hit_barrier = 'tp'
-                        bars_to_hit = j
-                        exit_price = tp_price
-                        break
-                    elif high >= sl_price:
-                        hit_barrier = 'sl'
-                        bars_to_hit = j
-                        exit_price = sl_price
-                        break
+            if first_tp is not None and (first_sl is None or first_tp <= first_sl):
+                hit_barrier = 'tp'
+                bars_to_hit = first_tp
+                exit_price = tp_price
+            elif first_sl is not None:
+                hit_barrier = 'sl'
+                bars_to_hit = first_sl
+                exit_price = sl_price
 
-            # Calculate return
             if side == 'long':
                 return_pct = (exit_price - entry_price) / entry_price
             else:
                 return_pct = (entry_price - exit_price) / entry_price
 
             labels.append({
-                'timestamp': df.iloc[i]['timestamp'],
+                'timestamp': timestamps[i],
                 'side': side,
                 'tp_barrier': tp_price,
                 'sl_barrier': sl_price,
-                'time_barrier': self.time_bars,
+                'time_barrier': time_bars,
                 'hit_barrier': hit_barrier,
                 'bars_to_hit': bars_to_hit,
                 'return_pct': return_pct
