@@ -6,8 +6,11 @@ from apps.ml.backfill import BackfillService
 from apps.ml.training import train_model_pipeline
 from apps.ml.model_registry import ModelRegistry
 from apps.ml.signal_engine import SignalEngine
+from apps.ml.drift import DriftDetector
 from sqlalchemy import and_
 from datetime import datetime
+import pandas as pd
+import numpy as np
 import asyncio
 import logging
 
@@ -501,8 +504,271 @@ def update_latest_candles_task():
 @celery_app.task(name="drift.monitor")
 def monitor_drift_task():
     """Monitor model drift (runs daily)"""
+    from apps.api.db.models import (
+        ModelRegistry as ModelRecord,
+        DriftMetrics,
+        FeatureSet,
+        TimeFrame
+    )
+
     logger.info("Monitoring model drift...")
-    return {"status": "completed"}
+
+    registry = ModelRegistry()
+    deployments = getattr(registry, 'index', {}).get('deployments', {})
+
+    if not deployments:
+        logger.info("No deployments found for drift monitoring")
+        return {"status": "completed", "models_checked": 0, "results": []}
+
+    detector = DriftDetector(
+        psi_threshold=settings.DRIFT_PSI_THRESHOLD,
+        ks_threshold=settings.DRIFT_KS_THRESHOLD
+    )
+
+    db = SessionLocal()
+    results = []
+
+    def _load_feature_frame(symbol, timeframe_enum, start=None, end=None, exclusive_start=False):
+        query = db.query(FeatureSet).filter(
+            FeatureSet.symbol == symbol,
+            FeatureSet.timeframe == timeframe_enum
+        )
+
+        if start is not None:
+            if exclusive_start:
+                query = query.filter(FeatureSet.timestamp > start)
+            else:
+                query = query.filter(FeatureSet.timestamp >= start)
+
+        if end is not None:
+            query = query.filter(FeatureSet.timestamp <= end)
+
+        rows = query.order_by(FeatureSet.timestamp.asc()).all()
+
+        if not rows:
+            return pd.DataFrame(), []
+
+        records = []
+        timestamps = []
+
+        feature_columns = [col.name for col in FeatureSet.__table__.columns]
+        exclude_cols = {'id', 'created_at'}
+
+        for row in rows:
+            row_dict = {}
+            for col in feature_columns:
+                if col in exclude_cols:
+                    continue
+                value = getattr(row, col)
+                row_dict[col] = value
+
+            timestamps.append(row.timestamp)
+            records.append(row_dict)
+
+        df = pd.DataFrame(records)
+
+        # Keep only numeric feature columns for drift detection
+        feature_df = df.drop(columns=['symbol', 'timeframe', 'timestamp'], errors='ignore')
+        feature_df = feature_df.select_dtypes(include=[np.number]).fillna(0)
+
+        return feature_df, timestamps
+
+    def _load_prediction_array(model_id, start=None, end=None, exclusive_start=False):
+        query = db.query(Signal).filter(Signal.model_id == model_id)
+
+        if start is not None:
+            if exclusive_start:
+                query = query.filter(Signal.timestamp > start)
+            else:
+                query = query.filter(Signal.timestamp >= start)
+
+        if end is not None:
+            query = query.filter(Signal.timestamp <= end)
+
+        rows = query.order_by(Signal.timestamp.asc()).all()
+
+        if not rows:
+            return np.array([])
+
+        predictions = []
+
+        for row in rows:
+            if row.confidence is None:
+                continue
+            try:
+                predictions.append(float(row.confidence))
+            except (TypeError, ValueError):
+                continue
+
+        return np.array(predictions)
+
+    try:
+        for deployment in deployments.values():
+            symbol = deployment.get('symbol')
+            timeframe_value = deployment.get('timeframe')
+            environment = deployment.get('environment', 'production')
+
+            if not symbol or not timeframe_value:
+                continue
+
+            model_entry = registry.get_deployed_model(symbol, timeframe_value, environment)
+
+            if not model_entry:
+                logger.warning(
+                    "No model entry found for deployment %s %s (%s)",
+                    symbol,
+                    timeframe_value,
+                    environment
+                )
+                continue
+
+            model_id = model_entry.get('model_id')
+
+            if not model_id:
+                logger.warning("Deployment for %s %s missing model_id", symbol, timeframe_value)
+                continue
+
+            db_model = db.query(ModelRecord).filter(ModelRecord.model_id == model_id).first()
+
+            if not db_model:
+                logger.warning("Model %s not found in database", model_id)
+                continue
+
+            try:
+                timeframe_enum = TimeFrame(timeframe_value)
+            except ValueError:
+                logger.error("Invalid timeframe %s for model %s", timeframe_value, model_id)
+                continue
+
+            baseline_start = getattr(db_model, 'train_start', None)
+            baseline_end = getattr(db_model, 'train_end', None)
+            current_start = getattr(db_model, 'oos_start', None) or baseline_end
+
+            if baseline_start is None or baseline_end is None or current_start is None:
+                logger.warning("Insufficient training metadata for model %s", model_id)
+                continue
+
+            baseline_features, _ = _load_feature_frame(
+                symbol,
+                timeframe_enum,
+                start=baseline_start,
+                end=baseline_end,
+                exclusive_start=False
+            )
+
+            current_features, current_timestamps = _load_feature_frame(
+                symbol,
+                timeframe_enum,
+                start=current_start,
+                end=None,
+                exclusive_start=True
+            )
+
+            if baseline_features.empty or current_features.empty:
+                logger.warning("Insufficient feature data for drift detection on %s", model_id)
+                continue
+
+            shared_columns = baseline_features.columns.intersection(current_features.columns)
+
+            if shared_columns.empty:
+                logger.warning("No shared numeric features for model %s", model_id)
+                continue
+
+            baseline_features = baseline_features[shared_columns]
+            current_features = current_features[shared_columns]
+
+            baseline_predictions = _load_prediction_array(
+                model_id,
+                start=baseline_start,
+                end=baseline_end,
+                exclusive_start=False
+            )
+
+            current_predictions = _load_prediction_array(
+                model_id,
+                start=current_start,
+                end=None,
+                exclusive_start=True
+            )
+
+            if baseline_predictions.size == 0 or current_predictions.size == 0:
+                baseline_predictions = None
+                current_predictions = None
+
+            drift_result = detector.check_drift(
+                baseline_features,
+                current_features,
+                baseline_predictions,
+                current_predictions
+            )
+
+            feature_drift_scores = {
+                feature: {
+                    'psi': float(values['psi']),
+                    'ks_statistic': float(values['ks_statistic']),
+                    'ks_pvalue': float(values['ks_pvalue']),
+                    'drift_detected': bool(values['drift_detected'])
+                }
+                for feature, values in drift_result['feature_drift'].items()
+            }
+
+            if drift_result['prediction_drift']:
+                prediction_drift_value = float(drift_result['prediction_drift']['psi'])
+            else:
+                prediction_drift_value = None
+
+            if feature_drift_scores:
+                psi_score = max(v['psi'] for v in feature_drift_scores.values())
+                ks_statistic = max(v['ks_statistic'] for v in feature_drift_scores.values())
+            else:
+                psi_score = None
+                ks_statistic = None
+
+            if current_timestamps:
+                latest_ts = max(current_timestamps)
+                data_freshness_hours = (datetime.utcnow() - latest_ts).total_seconds() / 3600.0
+            else:
+                data_freshness_hours = None
+
+            drift_record = DriftMetrics(
+                model_id=model_id,
+                timestamp=datetime.utcnow(),
+                psi_score=psi_score,
+                ks_statistic=ks_statistic,
+                feature_drift_scores=feature_drift_scores,
+                prediction_drift=prediction_drift_value,
+                data_freshness_hours=data_freshness_hours,
+                drift_detected=bool(drift_result['overall_drift_detected'])
+            )
+
+            db.add(drift_record)
+
+            if drift_result['overall_drift_detected']:
+                db_model.is_active = False
+            else:
+                db_model.is_active = True
+
+            db.commit()
+
+            results.append({
+                'model_id': model_id,
+                'drift_detected': drift_result['overall_drift_detected'],
+                'num_features_with_drift': drift_result['num_features_with_drift'],
+                'total_features': drift_result['total_features']
+            })
+
+    except Exception as exc:
+        db.rollback()
+        logger.error("Drift monitoring task failed: %s", exc, exc_info=True)
+        return {"status": "failed", "error": str(exc)}
+    finally:
+        db.close()
+
+    return {
+        "status": "completed",
+        "models_checked": len(results),
+        "results": results
+    }
 
 
 @celery_app.task(name="signals.generate_historical", bind=True)
