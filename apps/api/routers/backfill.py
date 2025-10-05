@@ -5,6 +5,7 @@ from typing import Optional
 from datetime import datetime
 from apps.api.db import get_db
 from apps.api.db.models import BackfillJob, TimeFrame
+from apps.common.tracked_pairs import get_tracked_pairs
 from apps.ml.backfill import BackfillService
 import logging
 
@@ -158,36 +159,37 @@ async def start_all_backfills(
     from sqlalchemy import and_
     from datetime import datetime
 
-    # List of trading pairs to track
-    TRACKED_PAIRS = [
-        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT',
-        'ADA/USDT', 'SOL/USDT', 'DOGE/USDT', 'POL/USDT',
-        'DOT/USDT', 'AVAX/USDT', 'LINK/USDT', 'UNI/USDT'
-    ]
-
     service = BackfillService(db)
     jobs_created = []
     jobs_skipped = []
 
-    for symbol in TRACKED_PAIRS:
+    tracked_pairs = get_tracked_pairs(db, use_cache=False)
+
+    for tracked_pair in tracked_pairs:
+        symbol = tracked_pair.symbol
+        timeframe_enum = tracked_pair.timeframe
         try:
             # Check if pair already has data
             existing_count = db.query(OHLCV).filter(
                 and_(
                     OHLCV.symbol == symbol,
-                    OHLCV.timeframe == TimeFrame.M15
+                    OHLCV.timeframe == timeframe_enum
                 )
             ).count()
 
             if existing_count > 0:
                 jobs_skipped.append({
                     "symbol": symbol,
+                    "timeframe": timeframe_enum.value,
                     "reason": f"Already has {existing_count} candles"
                 })
                 continue
 
             # Get earliest available date from exchange
-            earliest_dt = service.client.get_earliest_timestamp(symbol, '15m')
+            earliest_dt = service.client.get_earliest_timestamp(
+                symbol,
+                timeframe_enum.value,
+            )
             if not earliest_dt:
                 earliest_dt = datetime(2020, 1, 1)  # Fallback to 2020
 
@@ -196,7 +198,7 @@ async def start_all_backfills(
             # Create backfill job
             job = service.create_backfill_job(
                 symbol=symbol,
-                timeframe=TimeFrame.M15,
+                timeframe=timeframe_enum,
                 start_date=earliest_dt,
                 end_date=end_date
             )
@@ -207,6 +209,7 @@ async def start_all_backfills(
 
             jobs_created.append({
                 "symbol": symbol,
+                "timeframe": timeframe_enum.value,
                 "job_id": job.job_id,
                 "start_date": earliest_dt.isoformat(),
                 "end_date": end_date.isoformat()
@@ -215,6 +218,7 @@ async def start_all_backfills(
         except Exception as e:
             jobs_skipped.append({
                 "symbol": symbol,
+                "timeframe": timeframe_enum.value,
                 "reason": f"Error: {str(e)}"
             })
 

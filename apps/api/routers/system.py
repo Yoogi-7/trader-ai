@@ -1,9 +1,16 @@
-from fastapi import APIRouter, Depends
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func, and_
 from apps.api.db import get_db
-from apps.api.db.models import ModelRegistry, TradeResult, Signal, OHLCV, TimeFrame
-from pydantic import BaseModel
+from apps.api.db.models import ModelRegistry, TradeResult, Signal, OHLCV, TimeFrame, TrackedPair
+from apps.common.tracked_pairs import (
+    bump_tracked_pairs_version,
+    get_tracked_pairs,
+    invalidate_tracked_pairs_cache,
+)
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional, List
 
 router = APIRouter()
@@ -24,6 +31,50 @@ class CandleInfo(BaseModel):
     total_candles: int
     first_candle: Optional[str] = None
     last_candle: Optional[str] = None
+
+
+class TrackedPairResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    symbol: str
+    timeframe: str
+    is_active: bool
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+
+class TrackedPairCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(..., description="Trading pair symbol (e.g. BTC/USDT)")
+    timeframe: TimeFrame = Field(TimeFrame.M15)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: str) -> str:
+        normalized = value.strip().upper()
+        if "/" not in normalized:
+            raise ValueError("Symbol must include '/' separator")
+        return normalized
+
+
+class TrackedPairUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: Optional[str] = Field(None, description="Updated trading pair symbol")
+    timeframe: Optional[TimeFrame] = Field(None, description="Updated timeframe")
+    is_active: Optional[bool] = Field(None, description="Toggle whether the pair is active")
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_symbol(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return value
+        normalized = value.strip().upper()
+        if "/" not in normalized:
+            raise ValueError("Symbol must include '/' separator")
+        return normalized
 
 
 @router.get("/status", response_model=SystemStatusResponse)
@@ -80,21 +131,16 @@ async def get_system_status(db: Session = Depends(get_db)):
 async def get_candles_info(db: Session = Depends(get_db)):
     """Get candle database info for all tracked trading pairs"""
 
-    # List of tracked pairs (same as in worker.py)
-    TRACKED_PAIRS = [
-        'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT',
-        'ADA/USDT', 'SOL/USDT', 'DOGE/USDT', 'POL/USDT',
-        'DOT/USDT', 'AVAX/USDT', 'LINK/USDT', 'UNI/USDT'
-    ]
-
     result = []
 
-    for symbol in TRACKED_PAIRS:
+    for tracked_pair in get_tracked_pairs(db, use_cache=False):
+        symbol = tracked_pair.symbol
+        timeframe_enum = tracked_pair.timeframe
         # Get candle count
         count = db.query(OHLCV).filter(
             and_(
                 OHLCV.symbol == symbol,
-                OHLCV.timeframe == TimeFrame.M15
+                OHLCV.timeframe == timeframe_enum
             )
         ).count()
 
@@ -102,23 +148,127 @@ async def get_candles_info(db: Session = Depends(get_db)):
         first_candle = db.query(OHLCV.timestamp).filter(
             and_(
                 OHLCV.symbol == symbol,
-                OHLCV.timeframe == TimeFrame.M15
+                OHLCV.timeframe == timeframe_enum
             )
         ).order_by(OHLCV.timestamp.asc()).first()
 
         last_candle = db.query(OHLCV.timestamp).filter(
             and_(
                 OHLCV.symbol == symbol,
-                OHLCV.timeframe == TimeFrame.M15
+                OHLCV.timeframe == timeframe_enum
             )
         ).order_by(OHLCV.timestamp.desc()).first()
 
         result.append(CandleInfo(
             symbol=symbol,
-            timeframe='15m',
+            timeframe=timeframe_enum.value,
             total_candles=count,
             first_candle=first_candle[0].isoformat() if first_candle else None,
             last_candle=last_candle[0].isoformat() if last_candle else None
         ))
 
     return result
+
+
+@router.get("/tracked-pairs", response_model=List[TrackedPairResponse])
+async def list_tracked_pairs(db: Session = Depends(get_db)):
+    pairs = (
+        db.query(TrackedPair)
+        .order_by(TrackedPair.symbol.asc(), TrackedPair.timeframe.asc())
+        .all()
+    )
+    return pairs
+
+
+@router.post(
+    "/tracked-pairs",
+    response_model=TrackedPairResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_tracked_pair(
+    payload: TrackedPairCreateRequest,
+    db: Session = Depends(get_db),
+):
+    normalized_symbol = payload.symbol
+    timeframe = payload.timeframe
+
+    existing = (
+        db.query(TrackedPair)
+        .filter(
+            TrackedPair.symbol == normalized_symbol,
+            TrackedPair.timeframe == timeframe,
+        )
+        .first()
+    )
+
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Tracked pair already exists",
+        )
+
+    pair = TrackedPair(
+        symbol=normalized_symbol,
+        timeframe=timeframe,
+        is_active=True,
+    )
+    db.add(pair)
+    bump_tracked_pairs_version(db)
+    db.commit()
+    db.refresh(pair)
+    invalidate_tracked_pairs_cache()
+    return pair
+
+
+@router.put("/tracked-pairs/{pair_id}", response_model=TrackedPairResponse)
+async def update_tracked_pair(
+    pair_id: int,
+    payload: TrackedPairUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    pair = db.query(TrackedPair).filter(TrackedPair.id == pair_id).first()
+
+    if pair is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tracked pair not found")
+
+    new_symbol = payload.symbol or pair.symbol
+    new_timeframe = payload.timeframe or pair.timeframe
+
+    duplicate = (
+        db.query(TrackedPair)
+        .filter(
+            TrackedPair.id != pair_id,
+            TrackedPair.symbol == new_symbol,
+            TrackedPair.timeframe == new_timeframe,
+        )
+        .first()
+    )
+
+    if duplicate:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Another tracked pair already uses this symbol/timeframe",
+        )
+
+    updated = False
+
+    if payload.symbol is not None and payload.symbol != pair.symbol:
+        pair.symbol = payload.symbol
+        updated = True
+
+    if payload.timeframe is not None and payload.timeframe != pair.timeframe:
+        pair.timeframe = payload.timeframe
+        updated = True
+
+    if payload.is_active is not None and payload.is_active != pair.is_active:
+        pair.is_active = payload.is_active
+        updated = True
+
+    if not updated:
+        return pair
+
+    bump_tracked_pairs_version(db)
+    db.commit()
+    db.refresh(pair)
+    invalidate_tracked_pairs_cache()
+    return pair

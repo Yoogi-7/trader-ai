@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, FormEvent } from 'react'
 import axios from 'axios'
 
 // Use empty string for relative URLs (proxied through Next.js rewrites)
@@ -79,6 +79,15 @@ interface CandleInfo {
   last_candle?: string
 }
 
+interface TrackedPair {
+  id: number
+  symbol: string
+  timeframe: string
+  is_active: boolean
+  created_at?: string
+  updated_at?: string
+}
+
 export default function Admin() {
   const [backfillJobs, setBackfillJobs] = useState<BackfillStatus[]>([])
   const [trainingJobs, setTrainingJobs] = useState<TrainingStatus[]>([])
@@ -90,6 +99,11 @@ export default function Admin() {
   const [showHistoricalSignals, setShowHistoricalSignals] = useState(false)
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
   const [candlesInfo, setCandlesInfo] = useState<CandleInfo[]>([])
+  const [trackedPairs, setTrackedPairs] = useState<TrackedPair[]>([])
+  const [newPairSymbol, setNewPairSymbol] = useState('')
+  const [newPairTimeframe, setNewPairTimeframe] = useState('15m')
+  const [isSavingPair, setIsSavingPair] = useState(false)
+  const timeframeOptions = ['1m', '5m', '15m', '1h', '4h', '1d']
 
   // Load existing jobs on mount
   useEffect(() => {
@@ -158,6 +172,7 @@ export default function Admin() {
     loadSignalGenJobs()
     loadSystemStatus()
     loadCandlesInfo()
+    loadTrackedPairs()
   }, [])
 
   // Load system status
@@ -180,11 +195,58 @@ export default function Admin() {
     }
   }
 
+  const loadTrackedPairs = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/v1/system/tracked-pairs`)
+      setTrackedPairs(response.data)
+    } catch (error) {
+      console.error('Error loading tracked pairs:', error)
+    }
+  }
+
+  const addTrackedPair = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!newPairSymbol.trim()) {
+      return
+    }
+
+    try {
+      setIsSavingPair(true)
+      await axios.post(`${API_URL}/api/v1/system/tracked-pairs`, {
+        symbol: newPairSymbol.trim().toUpperCase(),
+        timeframe: newPairTimeframe
+      })
+      setNewPairSymbol('')
+      setNewPairTimeframe('15m')
+      await Promise.all([loadTrackedPairs(), loadCandlesInfo()])
+    } catch (error: any) {
+      console.error('Error adding tracked pair:', error)
+      alert(`Error adding tracked pair: ${error.response?.data?.detail || error.message}`)
+    } finally {
+      setIsSavingPair(false)
+    }
+  }
+
+  const toggleTrackedPair = async (pair: TrackedPair) => {
+    try {
+      await axios.put(`${API_URL}/api/v1/system/tracked-pairs/${pair.id}`, {
+        is_active: !pair.is_active
+      })
+      await Promise.all([loadTrackedPairs(), loadCandlesInfo()])
+    } catch (error: any) {
+      console.error('Error updating tracked pair:', error)
+      alert(`Error updating tracked pair: ${error.response?.data?.detail || error.message}`)
+    }
+  }
+
+  const activePairCount = trackedPairs.filter(pair => pair.is_active).length
+
   // Poll system status every 10 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       loadSystemStatus()
       loadCandlesInfo()
+      loadTrackedPairs()
     }, 10000)
     return () => clearInterval(interval)
   }, [])
@@ -441,6 +503,86 @@ export default function Admin() {
       <div className="max-w-7xl mx-auto">
         <h1 className="text-4xl font-bold mb-8">TraderAI - Admin Panel</h1>
 
+        {/* Tracked Pairs Management */}
+        <div className="bg-gray-800 rounded-lg p-6 mb-8">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-bold">Tracked Market Pairs</h2>
+              <p className="text-gray-400 text-sm">
+                Manage the symbols and timeframes monitored for latest candle updates.
+              </p>
+              <p className="text-gray-500 text-sm mt-1">
+                Active pairs: {activePairCount}/{trackedPairs.length}
+              </p>
+            </div>
+            <form onSubmit={addTrackedPair} className="flex flex-col sm:flex-row gap-3 w-full md:w-auto">
+              <input
+                type="text"
+                value={newPairSymbol}
+                onChange={event => setNewPairSymbol(event.target.value)}
+                placeholder="e.g. BTC/USDT"
+                className="px-4 py-2 rounded bg-gray-700 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 text-white flex-1"
+              />
+              <select
+                value={newPairTimeframe}
+                onChange={event => setNewPairTimeframe(event.target.value)}
+                className="px-4 py-2 rounded bg-gray-700 border border-gray-600 focus:outline-none focus:ring-2 focus:ring-blue-500 text-white"
+              >
+                {timeframeOptions.map(option => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="submit"
+                disabled={isSavingPair || !newPairSymbol.trim()}
+                className="bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-6 py-2 rounded font-medium"
+              >
+                {isSavingPair ? 'Saving...' : 'Add Pair'}
+              </button>
+            </form>
+          </div>
+
+          <div className="mt-6 space-y-3">
+            {trackedPairs.length === 0 ? (
+              <div className="bg-gray-700 rounded-lg p-4 text-sm text-gray-300">
+                No tracked pairs configured yet. Add a symbol above to start monitoring data downloads.
+              </div>
+            ) : (
+              trackedPairs.map(pair => (
+                <div
+                  key={`${pair.id}-${pair.timeframe}`}
+                  className="bg-gray-700 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+                >
+                  <div>
+                    <div className="text-lg font-semibold">{pair.symbol}</div>
+                    <div className="text-gray-400 text-sm">Timeframe: {pair.timeframe}</div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span
+                      className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                        pair.is_active ? 'bg-green-600' : 'bg-gray-600'
+                      }`}
+                    >
+                      {pair.is_active ? 'Active' : 'Disabled'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => toggleTrackedPair(pair)}
+                      className={`px-4 py-2 rounded text-sm font-medium ${
+                        pair.is_active ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'
+                      }`}
+                    >
+                      {pair.is_active ? 'Disable' : 'Enable'}
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+
         {/* Backfill Panel */}
         <div className="bg-gray-800 rounded-lg p-6 mb-8">
           <h2 className="text-2xl font-bold mb-4">Data Backfill</h2>
@@ -456,7 +598,7 @@ export default function Admin() {
               onClick={startAllBackfills}
               className="bg-purple-600 hover:bg-purple-700 px-6 py-2 rounded font-medium"
             >
-              Start All Pairs Backfill (12 pairs)
+              Start All Pairs Backfill ({activePairCount || trackedPairs.length || 0} pairs)
             </button>
           </div>
 

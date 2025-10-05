@@ -43,6 +43,22 @@ class Side(str, PyEnum):
 # MARKET DATA
 # ============================================================================
 
+class TrackedPair(Base):
+    __tablename__ = "tracked_pairs"
+    __table_args__ = (
+        UniqueConstraint("symbol", "timeframe", name="uq_tracked_pairs_symbol_timeframe"),
+        Index("idx_tracked_pairs_symbol", "symbol"),
+        Index("idx_tracked_pairs_active", "is_active"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(Enum(TimeFrame), nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 class OHLCV(Base):
     __tablename__ = "ohlcv"
     __table_args__ = (

@@ -2,6 +2,7 @@ from celery import Celery
 from apps.api.config import settings
 from apps.api.db.session import SessionLocal
 from apps.api.db.models import OHLCV, Signal, SignalStatus, RiskProfile, Side
+from apps.common.tracked_pairs import get_tracked_pairs
 from apps.ml.backfill import BackfillService
 from apps.ml.training import train_model_pipeline
 from apps.ml.model_registry import ModelRegistry
@@ -406,37 +407,32 @@ def update_latest_candles_task():
     """Update latest candles for all active symbols (runs every 15 minutes)"""
     db = SessionLocal()
     try:
-        from apps.ml.backfill import BackfillService
-        from apps.api.db.models import TimeFrame
-        from datetime import datetime, timedelta
-
-        # List of trading pairs to track (updated with current Binance symbols)
-        TRACKED_PAIRS = [
-            'BTC/USDT',
-            'ETH/USDT',
-            'BNB/USDT',
-            'XRP/USDT',
-            'ADA/USDT',
-            'SOL/USDT',
-            'DOGE/USDT',
-            'POL/USDT',  # Previously MATIC
-            'DOT/USDT',
-            'AVAX/USDT',
-            'LINK/USDT',
-            'UNI/USDT'
-        ]
+        from datetime import datetime
 
         service = BackfillService(db)
         total_updated = 0
         backfills_triggered = 0
 
-        for symbol in TRACKED_PAIRS:
+        tracked_pairs = get_tracked_pairs(db)
+
+        if not tracked_pairs:
+            logger.warning("No tracked pairs configured; skipping latest candles update")
+            return {
+                "status": "completed",
+                "candles_updated": 0,
+                "backfills_triggered": 0,
+                "pairs_tracked": 0,
+            }
+
+        for tracked_pair in tracked_pairs:
+            symbol = tracked_pair.symbol
+            timeframe_enum = tracked_pair.timeframe
             try:
                 # Get latest timestamp from database for this symbol
                 latest_candle = db.query(OHLCV).filter(
                     and_(
                         OHLCV.symbol == symbol,
-                        OHLCV.timeframe == TimeFrame.M15
+                        OHLCV.timeframe == timeframe_enum
                     )
                 ).order_by(OHLCV.timestamp.desc()).first()
 
@@ -445,26 +441,43 @@ def update_latest_candles_task():
                     start_date = latest_candle.timestamp
                     end_date = datetime.utcnow()
 
-                    logger.info(f"Updating {symbol} candles from {start_date} to {end_date}")
+                    logger.info(
+                        "Updating %s %s candles from %s to %s",
+                        symbol,
+                        timeframe_enum.value,
+                        start_date,
+                        end_date,
+                    )
 
                     df = service.client.fetch_ohlcv_range(
                         symbol=symbol,
-                        timeframe='15m',
+                        timeframe=timeframe_enum.value,
                         start_date=start_date,
                         end_date=end_date,
                         limit=100
                     )
 
                     if not df.empty:
-                        service._upsert_ohlcv(symbol, TimeFrame.M15, df)
-                        logger.info(f"Updated {len(df)} latest candles for {symbol} 15m")
+                        service._upsert_ohlcv(symbol, timeframe_enum, df)
+                        logger.info(
+                            "Updated %d latest candles for %s %s",
+                            len(df),
+                            symbol,
+                            timeframe_enum.value,
+                        )
                         total_updated += len(df)
                 else:
                     # No candles exist - trigger initial backfill
-                    logger.info(f"No candles for {symbol}, triggering initial backfill")
+                    logger.info(
+                        "No candles for %s %s, triggering initial backfill",
+                        symbol,
+                        timeframe_enum.value,
+                    )
 
                     # Get earliest available date from exchange
-                    earliest_dt = service.client.get_earliest_timestamp(symbol, '15m')
+                    earliest_dt = service.client.get_earliest_timestamp(
+                        symbol, timeframe_enum.value
+                    )
                     if not earliest_dt:
                         earliest_dt = datetime(2020, 1, 1)  # Fallback to 2020
 
@@ -473,7 +486,7 @@ def update_latest_candles_task():
                     # Create and execute backfill job
                     job = service.create_backfill_job(
                         symbol=symbol,
-                        timeframe=TimeFrame.M15,
+                        timeframe=timeframe_enum,
                         start_date=earliest_dt,
                         end_date=end_date
                     )
@@ -481,7 +494,12 @@ def update_latest_candles_task():
                     # Trigger async backfill
                     execute_backfill_task.delay(job.job_id)
                     backfills_triggered += 1
-                    logger.info(f"Triggered backfill job {job.job_id} for {symbol}")
+                    logger.info(
+                        "Triggered backfill job %s for %s %s",
+                        job.job_id,
+                        symbol,
+                        timeframe_enum.value,
+                    )
 
             except Exception as e:
                 logger.error(f"Error updating {symbol}: {e}")
@@ -491,7 +509,7 @@ def update_latest_candles_task():
             "status": "completed",
             "candles_updated": total_updated,
             "backfills_triggered": backfills_triggered,
-            "pairs_tracked": len(TRACKED_PAIRS)
+            "pairs_tracked": len(tracked_pairs)
         }
 
     except Exception as e:
