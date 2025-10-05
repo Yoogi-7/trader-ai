@@ -22,6 +22,7 @@ interface TrainingStatus {
   job_id: string
   status: string
   progress_pct?: number
+  labeling_progress_pct?: number
   current_fold?: number
   total_folds?: number
   accuracy?: number
@@ -46,6 +47,21 @@ interface HistoricalSignal {
   was_profitable?: boolean
 }
 
+interface SignalGenerationStatus {
+  job_id: string
+  status: string
+  symbol: string
+  start_date: string
+  end_date: string
+  progress_pct?: number
+  signals_generated?: number
+  signals_backtested?: number
+  win_rate?: number
+  avg_profit_pct?: number
+  elapsed_seconds?: number
+  error_message?: string
+}
+
 interface SystemStatus {
   hit_rate_tp1?: number
   avg_net_profit_pct?: number
@@ -66,9 +82,11 @@ interface CandleInfo {
 export default function Admin() {
   const [backfillJobs, setBackfillJobs] = useState<BackfillStatus[]>([])
   const [trainingJobs, setTrainingJobs] = useState<TrainingStatus[]>([])
+  const [signalGenJobs, setSignalGenJobs] = useState<SignalGenerationStatus[]>([])
   const [historicalSignals, setHistoricalSignals] = useState<HistoricalSignal[]>([])
   const [activeBackfillId, setActiveBackfillId] = useState<string | null>(null)
   const [activeTrainingId, setActiveTrainingId] = useState<string | null>(null)
+  const [activeSignalGenId, setActiveSignalGenId] = useState<string | null>(null)
   const [showHistoricalSignals, setShowHistoricalSignals] = useState(false)
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
   const [candlesInfo, setCandlesInfo] = useState<CandleInfo[]>([])
@@ -102,7 +120,42 @@ export default function Admin() {
         console.error('Error loading jobs:', error)
       }
     }
+
+    const loadTrainingJobs = async () => {
+      try {
+        const response = await axios.get(`${API_URL}/api/v1/train/jobs`)
+        const jobs: TrainingStatus[] = response.data
+        setTrainingJobs(jobs)
+
+        // Set active job if any is training
+        const trainingJob = jobs.find(j => j.status === 'training')
+        if (trainingJob) {
+          setActiveTrainingId(trainingJob.job_id)
+        }
+      } catch (error) {
+        console.error('Error loading training jobs:', error)
+      }
+    }
+
+    const loadSignalGenJobs = async () => {
+      try {
+        const response = await axios.get(`${API_URL}/api/v1/signals/historical/jobs`)
+        const jobs: SignalGenerationStatus[] = response.data
+        setSignalGenJobs(jobs)
+
+        // Set active job if any is generating
+        const genJob = jobs.find(j => j.status === 'generating')
+        if (genJob) {
+          setActiveSignalGenId(genJob.job_id)
+        }
+      } catch (error) {
+        console.error('Error loading signal generation jobs:', error)
+      }
+    }
+
     loadJobs()
+    loadTrainingJobs()
+    loadSignalGenJobs()
     loadSystemStatus()
     loadCandlesInfo()
   }, [])
@@ -198,6 +251,41 @@ export default function Admin() {
     return () => clearInterval(interval)
   }, [activeTrainingId])
 
+  // Poll for signal generation status
+  useEffect(() => {
+    if (!activeSignalGenId) return
+
+    const interval = setInterval(async () => {
+      try {
+        const response = await axios.get(`${API_URL}/api/v1/signals/historical/status/${activeSignalGenId}`)
+        const status: SignalGenerationStatus = response.data
+
+        setSignalGenJobs(prev => {
+          const existing = prev.findIndex(j => j.job_id === status.job_id)
+          if (existing >= 0) {
+            const updated = [...prev]
+            updated[existing] = status
+            return updated
+          }
+          return [...prev, status]
+        })
+
+        // Stop polling if completed or failed
+        if (status.status === 'completed' || status.status === 'failed') {
+          setActiveSignalGenId(null)
+          // Auto-load results when completed
+          if (status.status === 'completed') {
+            setTimeout(loadHistoricalSignals, 2000)
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching signal generation status:', error)
+      }
+    }, 2000) // Poll every 2 seconds
+
+    return () => clearInterval(interval)
+  }, [activeSignalGenId])
+
   const startBackfill = async () => {
     try {
       console.log('Starting backfill, API_URL:', API_URL)
@@ -256,10 +344,9 @@ export default function Admin() {
         end_date: endDate.toISOString(),
         timeframe: '15m'
       })
-      alert(`Historical signal generation started for full history: ${response.data.message}`)
 
-      // Load historical signals after a delay
-      setTimeout(loadHistoricalSignals, 5000)
+      // Set active job ID to start polling
+      setActiveSignalGenId(response.data.job_id)
     } catch (error: any) {
       console.error('Error generating historical signals:', error)
       alert(`Error: ${error.message}`)
@@ -380,11 +467,27 @@ export default function Admin() {
                   </div>
                 </div>
 
-                {/* Progress Bar */}
-                {job.progress_pct !== undefined && job.progress_pct !== null && (
+                {/* Labeling Progress Bar */}
+                {job.status === 'training' && job.labeling_progress_pct !== undefined && job.labeling_progress_pct !== null && job.labeling_progress_pct < 100 && (
                   <div className="mb-2">
                     <div className="flex justify-between text-sm mb-1">
-                      <span>Progress</span>
+                      <span>Preparing Data (Labeling)</span>
+                      <span>{job.labeling_progress_pct.toFixed(1)}%</span>
+                    </div>
+                    <div className="w-full bg-gray-600 rounded-full h-2.5">
+                      <div
+                        className="bg-blue-400 h-2.5 rounded-full transition-all duration-300"
+                        style={{ width: `${job.labeling_progress_pct}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Training Progress Bar */}
+                {job.progress_pct !== undefined && job.progress_pct !== null && job.progress_pct > 0 && (
+                  <div className="mb-2">
+                    <div className="flex justify-between text-sm mb-1">
+                      <span>Training Progress</span>
                       <span>{job.progress_pct.toFixed(1)}%</span>
                     </div>
                     <div className="w-full bg-gray-600 rounded-full h-2.5">
@@ -447,12 +550,13 @@ export default function Admin() {
           <p className="text-gray-400 mb-4">
             Generate and analyze historical signals to validate strategy performance.
           </p>
-          <div className="flex gap-4">
+          <div className="flex gap-4 mb-6">
             <button
               onClick={generateHistoricalSignals}
-              className="bg-purple-600 hover:bg-purple-700 px-6 py-2 rounded font-medium"
+              disabled={activeSignalGenId !== null}
+              className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed px-6 py-2 rounded font-medium"
             >
-              Generate Historical Signals (Full History)
+              {activeSignalGenId ? 'Generating Signals...' : 'Generate Historical Signals (Full History)'}
             </button>
             <button
               onClick={loadHistoricalSignals}
@@ -460,6 +564,84 @@ export default function Admin() {
             >
               View Historical Signals
             </button>
+          </div>
+
+          {/* Signal Generation Jobs */}
+          <div className="space-y-4">
+            {signalGenJobs.map((job) => (
+              <div key={job.job_id} className="bg-gray-700 rounded-lg p-4">
+                <div className="flex justify-between items-center mb-2">
+                  <div>
+                    <span className="font-bold">{job.symbol}</span>
+                    <span className="text-gray-400 ml-2">Signal Generation</span>
+                  </div>
+                  <div className={`px-3 py-1 rounded text-sm ${
+                    job.status === 'completed' ? 'bg-green-600' :
+                    job.status === 'generating' ? 'bg-purple-600' :
+                    job.status === 'failed' ? 'bg-red-600' : 'bg-gray-600'
+                  }`}>
+                    {job.status.toUpperCase()}
+                  </div>
+                </div>
+
+                {/* Progress Bar */}
+                {job.progress_pct !== undefined && job.progress_pct !== null && (
+                  <div className="mb-2">
+                    <div className="flex justify-between text-sm mb-1">
+                      <span>Progress</span>
+                      <span>{job.progress_pct.toFixed(1)}%</span>
+                    </div>
+                    <div className="w-full bg-gray-600 rounded-full h-2.5">
+                      <div
+                        className="bg-purple-500 h-2.5 rounded-full transition-all duration-300"
+                        style={{ width: `${job.progress_pct}%` }}
+                      ></div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Stats */}
+                <div className="grid grid-cols-3 gap-4 mt-3 text-sm">
+                  {job.signals_generated !== undefined && (
+                    <div>
+                      <p className="text-gray-400">Signals Generated</p>
+                      <p className="font-bold text-purple-400">{job.signals_generated}</p>
+                    </div>
+                  )}
+                  {job.signals_backtested !== undefined && (
+                    <div>
+                      <p className="text-gray-400">Backtested</p>
+                      <p className="font-bold text-purple-400">{job.signals_backtested}</p>
+                    </div>
+                  )}
+                  {job.win_rate !== undefined && job.win_rate !== null && (
+                    <div>
+                      <p className="text-gray-400">Win Rate</p>
+                      <p className="font-bold text-green-400">{(job.win_rate * 100).toFixed(1)}%</p>
+                    </div>
+                  )}
+                  {job.elapsed_seconds !== undefined && (
+                    <div>
+                      <p className="text-gray-400">Elapsed Time</p>
+                      <p className="font-bold">{Math.floor(job.elapsed_seconds / 60)}m {Math.floor(job.elapsed_seconds % 60)}s</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Error Message */}
+                {job.error_message && (
+                  <div className="mt-3 p-3 bg-red-900 border border-red-700 rounded text-sm">
+                    <p className="text-red-200 font-semibold">Error:</p>
+                    <p className="text-red-300">{job.error_message}</p>
+                  </div>
+                )}
+
+                {/* Job ID */}
+                <div className="mt-3 text-xs text-gray-500">
+                  Job ID: {job.job_id}
+                </div>
+              </div>
+            ))}
           </div>
 
           {/* Historical Signals Table */}

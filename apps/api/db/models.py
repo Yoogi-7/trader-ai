@@ -406,6 +406,7 @@ class TrainingJob(Base):
     current_fold = Column(Integer)
     total_folds = Column(Integer)
     progress_pct = Column(Float, default=0.0)
+    labeling_progress_pct = Column(Float, default=0.0)
 
     # Metrics
     accuracy = Column(Float)
@@ -428,6 +429,42 @@ class TrainingJob(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     model = relationship("ModelRegistry")
+
+
+class SignalGenerationJob(Base):
+    __tablename__ = "signal_generation_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String(50), unique=True, nullable=False, index=True)
+    symbol = Column(String(20), nullable=False, index=True)
+    timeframe = Column(Enum(TimeFrame), nullable=False)
+
+    # Date range
+    start_date = Column(DateTime, nullable=False)
+    end_date = Column(DateTime, nullable=False)
+
+    # Progress
+    signals_generated = Column(Integer, default=0)
+    signals_backtested = Column(Integer, default=0)
+    total_periods = Column(Integer)
+    current_period = Column(Integer)
+    progress_pct = Column(Float, default=0.0)
+
+    # Results
+    win_rate = Column(Float)
+    avg_profit_pct = Column(Float)
+    total_pnl_usd = Column(Float)
+
+    # Status
+    status = Column(String(20), default="pending", index=True)  # pending, generating, completed, failed
+    error_message = Column(Text)
+
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    elapsed_seconds = Column(Float)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ============================================================================

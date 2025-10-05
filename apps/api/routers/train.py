@@ -31,6 +31,7 @@ class TrainingStatus(BaseModel):
     job_id: str
     status: str
     progress_pct: Optional[float] = None
+    labeling_progress_pct: Optional[float] = None
     current_fold: Optional[int] = None
     total_folds: Optional[int] = None
     accuracy: Optional[float] = None
@@ -82,8 +83,30 @@ async def start_training(request: TrainRequest, db: Session = Depends(get_db)):
 
 
 @router.get("/status/{job_id}", response_model=TrainingStatus)
-async def get_training_status(job_id: str):
-    """Get training job status from Celery"""
+async def get_training_status(job_id: str, db: Session = Depends(get_db)):
+    """Get training job status from database and Celery"""
+    from apps.api.db.models import TrainingJob
+
+    # Try to get from database first
+    training_job = db.query(TrainingJob).filter_by(job_id=job_id).first()
+
+    if training_job:
+        # Return data from database (most reliable)
+        response = TrainingStatus(
+            job_id=job_id,
+            status=training_job.status,
+            progress_pct=training_job.progress_pct,
+            labeling_progress_pct=training_job.labeling_progress_pct,
+            current_fold=training_job.current_fold,
+            total_folds=training_job.total_folds,
+            accuracy=training_job.accuracy,
+            hit_rate_tp1=training_job.hit_rate_tp1,
+            elapsed_seconds=training_job.elapsed_seconds,
+            error_message=training_job.error_message
+        )
+        return response
+
+    # Fallback to Celery if not in database yet
     task_result = AsyncResult(job_id, app=celery_app)
 
     status_map = {
@@ -117,6 +140,35 @@ async def get_training_status(job_id: str):
         response.error_message = str(task_result.info)
 
     return response
+
+
+@router.get("/jobs", response_model=List[TrainingStatus])
+async def list_training_jobs(db: Session = Depends(get_db)):
+    """List all recent training jobs from database"""
+    from apps.api.db.models import TrainingJob
+    from datetime import datetime, timedelta
+
+    # Get jobs from last 24 hours
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    jobs = db.query(TrainingJob).filter(
+        TrainingJob.created_at >= cutoff
+    ).order_by(TrainingJob.created_at.desc()).all()
+
+    return [
+        TrainingStatus(
+            job_id=job.job_id,
+            status=job.status,
+            progress_pct=job.progress_pct,
+            labeling_progress_pct=job.labeling_progress_pct,
+            current_fold=job.current_fold,
+            total_folds=job.total_folds,
+            accuracy=job.accuracy,
+            hit_rate_tp1=job.hit_rate_tp1,
+            elapsed_seconds=job.elapsed_seconds,
+            error_message=job.error_message
+        )
+        for job in jobs
+    ]
 
 
 @router.get("/models", response_model=List[ModelInfo])

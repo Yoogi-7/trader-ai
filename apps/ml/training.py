@@ -95,14 +95,15 @@ class WalkForwardPipeline:
     def prepare_features_and_labels(
         self,
         df: pd.DataFrame,
-        side: str = 'long'
+        side: str = 'long',
+        labeling_progress_callback=None
     ) -> pd.DataFrame:
         """Compute features and labels"""
         logger.info("Computing features...")
         df_features = self.feature_eng.compute_all_features(df)
 
         logger.info("Computing labels...")
-        labels_df = self.labeler.label_data(df_features, side=side)
+        labels_df = self.labeler.label_data(df_features, side=side, progress_callback=labeling_progress_callback)
         binary_labels = self.labeler.create_binary_labels(labels_df)
 
         # Merge features and labels
@@ -124,7 +125,9 @@ class WalkForwardPipeline:
         timeframe: str,
         start_date: datetime,
         end_date: datetime,
-        side: str = 'long'
+        side: str = 'long',
+        progress_callback=None,
+        labeling_progress_callback=None
     ) -> dict:
         """
         Run complete walk-forward validation pipeline.
@@ -139,7 +142,7 @@ class WalkForwardPipeline:
         df = self.fetch_ohlcv_data(db, symbol, timeframe, start_date, end_date)
 
         # 2. Prepare features and labels
-        df_prepared = self.prepare_features_and_labels(df, side=side)
+        df_prepared = self.prepare_features_and_labels(df, side=side, labeling_progress_callback=labeling_progress_callback)
 
         # 3. Generate walk-forward splits
         splits = self.validator.generate_splits(df_prepared, start_date, end_date)
@@ -161,6 +164,15 @@ class WalkForwardPipeline:
             logger.info(f"Split {i+1}/{len(splits)}")
             logger.info(f"Train: {split['train'][0].date()} to {split['train'][1].date()}")
             logger.info(f"Test: {split['test'][0].date()} to {split['test'][1].date()}")
+
+            # Update progress callback if provided
+            if progress_callback:
+                progress = (i / len(splits)) * 100
+                progress_callback(
+                    progress_pct=progress,
+                    current_fold=i + 1,
+                    total_folds=len(splits)
+                )
 
             # Get train/test data
             train_df, test_df = self.validator.get_train_test_data(df_prepared, split)
@@ -316,7 +328,8 @@ def train_model_pipeline(
     min_train_days: int = 180,
     use_expanding_window: bool = True,
     start_date: datetime = None,
-    end_date: datetime = None
+    end_date: datetime = None,
+    progress_callback=None
 ) -> dict:
     """
     Complete training pipeline with walk-forward validation using expanding windows.
@@ -370,7 +383,9 @@ def train_model_pipeline(
         timeframe=timeframe,
         start_date=start_date,
         end_date=end_date,
-        side='long'
+        side='long',
+        progress_callback=progress_callback.get('training') if isinstance(progress_callback, dict) else progress_callback,
+        labeling_progress_callback=progress_callback.get('labeling') if isinstance(progress_callback, dict) else None
     )
 
     logger.info(f"Training completed: {results['model_id']}")

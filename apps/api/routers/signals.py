@@ -66,6 +66,21 @@ class GenerateHistoricalSignalsRequest(BaseModel):
     timeframe: str = "15m"
 
 
+class SignalGenerationStatus(BaseModel):
+    job_id: str
+    status: str
+    symbol: str
+    start_date: str
+    end_date: str
+    progress_pct: Optional[float] = None
+    signals_generated: Optional[int] = None
+    signals_backtested: Optional[int] = None
+    win_rate: Optional[float] = None
+    avg_profit_pct: Optional[float] = None
+    elapsed_seconds: Optional[float] = None
+    error_message: Optional[str] = None
+
+
 @router.get("/live", response_model=List[SignalResponse])
 async def get_live_signals(
     risk_profile: Optional[RiskProfile] = Query(None),
@@ -148,10 +163,67 @@ async def generate_historical_signals(
     )
 
     return {
-        "task_id": task.id,
-        "status": "started",
+        "job_id": task.id,
+        "status": "queued",
         "message": f"Generating historical signals for {request.symbol} from {request.start_date} to {request.end_date}"
     }
+
+
+@router.get("/historical/status/{job_id}", response_model=SignalGenerationStatus)
+def get_signal_generation_status(job_id: str, db: Session = Depends(get_db)):
+    """Get historical signal generation status"""
+    from apps.api.db.models import SignalGenerationJob
+
+    job = db.query(SignalGenerationJob).filter_by(job_id=job_id).first()
+
+    if not job:
+        raise HTTPException(status_code=404, detail="Signal generation job not found")
+
+    return SignalGenerationStatus(
+        job_id=job.job_id,
+        status=job.status,
+        symbol=job.symbol,
+        start_date=job.start_date.isoformat(),
+        end_date=job.end_date.isoformat(),
+        progress_pct=job.progress_pct,
+        signals_generated=job.signals_generated,
+        signals_backtested=job.signals_backtested,
+        win_rate=job.win_rate,
+        avg_profit_pct=job.avg_profit_pct,
+        elapsed_seconds=job.elapsed_seconds,
+        error_message=job.error_message
+    )
+
+
+@router.get("/historical/jobs", response_model=List[SignalGenerationStatus])
+def list_signal_generation_jobs(db: Session = Depends(get_db)):
+    """List all recent signal generation jobs"""
+    from apps.api.db.models import SignalGenerationJob
+    from datetime import datetime, timedelta
+
+    # Get jobs from last 24 hours
+    cutoff = datetime.utcnow() - timedelta(hours=24)
+    jobs = db.query(SignalGenerationJob).filter(
+        SignalGenerationJob.created_at >= cutoff
+    ).order_by(SignalGenerationJob.created_at.desc()).all()
+
+    return [
+        SignalGenerationStatus(
+            job_id=job.job_id,
+            status=job.status,
+            symbol=job.symbol,
+            start_date=job.start_date.isoformat(),
+            end_date=job.end_date.isoformat(),
+            progress_pct=job.progress_pct,
+            signals_generated=job.signals_generated,
+            signals_backtested=job.signals_backtested,
+            win_rate=job.win_rate,
+            avg_profit_pct=job.avg_profit_pct,
+            elapsed_seconds=job.elapsed_seconds,
+            error_message=job.error_message
+        )
+        for job in jobs
+    ]
 
 
 @router.get("/historical/results", response_model=List[HistoricalSignalResponse])

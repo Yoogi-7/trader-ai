@@ -1,6 +1,9 @@
 import pandas as pd
 import numpy as np
 from typing import Tuple
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class TripleBarrierLabeling:
@@ -25,7 +28,7 @@ class TripleBarrierLabeling:
         self.sl_pct = sl_pct
         self.time_bars = time_bars
 
-    def label_data(self, df: pd.DataFrame, side: str = 'long') -> pd.DataFrame:
+    def label_data(self, df: pd.DataFrame, side: str = 'long', progress_callback=None) -> pd.DataFrame:
         """
         Apply triple barrier labeling to OHLCV data.
 
@@ -39,7 +42,22 @@ class TripleBarrierLabeling:
         df = df.copy()
         labels = []
 
-        for i in range(len(df) - self.time_bars):
+        total_rows = len(df) - self.time_bars
+        logger.info(f"Computing triple barrier labels for {total_rows} rows...")
+
+        # Log progress every 10%
+        log_interval = max(1, total_rows // 10)
+
+        for i in range(total_rows):
+            # Log progress
+            if i > 0 and i % log_interval == 0:
+                progress = (i / total_rows) * 100
+                logger.info(f"Labeling progress: {progress:.1f}% ({i}/{total_rows})")
+
+                # Call progress callback if provided
+                if progress_callback:
+                    progress_callback(progress)
+
             entry_price = df.iloc[i]['close']
 
             if side == 'long':
@@ -101,6 +119,7 @@ class TripleBarrierLabeling:
                 'return_pct': return_pct
             })
 
+        logger.info(f"Labeling complete: {len(labels)} labels created")
         return pd.DataFrame(labels)
 
     def create_binary_labels(self, labels_df: pd.DataFrame) -> pd.Series:
