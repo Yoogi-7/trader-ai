@@ -1,7 +1,7 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from apps.api.config import settings
-from apps.api.routers import signals, backtest, backfill, train, settings as settings_router, system
+from apps.api.routers import drift, signals, backtest, backfill, train, settings as settings_router, system
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -29,6 +29,7 @@ app.include_router(backfill.router, prefix=f"{settings.API_V1_PREFIX}/backfill",
 app.include_router(train.router, prefix=f"{settings.API_V1_PREFIX}/train", tags=["Training"])
 app.include_router(settings_router.router, prefix=f"{settings.API_V1_PREFIX}/settings", tags=["Settings"])
 app.include_router(system.router, prefix=f"{settings.API_V1_PREFIX}/system", tags=["System"])
+app.include_router(drift.router, prefix=f"{settings.API_V1_PREFIX}/drift", tags=["Drift"])
 
 
 # WebSocket connection manager for live signals

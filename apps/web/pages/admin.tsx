@@ -79,6 +79,18 @@ interface CandleInfo {
   last_candle?: string
 }
 
+interface DriftMetric {
+  id: number
+  model_id: string
+  timestamp: string
+  psi_score?: number | null
+  ks_statistic?: number | null
+  feature_drift_scores?: Record<string, number> | null
+  prediction_drift?: number | null
+  data_freshness_hours?: number | null
+  drift_detected: boolean
+}
+
 export default function Admin() {
   const [backfillJobs, setBackfillJobs] = useState<BackfillStatus[]>([])
   const [trainingJobs, setTrainingJobs] = useState<TrainingStatus[]>([])
@@ -90,6 +102,8 @@ export default function Admin() {
   const [showHistoricalSignals, setShowHistoricalSignals] = useState(false)
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null)
   const [candlesInfo, setCandlesInfo] = useState<CandleInfo[]>([])
+  const [driftMetrics, setDriftMetrics] = useState<DriftMetric[]>([])
+  const [driftAlerts, setDriftAlerts] = useState<DriftMetric[]>([])
 
   // Load existing jobs on mount
   useEffect(() => {
@@ -158,6 +172,7 @@ export default function Admin() {
     loadSignalGenJobs()
     loadSystemStatus()
     loadCandlesInfo()
+    loadDriftMetrics()
   }, [])
 
   // Load system status
@@ -180,12 +195,48 @@ export default function Admin() {
     }
   }
 
+  const loadDriftMetrics = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/v1/drift`, {
+        params: {
+          page_size: 20,
+          sort_by: 'timestamp',
+          sort_order: 'desc'
+        }
+      })
+
+      const metrics: DriftMetric[] = response.data.items || []
+      setDriftMetrics(metrics)
+
+      const alerts = metrics.filter(metric => {
+        const psi = metric.psi_score ?? 0
+        const prediction = metric.prediction_drift ?? 0
+        const staleData = metric.data_freshness_hours !== null && metric.data_freshness_hours !== undefined
+          ? metric.data_freshness_hours > 12
+          : false
+        return metric.drift_detected || psi >= 0.2 || prediction >= 0.1 || staleData
+      })
+
+      setDriftAlerts(alerts.slice(0, 5))
+    } catch (error) {
+      console.error('Error loading drift metrics:', error)
+    }
+  }
+
   // Poll system status every 10 seconds
   useEffect(() => {
     const interval = setInterval(() => {
       loadSystemStatus()
       loadCandlesInfo()
     }, 10000)
+    return () => clearInterval(interval)
+  }, [])
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadDriftMetrics()
+    }, 60000)
+
     return () => clearInterval(interval)
   }, [])
 
@@ -427,6 +478,14 @@ export default function Admin() {
     } catch (error) {
       console.error('Error loading historical signals:', error)
     }
+  }
+
+  const formatMetricValue = (value?: number | null, digits = 3) => {
+    if (value === null || value === undefined) {
+      return 'N/A'
+    }
+
+    return value.toFixed(digits)
   }
 
   const formatETA = (minutes?: number) => {
@@ -841,6 +900,111 @@ export default function Admin() {
               ))}
             </div>
           )}
+        </div>
+
+        {/* Drift Monitoring */}
+        <div className="bg-gray-800 rounded-lg p-6 mb-8">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-2xl font-bold">Model Drift Monitoring</h2>
+            <button
+              onClick={loadDriftMetrics}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm"
+            >
+              Refresh
+            </button>
+          </div>
+
+          {driftAlerts.length > 0 ? (
+            <div className="mb-6">
+              <h3 className="text-lg font-semibold mb-2 text-yellow-300">Active Alerts</h3>
+              <div className="space-y-3">
+                {driftAlerts.map(alert => (
+                  <div
+                    key={`${alert.model_id}-${alert.timestamp}`}
+                    className="bg-red-900/40 border border-red-700 rounded p-4"
+                  >
+                    <div className="flex justify-between items-center mb-2">
+                      <div>
+                        <p className="text-sm text-gray-300">{new Date(alert.timestamp).toLocaleString()}</p>
+                        <p className="text-xl font-semibold text-red-200">{alert.model_id}</p>
+                      </div>
+                      <span className="px-3 py-1 bg-red-700 text-sm rounded-full">Drift Detected</span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-4 text-sm text-gray-200">
+                      <div>
+                        <p className="text-gray-400">PSI</p>
+                        <p className="font-bold">{formatMetricValue(alert.psi_score)}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-400">KS</p>
+                        <p className="font-bold">{formatMetricValue(alert.ks_statistic)}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-400">Prediction Drift</p>
+                        <p className="font-bold">{formatMetricValue(alert.prediction_drift)}</p>
+                      </div>
+                      <div>
+                        <p className="text-gray-400">Data Freshness</p>
+                        <p className="font-bold">{alert.data_freshness_hours ? `${alert.data_freshness_hours.toFixed(1)}h` : 'N/A'}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="mb-6 p-4 bg-green-900/30 border border-green-700 rounded text-green-200">
+              No drift alerts detected in the latest monitoring window.
+            </div>
+          )}
+
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-sm">
+              <thead>
+                <tr className="text-gray-400 uppercase text-xs tracking-wider">
+                  <th className="px-4 py-2">Model</th>
+                  <th className="px-4 py-2">Timestamp</th>
+                  <th className="px-4 py-2">PSI</th>
+                  <th className="px-4 py-2">KS</th>
+                  <th className="px-4 py-2">Prediction Drift</th>
+                  <th className="px-4 py-2">Data Freshness</th>
+                  <th className="px-4 py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {driftMetrics.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="px-4 py-6 text-center text-gray-400">
+                      No drift metrics available yet.
+                    </td>
+                  </tr>
+                )}
+                {driftMetrics.map(metric => (
+                  <tr key={`${metric.model_id}-${metric.timestamp}`} className="border-t border-gray-700">
+                    <td className="px-4 py-3 font-semibold">{metric.model_id}</td>
+                    <td className="px-4 py-3 text-gray-300">{new Date(metric.timestamp).toLocaleString()}</td>
+                    <td className="px-4 py-3">{formatMetricValue(metric.psi_score)}</td>
+                    <td className="px-4 py-3">{formatMetricValue(metric.ks_statistic)}</td>
+                    <td className="px-4 py-3">{formatMetricValue(metric.prediction_drift)}</td>
+                    <td className="px-4 py-3">
+                      {metric.data_freshness_hours !== null && metric.data_freshness_hours !== undefined
+                        ? `${metric.data_freshness_hours.toFixed(1)}h`
+                        : 'N/A'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                          metric.drift_detected ? 'bg-red-700 text-red-100' : 'bg-green-700 text-green-100'
+                        }`}
+                      >
+                        {metric.drift_detected ? 'Drift' : 'Stable'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
 
         {/* Database Candles Info */}
