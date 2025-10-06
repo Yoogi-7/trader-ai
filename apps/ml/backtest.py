@@ -407,7 +407,7 @@ class Backtester:
         atr: float
     ) -> float:
         """Calculate trailing SL"""
-        trailing_distance = atr * 0.5
+        trailing_distance = atr * 0.3  # Tighter trailing (was 0.5)
 
         if side == Side.LONG:
             new_sl = max(current_sl, entry_price + trailing_distance)

@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # ML
     MIN_CONFIDENCE_THRESHOLD: float = 0.52  # Lowered slightly for more signals
-    MIN_NET_PROFIT_PCT: float = 1.5  # Lowered to allow more profitable signals
+    MIN_NET_PROFIT_PCT: float = 2.0  # CRITICAL: Minimum 2% net profit after ALL costs
     MIN_HISTORICAL_WIN_RATE: float = 0.40  # More lenient historical filter
     HISTORICAL_PERFORMANCE_SAMPLE: int = 250
     DEFAULT_LOOKBACK_YEARS: int = 4
@@ -53,16 +53,21 @@ class Settings(BaseSettings):
     SLIPPAGE_BPS: float = 3.0
     FUNDING_RATE_HOURLY_BPS: float = 1.0
 
-    # Risk Profiles
-    LOW_RISK_PER_TRADE: float = 0.01
-    MED_RISK_PER_TRADE: float = 0.02
-    HIGH_RISK_PER_TRADE: float = 0.03
-    LOW_MAX_LEV: int = 5
-    MED_MAX_LEV: int = 10
-    HIGH_MAX_LEV: int = 20
+    # Risk Profiles - OPTIMIZED FOR BETTER RETURNS
+    # Risk per trade = % of capital risked if SL is hit
+    LOW_RISK_PER_TRADE: float = 0.02   # 2% - Conservative
+    MED_RISK_PER_TRADE: float = 0.05   # 5% - Balanced (RECOMMENDED)
+    HIGH_RISK_PER_TRADE: float = 0.10  # 10% - Aggressive
+
+    # Leverage limits
+    LOW_MAX_LEV: int = 8
+    MED_MAX_LEV: int = 20   # Higher leverage for bigger TP
+    HIGH_MAX_LEV: int = 30  # For experienced traders
+
+    # Max concurrent positions
     LOW_MAX_POSITIONS: int = 2
-    MED_MAX_POSITIONS: int = 4
-    HIGH_MAX_POSITIONS: int = 6
+    MED_MAX_POSITIONS: int = 5
+    HIGH_MAX_POSITIONS: int = 8
 
     # Monitoring
     DRIFT_PSI_THRESHOLD: float = 0.15

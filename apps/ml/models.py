@@ -27,21 +27,29 @@ class EnsembleModel:
             'objective': 'binary',
             'metric': 'auc',
             'boosting_type': 'gbdt',
-            'num_leaves': 31,
-            'learning_rate': 0.05,
+            'num_leaves': 63,
+            'learning_rate': 0.03,
             'feature_fraction': 0.8,
             'bagging_fraction': 0.8,
             'bagging_freq': 5,
+            'min_child_samples': 20,
+            'reg_alpha': 0.1,
+            'reg_lambda': 0.1,
+            'max_depth': -1,
             'verbose': -1
         }
 
         self.xgb_params = xgb_params or {
             'objective': 'binary:logistic',
             'eval_metric': 'auc',
-            'max_depth': 6,
-            'learning_rate': 0.05,
+            'max_depth': 8,
+            'learning_rate': 0.03,
             'subsample': 0.8,
             'colsample_bytree': 0.8,
+            'min_child_weight': 3,
+            'gamma': 0.1,
+            'reg_alpha': 0.1,
+            'reg_lambda': 1.0,
             'verbosity': 0
         }
 
@@ -66,9 +74,9 @@ class EnsembleModel:
         self.lgbm_model = lgb.train(
             self.lgbm_params,
             train_data,
-            num_boost_round=1500,
+            num_boost_round=15000,
             valid_sets=[val_data],
-            callbacks=[lgb.early_stopping(stopping_rounds=150), lgb.log_evaluation(period=375)]
+            callbacks=[lgb.early_stopping(stopping_rounds=500), lgb.log_evaluation(period=1500)]
         )
 
         logger.info("Training XGBoost model...")
@@ -78,10 +86,10 @@ class EnsembleModel:
         self.xgb_model = xgb.train(
             self.xgb_params,
             dtrain,
-            num_boost_round=1500,
+            num_boost_round=15000,
             evals=[(dval, 'val')],
-            early_stopping_rounds=150,
-            verbose_eval=375
+            early_stopping_rounds=500,
+            verbose_eval=1500
         )
 
         logger.info("Ensemble training completed")
@@ -96,8 +104,8 @@ class EnsembleModel:
         lgbm_proba = self.lgbm_model.predict(X)
         xgb_proba = self.xgb_model.predict(xgb.DMatrix(X))
 
-        # Average ensemble
-        ensemble_proba = (lgbm_proba + xgb_proba) / 2
+        # Weighted ensemble (LightGBM typically performs better in finance)
+        ensemble_proba = (0.6 * lgbm_proba + 0.4 * xgb_proba)
         return ensemble_proba
 
     def predict(self, X: pd.DataFrame, threshold: float = 0.5) -> np.ndarray:

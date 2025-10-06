@@ -55,7 +55,83 @@ services:
       context: .
       dockerfile: infra/dockerfiles/api.Dockerfile
     container_name: traderai-worker
-    command: celery -A apps.ml.worker worker --loglevel=info --concurrency=3 --max-tasks-per-child=1 -Q backfill,training,historical,default
+    command: celery -A apps.ml.worker worker --loglevel=info --concurrency=1 --max-tasks-per-child=1 -Q training
+    environment:
+      DATABASE_URL: postgresql://traderai:traderai@db:5432/traderai
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  worker-training2:
+    build:
+      context: .
+      dockerfile: infra/dockerfiles/api.Dockerfile
+    container_name: traderai-worker-training2
+    command: celery -A apps.ml.worker worker --loglevel=info --concurrency=1 --max-tasks-per-child=1 -Q training
+    environment:
+      DATABASE_URL: postgresql://traderai:traderai@db:5432/traderai
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  worker-training3:
+    build:
+      context: .
+      dockerfile: infra/dockerfiles/api.Dockerfile
+    container_name: traderai-worker-training3
+    command: celery -A apps.ml.worker worker --loglevel=info --concurrency=1 --max-tasks-per-child=1 -Q training
+    environment:
+      DATABASE_URL: postgresql://traderai:traderai@db:5432/traderai
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  worker-backfill:
+    build:
+      context: .
+      dockerfile: infra/dockerfiles/api.Dockerfile
+    container_name: traderai-worker-backfill
+    command: celery -A apps.ml.worker worker --loglevel=info --concurrency=2 --max-tasks-per-child=1 -Q backfill,historical,default
+    environment:
+      DATABASE_URL: postgresql://traderai:traderai@db:5432/traderai
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+
+  worker-general:
+    build:
+      context: .
+      dockerfile: infra/dockerfiles/api.Dockerfile
+    container_name: traderai-worker-general
+    command: celery -A apps.ml.worker worker --loglevel=info --concurrency=2 --max-tasks-per-child=1 -Q backfill,historical,default
     environment:
       DATABASE_URL: postgresql://traderai:traderai@db:5432/traderai
       REDIS_URL: redis://redis:6379/0

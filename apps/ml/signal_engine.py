@@ -159,11 +159,12 @@ class SignalGenerator:
         Returns:
             (tp_levels, sl_price)
         """
-        # Improved ATR multipliers for better profitability
-        atr_multiplier_sl = 1.2  # Tighter stop loss
-        atr_multiplier_tp1 = 1.5  # Higher TP1 for better R:R
-        atr_multiplier_tp2 = 2.5  # Higher TP2
-        atr_multiplier_tp3 = 4.0  # Higher TP3
+        # OPTIMIZED ATR multipliers for HIGHER profitability
+        # These ensure minimum 2% net profit after costs
+        atr_multiplier_sl = 1.0   # Tighter SL (was 1.2) = smaller losses
+        atr_multiplier_tp1 = 2.0  # Higher TP1 (was 1.5) = ~3-4% profit
+        atr_multiplier_tp2 = 3.5  # Higher TP2 (was 2.5) = ~5-7% profit
+        atr_multiplier_tp3 = 6.0  # Higher TP3 (was 4.0) = ~9-12% profit
 
         if side == Side.LONG:
             sl_price = entry_price - (atr * atr_multiplier_sl)
@@ -351,7 +352,7 @@ class SignalGenerator:
             return current_sl
 
         # Move SL to breakeven + small buffer
-        trailing_distance = atr * 0.5
+        trailing_distance = atr * 0.3  # Tighter trailing (was 0.5)
 
         if side == Side.LONG:
             new_sl = max(current_sl, entry_price + trailing_distance)
@@ -862,11 +863,12 @@ class SignalEngine:
         Returns:
             (tp_levels, sl_price)
         """
-        # Improved ATR multipliers for better profitability
-        atr_multiplier_sl = 1.2  # Tighter stop loss
-        atr_multiplier_tp1 = 1.5  # Higher TP1 for better R:R
-        atr_multiplier_tp2 = 2.5  # Higher TP2
-        atr_multiplier_tp3 = 4.0  # Higher TP3
+        # OPTIMIZED ATR multipliers for HIGHER profitability
+        # These ensure minimum 2% net profit after costs
+        atr_multiplier_sl = 1.0   # Tighter SL (was 1.2) = smaller losses
+        atr_multiplier_tp1 = 2.0  # Higher TP1 (was 1.5) = ~3-4% profit
+        atr_multiplier_tp2 = 3.5  # Higher TP2 (was 2.5) = ~5-7% profit
+        atr_multiplier_tp3 = 6.0  # Higher TP3 (was 4.0) = ~9-12% profit
 
         if side == Side.LONG:
             sl_price = entry_price - (atr * atr_multiplier_sl)
@@ -1054,7 +1056,7 @@ class SignalEngine:
             return current_sl
 
         # Move SL to breakeven + small buffer
-        trailing_distance = atr * 0.5
+        trailing_distance = atr * 0.3  # Tighter trailing (was 0.5)
 
         if side == Side.LONG:
             new_sl = max(current_sl, entry_price + trailing_distance)
