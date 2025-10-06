@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
-from sqlalchemy import select, and_, desc, text
+from sqlalchemy import select, and_, desc, text, or_
 from sqlalchemy.exc import ProgrammingError
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
@@ -278,11 +278,37 @@ def list_signal_generation_jobs(db: Session = Depends(get_db)):
     from apps.api.db.models import SignalGenerationJob
     from datetime import datetime, timedelta
 
-    # Get jobs from last 24 hours
-    cutoff = datetime.utcnow() - timedelta(hours=24)
-    jobs = db.query(SignalGenerationJob).filter(
-        SignalGenerationJob.created_at >= cutoff
-    ).order_by(SignalGenerationJob.created_at.desc()).all()
+    cutoff = datetime.utcnow() - timedelta(hours=3)
+    active_statuses = ['generating', 'pending']
+
+    active_jobs = (
+        db.query(SignalGenerationJob)
+        .filter(SignalGenerationJob.status.in_(active_statuses))
+        .order_by(SignalGenerationJob.created_at.desc())
+        .all()
+    )
+
+    recent_jobs = (
+        db.query(SignalGenerationJob)
+        .filter(
+            ~SignalGenerationJob.status.in_(active_statuses),
+            or_(
+                SignalGenerationJob.completed_at >= cutoff,
+                SignalGenerationJob.created_at >= cutoff
+            )
+        )
+        .order_by(SignalGenerationJob.created_at.desc())
+        .all()
+    )
+
+    jobs = []
+    seen: set[str] = set()
+
+    for job in active_jobs + recent_jobs:
+        if job.job_id in seen:
+            continue
+        jobs.append(job)
+        seen.add(job.job_id)
 
     return [
         SignalGenerationStatus(

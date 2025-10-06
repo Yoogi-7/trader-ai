@@ -136,10 +136,16 @@ export default function Admin() {
         const now = new Date()
         const threeHoursAgo = new Date(now.getTime() - 3 * 60 * 60 * 1000)
 
+        const activeStatuses = ['running', 'pending']
+
         const recentJobs = jobs.filter(job => {
-          // Use completed_at for completed jobs, started_at for running, created_at as fallback
+          if (activeStatuses.includes(job.status)) {
+            return true
+          }
+
           const jobDate = job.completed_at || job.started_at || job.created_at
-          if (!jobDate) return true // Keep jobs without timestamp
+          if (!jobDate) return true // Without timestamps we cannot prune confidently
+
           return new Date(jobDate) > threeHoursAgo
         })
 

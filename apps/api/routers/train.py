@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from apps.api.db import get_db
 from celery.result import AsyncResult
 from apps.ml.worker import celery_app
@@ -188,9 +189,36 @@ async def list_training_jobs(db: Session = Depends(get_db)):
 
     # Get jobs from last 3 hours
     cutoff = datetime.utcnow() - timedelta(hours=3)
-    jobs = db.query(TrainingJob).filter(
-        TrainingJob.created_at >= cutoff
-    ).order_by(TrainingJob.created_at.desc()).all()
+    active_statuses = ['training', 'pending', 'queued']
+
+    active_jobs = (
+        db.query(TrainingJob)
+        .filter(TrainingJob.status.in_(active_statuses))
+        .order_by(TrainingJob.created_at.desc())
+        .all()
+    )
+
+    recent_jobs = (
+        db.query(TrainingJob)
+        .filter(
+            ~TrainingJob.status.in_(active_statuses),
+            or_(
+                TrainingJob.completed_at >= cutoff,
+                TrainingJob.created_at >= cutoff
+            )
+        )
+        .order_by(TrainingJob.created_at.desc())
+        .all()
+    )
+
+    jobs = []
+    seen: set[str] = set()
+
+    for job in active_jobs + recent_jobs:
+        if job.job_id in seen:
+            continue
+        jobs.append(job)
+        seen.add(job.job_id)
 
     return [
         TrainingStatus(

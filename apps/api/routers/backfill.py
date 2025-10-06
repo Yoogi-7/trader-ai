@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timedelta
+from sqlalchemy import or_
 from apps.api.db import get_db
 from apps.api.db.models import BackfillJob, TimeFrame
 from apps.ml.backfill import BackfillService
@@ -128,16 +129,51 @@ async def list_backfill_jobs(
     from apps.api.db.models import BackfillJob
 
     cutoff = datetime.utcnow() - timedelta(hours=3)
-    jobs = (
+    active_statuses = ['running', 'pending']
+
+    active_jobs = (
         db.query(BackfillJob)
-        .filter(BackfillJob.created_at >= cutoff)
+        .filter(BackfillJob.status.in_(active_statuses))
         .order_by(BackfillJob.created_at.desc())
-        .limit(limit)
         .all()
     )
 
+    remaining = max(0, limit - len(active_jobs))
+
+    recent_jobs = []
+    if remaining > 0:
+        recent_jobs = (
+            db.query(BackfillJob)
+            .filter(
+                ~BackfillJob.status.in_(active_statuses),
+                or_(
+                    BackfillJob.completed_at != None,  # noqa: E711
+                    BackfillJob.created_at >= cutoff
+                ),
+                or_(
+                    BackfillJob.completed_at >= cutoff,
+                    BackfillJob.created_at >= cutoff
+                )
+            )
+            .order_by(BackfillJob.created_at.desc())
+            .limit(remaining)
+            .all()
+        )
+
     service = BackfillService(db)
-    return [service.get_job_status(job.job_id) for job in jobs if service.get_job_status(job.job_id)]
+    combined = []
+    seen: set[str] = set()
+
+    for job in active_jobs + recent_jobs:
+        if job.job_id in seen:
+            continue
+        status = service.get_job_status(job.job_id)
+        if not status:
+            continue
+        combined.append(status)
+        seen.add(job.job_id)
+
+    return combined
 
 
 @router.get("/earliest")
