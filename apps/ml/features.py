@@ -167,7 +167,7 @@ class FeatureEngineering:
         return df
 
     def _add_atr(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add ATR (Average True Range)"""
+        """Add ATR (Average True Range) with trend detection"""
         if TALIB_AVAILABLE:
             df['atr_14'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
         elif PANDAS_TA_AVAILABLE:
@@ -180,6 +180,12 @@ class FeatureEngineering:
             ranges = pd.concat([high_low, high_close, low_close], axis=1)
             true_range = np.max(ranges, axis=1)
             df['atr_14'] = pd.Series(true_range).rolling(window=14).mean()
+
+        # ATR rising/falling detection
+        df['atr_rising'] = (df['atr_14'] > df['atr_14'].shift(3)).astype(int)
+        df['atr_falling'] = (df['atr_14'] < df['atr_14'].shift(3)).astype(int)
+        df['atr_slope'] = df['atr_14'].diff(3) / df['atr_14'].shift(3)
+
         return df
 
     def _add_bollinger_bands(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -547,16 +553,22 @@ class FeatureEngineering:
         """Add simplified Volume Profile features"""
         # Calculate price levels and volume distribution
         df['volume_surge'] = df['volume'] / df['volume'].rolling(20).mean()
-        
+
         # High volume nodes (simplified)
         df['high_volume_node'] = (df['volume'] > df['volume'].rolling(window).quantile(0.8)).astype(int)
-        
+
+        # Volume percentiles for TP adjustment
+        df['volume_percentile'] = df['volume'].rolling(100).apply(
+            lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 0 else 0.5
+        )
+        df['volume_quantile_90'] = (df['volume_percentile'] >= 0.90).astype(int)
+
         # Volume-weighted price levels
         df['vwap_std'] = (
-            ((df['close'] - df['vwap_rolling'])**2 * df['volume']).rolling(window).sum() / 
+            ((df['close'] - df['vwap_rolling'])**2 * df['volume']).rolling(window).sum() /
             df['volume'].rolling(window).sum()
         ).pow(0.5)
-        
+
         return df
 
     def _add_obi(self, df: pd.DataFrame) -> pd.DataFrame:

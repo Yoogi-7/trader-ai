@@ -41,66 +41,6 @@ class SignalGenerator:
         self.funding_rate_hourly_bps = funding_rate_hourly_bps or settings.FUNDING_RATE_HOURLY_BPS
         self.use_kelly_criterion = use_kelly_criterion
 
-    def _calculate_kelly_leverage(
-        self,
-        entry_price: float,
-        sl_price: float,
-        tp_price: float,
-        probability: float,
-        max_leverage: float
-    ) -> float:
-        """
-        Calculate optimal leverage using Kelly Criterion.
-
-        Kelly formula: f* = (p * b - (1 - p)) / b
-        Where:
-            p = probability of winning
-            b = ratio of TP to SL (reward/risk ratio)
-            f* = optimal fraction of capital to risk
-
-        Args:
-            entry_price: Entry price
-            sl_price: Stop loss price
-            tp_price: Take profit price (main target)
-            probability: Probability of success (0.0-1.0)
-            max_leverage: Maximum allowed leverage
-
-        Returns:
-            Optimal leverage (capped at max_leverage)
-        """
-        # Calculate TP and SL percentages
-        sl_pct = abs(entry_price - sl_price) / entry_price
-        tp_pct = abs(tp_price - entry_price) / entry_price
-
-        if sl_pct == 0:
-            logger.warning("SL distance is zero, returning minimum leverage")
-            return 1.0
-
-        # Calculate b (reward/risk ratio)
-        b = tp_pct / sl_pct
-
-        # Kelly Criterion formula
-        # f_star = (p * b - (1 - p)) / b
-        p = probability
-        f_star = (p * b - (1.0 - p)) / b
-
-        # Convert to leverage
-        # f_star is the fraction of capital to risk, but we need to be conservative
-        # Apply Kelly fraction (typically use half-Kelly or quarter-Kelly)
-        kelly_fraction = 0.25  # Conservative: use quarter-Kelly
-        optimal_fraction = max(0.0, f_star * kelly_fraction)
-
-        # Convert fraction to leverage
-        if sl_pct > 0:
-            kelly_leverage = optimal_fraction / sl_pct
-        else:
-            kelly_leverage = 1.0
-
-        # Ensure minimum of 1x and cap at max_leverage
-        kelly_leverage = max(1.0, min(kelly_leverage, max_leverage))
-
-        return kelly_leverage
-
     def generate_signal(
         self,
         symbol: str,
@@ -114,9 +54,6 @@ class SignalGenerator:
         leverage_cap: Optional[int] = None,
         enforce_risk_filters: bool = True,
         volatility_regime: str = 'normal',
-        volume_high: bool = False,
-        atr_rising: bool = False,
-        atr_falling: bool = False,
     ) -> Optional[Dict]:
         """
         Generate a complete trading signal with TP/SL, sizing, and profit validation.
@@ -136,11 +73,8 @@ class SignalGenerator:
         Returns:
             Signal dict or None if doesn't meet profit threshold
         """
-        # Calculate TP/SL using ATR with adaptive parameters including volume/ATR trends
-        tp_levels, sl_price = self._calculate_tp_sl(
-            entry_price, atr, side, confidence, volatility_regime,
-            volume_high, atr_rising, atr_falling
-        )
+        # Calculate TP/SL using ATR with adaptive parameters
+        tp_levels, sl_price = self._calculate_tp_sl(entry_price, atr, side, confidence, volatility_regime)
 
         # Position sizing based on risk profile with Kelly Criterion
         leverage, position_size_usd, quantity = self._calculate_position_size(
@@ -165,31 +99,13 @@ class SignalGenerator:
             side=side
         )
 
-        # CRITICAL FILTER: Minimum 2% net profit + TP/SL ratio requirement
-        if enforce_risk_filters:
-            # Calculate TP/SL ratio (using weighted average TP)
-            tp_avg = sum(tp * pct / 100 for tp, pct in zip(tp_levels, [30, 40, 30]))
-            tp_distance = abs(tp_avg - entry_price)
-            sl_distance = abs(entry_price - sl_price)
-            tp_sl_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
-
-            # Dynamic TP/SL ratio requirement based on confidence
-            min_tp_sl_ratio = 2.5 if confidence < 0.7 else 2.0
-
-            # Check both net profit and TP/SL ratio
-            if expected_net_profit_pct < settings.MIN_NET_PROFIT_PCT:
-                logger.info(
-                    f"Signal rejected for {symbol}: Expected net profit {expected_net_profit_pct:.2f}% "
-                    f"< minimum {settings.MIN_NET_PROFIT_PCT}%"
-                )
-                return None
-
-            if tp_sl_ratio < min_tp_sl_ratio:
-                logger.info(
-                    f"Signal rejected for {symbol}: TP/SL ratio {tp_sl_ratio:.2f} "
-                    f"< minimum {min_tp_sl_ratio:.2f} (confidence={confidence:.2f})"
-                )
-                return None
+        # CRITICAL FILTER: Minimum 2% net profit
+        if enforce_risk_filters and expected_net_profit_pct < settings.MIN_NET_PROFIT_PCT:
+            logger.info(
+                f"Signal rejected for {symbol}: Expected net profit {expected_net_profit_pct:.2f}% "
+                f"< minimum {settings.MIN_NET_PROFIT_PCT}%"
+            )
+            return None
 
         # Calculate liquidation price
         liquidation_price = self._calculate_liquidation_price(
@@ -246,10 +162,7 @@ class SignalGenerator:
         atr: float,
         side: Side,
         confidence: float = 0.7,
-        volatility_regime: str = 'normal',
-        volume_high: bool = False,
-        atr_rising: bool = False,
-        atr_falling: bool = False
+        volatility_regime: str = 'normal'
     ) -> Tuple[list, float]:
         """
         Calculate adaptive TP levels and SL based on market conditions.
@@ -260,9 +173,6 @@ class SignalGenerator:
             side: LONG or SHORT
             confidence: Model confidence (0.0-1.0)
             volatility_regime: 'low', 'normal', or 'high'
-            volume_high: Whether volume is high relative to average
-            atr_rising: Whether ATR is rising (trending market)
-            atr_falling: Whether ATR is falling (consolidating market)
 
         Returns:
             (tp_levels, sl_price)
@@ -290,16 +200,6 @@ class SignalGenerator:
             # Lower confidence: conservative targets
             tp_mult = [1.5, 2.5, 4.0]  # Quick profits, lower risk
 
-        # Volume-based TP adjustment
-        # High volume + rising ATR = trending market, increase TP targets
-        if volume_high and atr_rising:
-            tp_mult = [min(m * 1.3, 6.0) for m in tp_mult]  # Increase by 30%, cap at 6.0
-            logger.debug(f"Volume-based TP adjustment: high volume + rising ATR -> increased targets")
-        # ATR falling + high confidence = tighter targets for quick profits
-        elif atr_falling and confidence >= 0.7:
-            tp_mult = [max(m * 0.7, 2.0) for m in tp_mult]  # Decrease by 30%, minimum 2.0
-            logger.debug(f"Volume-based TP adjustment: falling ATR + high confidence -> tighter targets")
-
         if side == Side.LONG:
             sl_price = entry_price - (atr * atr_multiplier_sl)
             tp1 = entry_price + (atr * tp_mult[0])
@@ -319,10 +219,7 @@ class SignalGenerator:
         sl_price: float,
         risk_profile: RiskProfile,
         capital_usd: float,
-        leverage_cap: Optional[int] = None,
-        confidence: float = 0.7,
-        tp_levels: Optional[list] = None,
-        use_kelly: bool = True
+        leverage_cap: Optional[int] = None
     ) -> Tuple[float, float, float]:
         """
         Calculate position sizing based on risk per trade.
@@ -349,19 +246,6 @@ class SignalGenerator:
         params = risk_params[risk_profile]
         risk_per_trade = params['risk_per_trade']
         max_leverage = leverage_cap if leverage_cap else params['max_lev']
-
-        # Calculate Kelly Criterion optimal leverage if enabled
-        if use_kelly and tp_levels and len(tp_levels) >= 2:
-            kelly_leverage = self._calculate_kelly_leverage(
-                entry_price=entry_price,
-                sl_price=sl_price,
-                tp_price=tp_levels[1],  # Use TP2 as main target
-                probability=confidence,
-                max_leverage=max_leverage
-            )
-            # Use Kelly as additional constraint
-            max_leverage = min(max_leverage, kelly_leverage)
-            logger.debug(f"Kelly Criterion leverage: {kelly_leverage:.2f}x (capped at {max_leverage:.2f}x)")
 
         # Calculate risk amount
         risk_usd = capital_usd * risk_per_trade
@@ -610,12 +494,6 @@ class SignalEngine:
         volume = float(latest_snapshot['volume'])
         spread_bps = float(latest_snapshot.get('spread_bps', 0.0))
 
-        # Extract volume and ATR trend indicators from features
-        features = latest_snapshot['features']
-        volume_high = bool(features.get('volume_quantile_90', 0))
-        atr_rising = bool(features.get('atr_rising', 0))
-        atr_falling = bool(features.get('atr_falling', 0))
-
         risk_filters = {
             'confidence': confidence >= settings.MIN_CONFIDENCE_THRESHOLD,
             'atr': atr > 0,
@@ -750,9 +628,7 @@ class SignalEngine:
             }[risk_profile]
 
         # Detect volatility regime from features
-        # Create a DataFrame from features for regime detection
-        features_df = pd.DataFrame([latest_snapshot['features']])
-        volatility_regime = self._detect_volatility_regime(features_df)
+        volatility_regime = self._detect_volatility_regime(enriched)
 
         signal = self.signal_generator.generate_signal(
             symbol=symbol,
@@ -764,10 +640,7 @@ class SignalEngine:
             confidence=confidence,
             timestamp=latest_snapshot['timestamp'],
             leverage_cap=leverage_cap,
-            volatility_regime=volatility_regime,
-            volume_high=volume_high,
-            atr_rising=atr_rising,
-            atr_falling=atr_falling
+            volatility_regime=volatility_regime
         )
 
         if not signal:
@@ -1042,76 +915,13 @@ class SignalEngine:
 
         return numeric_columns
 
-    def _calculate_kelly_leverage(
-        self,
-        entry_price: float,
-        sl_price: float,
-        tp_price: float,
-        probability: float,
-        max_leverage: float
-    ) -> float:
-        """
-        Calculate optimal leverage using Kelly Criterion.
-
-        Kelly formula: f* = (p * b - (1 - p)) / b
-        Where:
-            p = probability of winning
-            b = ratio of TP to SL (reward/risk ratio)
-            f* = optimal fraction of capital to risk
-
-        Args:
-            entry_price: Entry price
-            sl_price: Stop loss price
-            tp_price: Take profit price (main target)
-            probability: Probability of success (0.0-1.0)
-            max_leverage: Maximum allowed leverage
-
-        Returns:
-            Optimal leverage (capped at max_leverage)
-        """
-        # Calculate TP and SL percentages
-        sl_pct = abs(entry_price - sl_price) / entry_price
-        tp_pct = abs(tp_price - entry_price) / entry_price
-
-        if sl_pct == 0:
-            logger.warning("SL distance is zero, returning minimum leverage")
-            return 1.0
-
-        # Calculate b (reward/risk ratio)
-        b = tp_pct / sl_pct
-
-        # Kelly Criterion formula
-        # f_star = (p * b - (1 - p)) / b
-        p = probability
-        f_star = (p * b - (1.0 - p)) / b
-
-        # Convert to leverage
-        # f_star is the fraction of capital to risk, but we need to be conservative
-        # Apply Kelly fraction (typically use half-Kelly or quarter-Kelly)
-        kelly_fraction = 0.25  # Conservative: use quarter-Kelly
-        optimal_fraction = max(0.0, f_star * kelly_fraction)
-
-        # Convert fraction to leverage
-        if sl_pct > 0:
-            kelly_leverage = optimal_fraction / sl_pct
-        else:
-            kelly_leverage = 1.0
-
-        # Ensure minimum of 1x and cap at max_leverage
-        kelly_leverage = max(1.0, min(kelly_leverage, max_leverage))
-
-        return kelly_leverage
-
     def _calculate_tp_sl(
         self,
         entry_price: float,
         atr: float,
         side: Side,
         confidence: float = 0.7,
-        volatility_regime: str = 'normal',
-        volume_high: bool = False,
-        atr_rising: bool = False,
-        atr_falling: bool = False
+        volatility_regime: str = 'normal'
     ) -> Tuple[list, float]:
         """
         Calculate adaptive TP levels and SL based on market conditions.
@@ -1122,9 +932,6 @@ class SignalEngine:
             side: LONG or SHORT
             confidence: Model confidence (0.0-1.0)
             volatility_regime: 'low', 'normal', or 'high'
-            volume_high: Whether volume is high relative to average
-            atr_rising: Whether ATR is rising (trending market)
-            atr_falling: Whether ATR is falling (consolidating market)
 
         Returns:
             (tp_levels, sl_price)
@@ -1152,16 +959,6 @@ class SignalEngine:
             # Lower confidence: conservative targets
             tp_mult = [1.5, 2.5, 4.0]  # Quick profits, lower risk
 
-        # Volume-based TP adjustment
-        # High volume + rising ATR = trending market, increase TP targets
-        if volume_high and atr_rising:
-            tp_mult = [min(m * 1.3, 6.0) for m in tp_mult]  # Increase by 30%, cap at 6.0
-            logger.debug(f"Volume-based TP adjustment: high volume + rising ATR -> increased targets")
-        # ATR falling + high confidence = tighter targets for quick profits
-        elif atr_falling and confidence >= 0.7:
-            tp_mult = [max(m * 0.7, 2.0) for m in tp_mult]  # Decrease by 30%, minimum 2.0
-            logger.debug(f"Volume-based TP adjustment: falling ATR + high confidence -> tighter targets")
-
         if side == Side.LONG:
             sl_price = entry_price - (atr * atr_multiplier_sl)
             tp1 = entry_price + (atr * tp_mult[0])
@@ -1181,10 +978,7 @@ class SignalEngine:
         sl_price: float,
         risk_profile: RiskProfile,
         capital_usd: float,
-        leverage_cap: Optional[int] = None,
-        confidence: float = 0.7,
-        tp_levels: Optional[list] = None,
-        use_kelly: bool = True
+        leverage_cap: Optional[int] = None
     ) -> Tuple[float, float, float]:
         """
         Calculate position sizing based on risk per trade.
@@ -1211,19 +1005,6 @@ class SignalEngine:
         params = risk_params[risk_profile]
         risk_per_trade = params['risk_per_trade']
         max_leverage = leverage_cap if leverage_cap else params['max_lev']
-
-        # Calculate Kelly Criterion optimal leverage if enabled
-        if use_kelly and tp_levels and len(tp_levels) >= 2:
-            kelly_leverage = self._calculate_kelly_leverage(
-                entry_price=entry_price,
-                sl_price=sl_price,
-                tp_price=tp_levels[1],  # Use TP2 as main target
-                probability=confidence,
-                max_leverage=max_leverage
-            )
-            # Use Kelly as additional constraint
-            max_leverage = min(max_leverage, kelly_leverage)
-            logger.debug(f"Kelly Criterion leverage: {kelly_leverage:.2f}x (capped at {max_leverage:.2f}x)")
 
         # Calculate risk amount
         risk_usd = capital_usd * risk_per_trade
@@ -1282,17 +1063,17 @@ class SignalEngine:
         gross_profit_usd = position_size_usd * gross_profit_pct
 
         # Entry cost (assume maker order = lower fee)
-        entry_fee_usd = position_size_usd * (self.signal_generator.maker_fee_bps / 10000)
-        entry_slippage_usd = position_size_usd * (self.signal_generator.slippage_bps / 10000) * 0.5  # Reduced for maker
+        entry_fee_usd = position_size_usd * (self.maker_fee_bps / 10000)
+        entry_slippage_usd = position_size_usd * (self.slippage_bps / 10000) * 0.5  # Reduced for maker
 
         # Exit costs (assume 3 exits: TP1, TP2, TP3 - taker orders)
         exit_size_total = position_size_usd
-        exit_fee_usd = exit_size_total * (self.signal_generator.taker_fee_bps / 10000)
-        exit_slippage_usd = exit_size_total * (self.signal_generator.slippage_bps / 10000)
+        exit_fee_usd = exit_size_total * (self.taker_fee_bps / 10000)
+        exit_slippage_usd = exit_size_total * (self.slippage_bps / 10000)
 
         # Funding cost (assume average hold time = 12 hours)
         avg_hold_hours = 12
-        funding_cost_usd = position_size_usd * (self.signal_generator.funding_rate_hourly_bps / 10000) * avg_hold_hours
+        funding_cost_usd = position_size_usd * (self.funding_rate_hourly_bps / 10000) * avg_hold_hours
 
         # Total costs
         total_costs_usd = entry_fee_usd + entry_slippage_usd + exit_fee_usd + exit_slippage_usd + funding_cost_usd

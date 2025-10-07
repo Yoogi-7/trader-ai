@@ -1,21 +1,21 @@
-# Kompleksowy Opis Systemu Generowania Sygnałów Tradingowych
+# Comprehensive Description of the Trading Signal Generation System
 
-## 📋 Spis Treści
+## 📋 Table of Contents
 
-1. [Architektura Systemu](#architektura-systemu)
-2. [Proces Generowania Sygnału](#proces-generowania-sygnału)
-3. [Obliczanie Poziomów Wejścia](#obliczanie-poziomów-wejścia)
+1. [System Architecture](#system-architecture)
+2. [Signal Generation Process](#signal-generation-process)
+3. [Entry Level Calculation](#entry-level-calculation)
 4. [Stop Loss (SL)](#stop-loss-sl)
 5. [Take Profit (TP)](#take-profit-tp)
-6. [Dźwignia (Leverage)](#dźwignia-leverage)
+6. [Leverage](#leverage)
 7. [Position Sizing](#position-sizing)
-8. [Filtry Ryzyka](#filtry-ryzyka)
-9. [Koszty i Opłaty](#koszty-i-opłaty)
-10. [Przykład Pełnego Sygnału](#przykład-pełnego-sygnału)
+8. [Risk Filters](#risk-filters)
+9. [Costs and Fees](#costs-and-fees)
+10. [Complete Signal Example](#complete-signal-example)
 
 ---
 
-## 1. Architektura Systemu
+## 1. System Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -78,23 +78,23 @@
 
 ---
 
-## 2. Proces Generowania Sygnału
+## 2. Signal Generation Process
 
-### Krok 1: Pobranie Danych
+### Step 1: Data Retrieval
 
 ```python
-# Pobierz ostatnie 250 świec (15m = ~62 godziny historii)
+# Fetch the last 250 candles (15m = ~62 hours of history)
 candles = fetch_latest_ohlcv(symbol='BTC/USDT', timeframe='15m', limit=250)
 ```
 
-**Dane zawierają:**
-- `timestamp` - Czas otwarcia świecy
+**Data contains:**
+- `timestamp` - Candle opening time
 - `open`, `high`, `low`, `close` - OHLC prices
-- `volume` - Wolumen w base currency
+- `volume` - Volume in base currency
 
-### Krok 2: Feature Engineering
+### Step 2: Feature Engineering
 
-System oblicza **50+ wskaźników technicznych**:
+The system calculates **50+ technical indicators**:
 
 #### Trend Indicators
 ```python
@@ -187,6 +187,15 @@ ema_20_accel = ema_20_slope[t] - ema_20_slope[t-3]  # 2nd derivative
 # Consolidation Detection
 is_consolidation = (bb_width < quantile(bb_width, 0.30))
 consolidation_duration = consecutive_bars_in_consolidation
+
+# 🆕 ATR Rising/Falling Detection
+atr_rising = (atr_14 > atr_14.shift(3))  # ATR increasing = volatility expanding
+atr_falling = (atr_14 < atr_14.shift(3))  # ATR decreasing = volatility contracting
+atr_slope = atr_14.diff(3) / atr_14.shift(3)
+
+# 🆕 Volume Quantiles for TP Adjustment
+volume_percentile = volume.rolling(100).rank(pct=True)
+volume_quantile_90 = (volume_percentile >= 0.90)  # Top 10% volume
 ```
 
 #### Market Regime
@@ -209,13 +218,13 @@ else:
     regime_volatility = 1  # Normal volatility
 ```
 
-### Krok 3: Predykcja Modelu ML
+### Step 3: ML Model Prediction
 
 ```python
 # Model Ensemble: LightGBM + Conformal Prediction
 probability = model.predict_proba(features)[:, 1]  # Probability of class 1 (UP)
 
-# Określenie kierunku i confidence
+# Determine direction and confidence
 if probability >= 0.5:
     side = LONG
     confidence = probability  # 0.5-1.0
@@ -223,14 +232,14 @@ else:
     side = SHORT
     confidence = 1.0 - probability  # 0.5-1.0
 
-# Przykład:
+# Example:
 # probability = 0.73 → LONG, confidence = 0.73
 # probability = 0.28 → SHORT, confidence = 0.72
 ```
 
-### Krok 4: Filtry Ryzyka
+### Step 4: Risk Filters
 
-System sprawdza **7 warunków** przed wygenerowaniem sygnału:
+The system checks **7 conditions** before generating a signal:
 
 ```python
 risk_filters = {
@@ -243,27 +252,27 @@ risk_filters = {
     'position_limit': open_positions < max,    # ✓ Not overexposed
 }
 
-# WSZYSTKIE muszą być True, inaczej sygnał jest odrzucany
+# ALL must be True, otherwise the signal is rejected
 if not all(risk_filters.values()):
     return None  # Reject signal
 ```
 
 ---
 
-## 3. Obliczanie Poziomów Wejścia
+## 3. Entry Level Calculation
 
 ### Entry Price
 
 ```python
-# Sygnał generowany na zamknięciu bieżącej świecy
+# Signal generated at the close of the current candle
 entry_price = current_candle['close']
 
-# W środowisku produkcyjnym:
-# - Używany jest BID (dla LONG) lub ASK (dla SHORT)
-# - Uwzględniane jest slippage (±0.03%)
+# In production environment:
+# - BID is used (for LONG) or ASK (for SHORT)
+# - Slippage is accounted for (±0.03%)
 ```
 
-**Przykład:**
+**Example:**
 ```
 BTC/USDT close price: $62,450.00
 Slippage estimate: ±0.03% = $18.74
@@ -276,34 +285,34 @@ SHORT entry: $62,431.26 (close - slippage)
 
 ## 4. Stop Loss (SL)
 
-### Adaptive SL - Bazuje na Volatility Regime
+### Adaptive SL - Based on Volatility Regime
 
 ```python
 def calculate_sl(entry_price, atr, side, volatility_regime):
     """
-    Oblicza Stop Loss w zależności od reżimu volatility
+    Calculates Stop Loss based on volatility regime
     """
-    # Bazowy mnożnik ATR
+    # Base ATR multiplier
     if volatility_regime == 'high':
-        sl_mult = 1.5  # Szerszy SL w wysokiej volatility
+        sl_mult = 1.5  # Wider SL in high volatility
     elif volatility_regime == 'low':
-        sl_mult = 0.8  # Ciasniejszy SL w niskiej volatility
+        sl_mult = 0.8  # Tighter SL in low volatility
     else:
-        sl_mult = 1.0  # Normalny SL
-    
+        sl_mult = 1.0  # Normal SL
+
     sl_distance = atr × sl_mult
-    
+
     if side == LONG:
         sl_price = entry_price - sl_distance
     else:  # SHORT
         sl_price = entry_price + sl_distance
-    
+
     return sl_price
 ```
 
-### Przykłady Obliczania SL
+### SL Calculation Examples
 
-**Scenariusz 1: LONG w Normal Volatility**
+**Scenario 1: LONG in Normal Volatility**
 ```python
 entry_price = $62,450.00
 atr = $850.00
@@ -316,7 +325,7 @@ sl_price = $62,450.00 - $850.00 = $61,600.00
 Risk per trade = ($62,450 - $61,600) / $62,450 = 1.36%
 ```
 
-**Scenariusz 2: SHORT w High Volatility**
+**Scenario 2: SHORT in High Volatility**
 ```python
 entry_price = $62,450.00
 atr = $1,200.00
@@ -329,7 +338,7 @@ sl_price = $62,450.00 + $1,800.00 = $64,250.00
 Risk per trade = ($64,250 - $62,450) / $62,450 = 2.88%
 ```
 
-**Scenariusz 3: LONG w Low Volatility**
+**Scenario 3: LONG in Low Volatility**
 ```python
 entry_price = $62,450.00
 atr = $400.00
@@ -347,10 +356,10 @@ Risk per trade = ($62,450 - $62,130) / $62,450 = 0.51%
 ```python
 def detect_volatility_regime(atr_current, atr_history):
     """
-    Określa reżim volatility na podstawie percentyla ATR
+    Determines volatility regime based on ATR percentile
     """
     atr_percentile = percentile_rank(atr_current, atr_history[-100:])
-    
+
     if atr_percentile < 0.30:
         return 'low'      # ATR in bottom 30%
     elif atr_percentile > 0.70:
@@ -363,36 +372,45 @@ def detect_volatility_regime(atr_current, atr_history):
 
 ## 5. Take Profit (TP)
 
-### Adaptive TP - 3 Poziomy z Częściowym Zamknięciem
+### Adaptive TP - 3 Levels with Partial Close
 
-System używa **trzech poziomów TP** z różnymi alokacjami pozycji:
-- **TP1**: 30% pozycji (konserwatywny)
-- **TP2**: 40% pozycji (główny cel)
-- **TP3**: 30% pozycji (agresywny)
+The system uses **three TP levels** with different position allocations:
+- **TP1**: 30% of position (conservative)
+- **TP2**: 40% of position (main target)
+- **TP3**: 30% of position (aggressive)
 
-### Obliczanie TP na Podstawie Confidence
+### TP Calculation Based on Confidence + Volume/ATR Trends
 
 ```python
-def calculate_tp(entry_price, atr, side, confidence, volatility_regime):
+def calculate_tp(entry_price, atr, side, confidence, volatility_regime,
+                 volume_high, atr_rising, atr_falling):
     """
-    Oblicza 3 poziomy TP w zależności od confidence i volatility
+    Calculates 3 TP levels based on confidence, volatility, volume and ATR trends
     """
-    # Wybór mnożników ATR na podstawie confidence
+    # Select ATR multipliers based on confidence
     if confidence >= 0.70:
         # High confidence: aggressive targets
         if volatility_regime == 'high':
-            tp_mult = [3.0, 5.0, 8.0]  # Bardzo agresywne w trendach
+            tp_mult = [3.0, 5.0, 8.0]  # Very aggressive in trends
         else:
-            tp_mult = [2.5, 4.5, 7.0]  # Agresywne
-    
+            tp_mult = [2.5, 4.5, 7.0]  # Aggressive
+
     elif confidence >= 0.65:
         # Medium confidence: balanced targets
-        tp_mult = [2.0, 3.5, 6.0]  # Zbalansowane
-    
+        tp_mult = [2.0, 3.5, 6.0]  # Balanced
+
     else:
         # Lower confidence: conservative targets
-        tp_mult = [1.5, 2.5, 4.0]  # Konserwatywne
-    
+        tp_mult = [1.5, 2.5, 4.0]  # Conservative
+
+    # 🆕 Volume-based TP adjustment
+    # High volume + rising ATR = trending market, increase TP targets
+    if volume_high and atr_rising:
+        tp_mult = [min(m * 1.3, 6.0) for m in tp_mult]  # +30%, cap at 6.0
+    # ATR falling + high confidence = tighter targets for quick profits
+    elif atr_falling and confidence >= 0.7:
+        tp_mult = [max(m * 0.7, 2.0) for m in tp_mult]  # -30%, min 2.0
+
     if side == LONG:
         tp1 = entry_price + (atr × tp_mult[0])
         tp2 = entry_price + (atr × tp_mult[1])
@@ -401,20 +419,20 @@ def calculate_tp(entry_price, atr, side, confidence, volatility_regime):
         tp1 = entry_price - (atr × tp_mult[0])
         tp2 = entry_price - (atr × tp_mult[1])
         tp3 = entry_price - (atr × tp_mult[2])
-    
+
     return [tp1, tp2, tp3]
 ```
 
-### Przykłady Obliczania TP
+### TP Calculation Examples
 
-**Scenariusz 1: LONG, Confidence 0.73, Normal Volatility**
+**Scenario 1: LONG, Confidence 0.73, Normal Volatility**
 ```python
 entry_price = $62,450.00
 atr = $850.00
 confidence = 0.73  # High
 volatility = 'normal'
 
-# Mnożniki: [2.5, 4.5, 7.0]
+# Multipliers: [2.5, 4.5, 7.0]
 tp1 = $62,450 + ($850 × 2.5) = $64,575.00  (30% position)
 tp2 = $62,450 + ($850 × 4.5) = $66,275.00  (40% position)
 tp3 = $62,450 + ($850 × 7.0) = $68,400.00  (30% position)
@@ -427,14 +445,14 @@ TP3: +9.53% (close 30%)
 Weighted avg: 0.30×3.40% + 0.40×6.13% + 0.30×9.53% = 6.30%
 ```
 
-**Scenariusz 2: SHORT, Confidence 0.67, High Volatility**
+**Scenario 2: SHORT, Confidence 0.67, High Volatility**
 ```python
 entry_price = $62,450.00
 atr = $1,200.00
 confidence = 0.67  # Medium
 volatility = 'high'
 
-# Mnożniki: [2.0, 3.5, 6.0] (nie 3.0/5.0/8.0 bo confidence < 0.70)
+# Multipliers: [2.0, 3.5, 6.0] (not 3.0/5.0/8.0 because confidence < 0.70)
 tp1 = $62,450 - ($1,200 × 2.0) = $60,050.00  (30%)
 tp2 = $62,450 - ($1,200 × 3.5) = $58,250.00  (40%)
 tp3 = $62,450 - ($1,200 × 6.0) = $55,250.00  (30%)
@@ -447,14 +465,14 @@ TP3: +11.53%
 Weighted avg: 7.04%
 ```
 
-**Scenariusz 3: LONG, Confidence 0.65, Low Volatility**
+**Scenario 3: LONG, Confidence 0.65, Low Volatility**
 ```python
 entry_price = $62,450.00
 atr = $400.00
 confidence = 0.65  # Exactly at threshold
 volatility = 'low'
 
-# Mnożniki: [2.0, 3.5, 6.0]
+# Multipliers: [2.0, 3.5, 6.0]
 tp1 = $62,450 + ($400 × 2.0) = $63,250.00  (30%)
 tp2 = $62,450 + ($400 × 3.5) = $63,850.00  (40%)
 tp3 = $62,450 + ($400 × 6.0) = $64,850.00  (30%)
@@ -472,21 +490,21 @@ Weighted avg: 2.30%
 ```python
 def calculate_rr_ratio(entry, sl, tp_levels, tp_allocations):
     """
-    Oblicza stosunek Risk/Reward
+    Calculates Risk/Reward ratio
     """
     sl_distance = abs(entry - sl)
-    
+
     # Weighted average TP
     weighted_tp = sum(
-        abs(tp - entry) × allocation 
+        abs(tp - entry) × allocation
         for tp, allocation in zip(tp_levels, tp_allocations)
     )
-    
+
     rr_ratio = weighted_tp / sl_distance
     return rr_ratio
 ```
 
-**Przykład:**
+**Example:**
 ```python
 entry = $62,450
 sl = $61,600  # Distance: $850
@@ -494,7 +512,7 @@ tp1 = $64,575  # Distance: $2,125, Weight: 0.30
 tp2 = $66,275  # Distance: $3,825, Weight: 0.40
 tp3 = $68,400  # Distance: $5,950, Weight: 0.30
 
-weighted_tp_distance = 
+weighted_tp_distance =
     $2,125 × 0.30 + $3,825 × 0.40 + $5,950 × 0.30
     = $637.50 + $1,530.00 + $1,785.00
     = $3,952.50
@@ -506,15 +524,38 @@ rr_ratio = $3,952.50 / $850 = 4.65
 
 ---
 
-## 6. Dźwignia (Leverage)
+## 6. Leverage
 
-### Auto-Leverage System
+### Auto-Leverage System with Kelly Criterion
 
-Dźwignia jest **automatycznie kalkulowana** na podstawie:
-1. **Confidence** modelu
-2. **Volatility** rynku
-3. **Risk Profile** użytkownika
-4. **Maksymalny cap** dla profilu
+Leverage is **automatically calculated** based on:
+1. **Confidence** of the model (probability of success)
+2. Market **Volatility**
+3. User **Risk Profile**
+4. **Kelly Criterion** - optimal capital fraction
+5. **Maximum cap** for the profile
+
+### Kelly Criterion Implementation
+
+The system uses **Kelly Criterion** to calculate optimal leverage:
+
+```python
+# Kelly formula: f* = (p * b - (1 - p)) / b
+# Where:
+#   p = probability of winning (confidence from ML model)
+#   b = ratio of TP to SL (reward/risk ratio)
+
+b = (tp_price - entry_price) / (entry_price - sl_price)
+f_star = (p * b - (1 - p)) / b
+
+# Use conservative quarter-Kelly (25% of optimal)
+kelly_fraction = 0.25
+optimal_fraction = f_star * kelly_fraction
+
+# Convert to leverage
+kelly_leverage = optimal_fraction / sl_distance_pct
+final_leverage = min(risk_profile_max, kelly_leverage)
+```
 
 ```python
 def calculate_leverage(
@@ -526,9 +567,9 @@ def calculate_leverage(
     capital_usd
 ):
     """
-    Oblicza optymalną dźwignię
+    Calculates optimal leverage
     """
-    # 1. Base leverage z confidence
+    # 1. Base leverage from confidence
     if confidence < 0.55:
         base_leverage = 3
     elif confidence < 0.60:
@@ -537,7 +578,7 @@ def calculate_leverage(
         base_leverage = 8
     else:
         base_leverage = 12
-    
+
     # 2. Volatility adjustment
     if atr_pct > 3.0:
         volatility_factor = 0.6  # High vol = reduce leverage
@@ -545,16 +586,16 @@ def calculate_leverage(
         volatility_factor = 0.8  # Medium vol
     else:
         volatility_factor = 1.0  # Low vol = full leverage
-    
+
     adjusted_leverage = base_leverage × volatility_factor
-    
+
     # 3. Risk profile caps
     max_leverage = {
         RiskProfile.LOW: 8,
         RiskProfile.MEDIUM: 20,
         RiskProfile.HIGH: 30
     }[risk_profile]
-    
+
     # 4. Position-based calculation
     sl_distance_pct = abs(entry_price - sl_price) / entry_price
     risk_per_trade = {
@@ -562,23 +603,23 @@ def calculate_leverage(
         RiskProfile.MEDIUM: 0.05,  # 5%
         RiskProfile.HIGH: 0.10     # 10%
     }[risk_profile]
-    
+
     position_size_usd = (capital_usd × risk_per_trade) / sl_distance_pct
     required_leverage = position_size_usd / capital_usd
-    
+
     # 5. Final leverage
     final_leverage = min(
         adjusted_leverage,
         required_leverage,
         max_leverage
     )
-    
+
     return max(1, round(final_leverage, 1))
 ```
 
-### Przykłady Kalkulacji Leverage
+### Leverage Calculation Examples
 
-**Scenariusz 1: High Confidence, Low Volatility, MEDIUM Risk**
+**Scenario 1: High Confidence, Low Volatility, MEDIUM Risk**
 ```python
 confidence = 0.75
 atr_pct = 1.5%
@@ -611,7 +652,7 @@ final_leverage = min(12, 3.68, 20) = 3.7x
 # Quantity = $3,700 / $62,450 = 0.0592 BTC
 ```
 
-**Scenariusz 2: Medium Confidence, High Volatility, HIGH Risk**
+**Scenario 2: Medium Confidence, High Volatility, HIGH Risk**
 ```python
 confidence = 0.67
 atr_pct = 3.5%
@@ -642,7 +683,7 @@ final_leverage = min(4.8, 3.47, 30) = 3.5x
 # Lower leverage due to high volatility protection
 ```
 
-**Scenariusz 3: Low Confidence, Normal Volatility, LOW Risk**
+**Scenario 3: Low Confidence, Normal Volatility, LOW Risk**
 ```python
 confidence = 0.58
 atr_pct = 2.2%
@@ -677,7 +718,7 @@ final_leverage = min(4.0, 1.92, 8) = 1.9x
 
 ## 7. Position Sizing
 
-### Obliczanie Wielkości Pozycji
+### Position Size Calculation
 
 ```python
 def calculate_position_size(
@@ -688,7 +729,7 @@ def calculate_position_size(
     leverage
 ):
     """
-    Oblicza wielkość pozycji w USD i jednostkach
+    Calculates position size in USD and units
     """
     # 1. Risk per trade based on profile
     risk_pct = {
@@ -696,22 +737,22 @@ def calculate_position_size(
         RiskProfile.MEDIUM: 0.05,  # 5% capital
         RiskProfile.HIGH: 0.10     # 10% capital
     }[risk_profile]
-    
+
     risk_usd = capital_usd × risk_pct
-    
+
     # 2. SL distance
     sl_distance_pct = abs(entry_price - sl_price) / entry_price
-    
+
     # 3. Position size to risk exactly risk_usd if SL hit
     position_size_usd = risk_usd / sl_distance_pct
-    
+
     # 4. Apply leverage cap
     max_position = capital_usd × leverage
     position_size_usd = min(position_size_usd, max_position)
-    
+
     # 5. Quantity in base currency
     quantity = position_size_usd / entry_price
-    
+
     return {
         'leverage': leverage,
         'position_size_usd': position_size_usd,
@@ -720,17 +761,17 @@ def calculate_position_size(
     }
 ```
 
-### Przykład Kompletny
+### Complete Example
 
 ```python
-# Parametry
+# Parameters
 capital = $10,000
 entry = $62,450
 sl = $61,600  # -$850 = 1.36%
 risk_profile = MEDIUM  # 5% risk
 leverage = 4.5x
 
-# Kalkulacja
+# Calculation
 risk_pct = 0.05
 risk_usd = $10,000 × 0.05 = $500
 
@@ -743,28 +784,28 @@ position_size_usd = min($36,765, $45,000) = $36,765
 
 quantity = $36,765 / $62,450 = 0.5888 BTC
 
-# Weryfikacja
+# Verification
 actual_risk = $36,765 × 0.0136 = $500 ✓
 
-# Jeśli SL zostanie trafiony:
+# If SL is hit:
 loss_in_btc = 0.5888 × $850 = $500.48
 loss_as_pct_of_capital = $500 / $10,000 = 5.0% ✓
 ```
 
 ---
 
-## 8. Filtry Ryzyka
+## 8. Risk Filters
 
-System sprawdza **7 warunków** zanim wygeneruje sygnał:
+The system checks **7 conditions** before generating a signal:
 
 ### 1. Confidence Filter
 
 ```python
 confidence >= 0.65  # Minimum 65% confidence
 
-# Reasoning: 
-# Modele poniżej 65% są zbyt niepewne
-# Historycznie accuracy < 60% przy confidence < 0.65
+# Reasoning:
+# Models below 65% are too uncertain
+# Historically accuracy < 60% when confidence < 0.65
 ```
 
 ### 2. ATR Filter
@@ -773,8 +814,8 @@ confidence >= 0.65  # Minimum 65% confidence
 atr > 0  # Valid ATR required
 
 # Reasoning:
-# ATR = 0 oznacza brak volatility = niemożliwe do trade
-# Potrzebny do kalkulacji TP/SL
+# ATR = 0 means no volatility = impossible to trade
+# Needed for TP/SL calculation
 ```
 
 ### 3. Liquidity Filter
@@ -786,8 +827,8 @@ volume >= min_volume  # Sufficient market depth
 min_volume = median(volume[-20:]) × 0.3
 
 # Reasoning:
-# Niska likwidność = high slippage
-# Potrzeba minimum 30% średniego wolumenu
+# Low liquidity = high slippage
+# Need minimum 30% of average volume
 ```
 
 ### 4. Spread Filter
@@ -799,8 +840,8 @@ spread_bps <= 15.0  # Max 0.15% spread
 spread_bps = ((ask - bid) / mid_price) × 10000
 
 # Reasoning:
-# Szeroki spread zwiększa koszty wejścia/wyjścia
-# 15 bps = 0.15% jest akceptowalne dla 15m timeframe
+# Wide spread increases entry/exit costs
+# 15 bps = 0.15% is acceptable for 15m timeframe
 ```
 
 ### 5. Correlation Filter
@@ -815,23 +856,30 @@ for open_position in portfolio:
         return False  # Reject - too correlated
 
 # Reasoning:
-# Unikaj podwójnej ekspozycji na ten sam ruch
-# Np. BTC/USDT LONG + ETH/USDT LONG (correlation ~0.85)
+# Avoid double exposure to the same movement
+# E.g. BTC/USDT LONG + ETH/USDT LONG (correlation ~0.85)
 ```
 
-### 6. Profit Filter
+### 6. Enhanced Profit Filter (Net EV + TP/SL Ratio)
 
 ```python
-expected_net_profit_pct >= 2.0  # Minimum 2% net profit
+# 🆕 Modified profitability filter
+Net_EV = p * (tp - exit_fee - funding) - (1 - p) * (sl + entry_fee + slippage)
 
-# Calculation (detailed in section 9)
-gross_profit = weighted_avg_tp_distance
-costs = fees + slippage + funding
-net_profit = (gross_profit - costs) / entry_price
+# Calculate TP/SL ratio
+tp_sl_ratio = (weighted_avg_tp - entry) / (entry - sl)
+min_ratio = 2.5 if confidence < 0.7 else 2.0
+
+# Both conditions must be met
+if Net_EV > 0.02 and tp_sl_ratio >= min_ratio:
+    accept_signal()
+else:
+    reject_signal()
 
 # Reasoning:
-# Po kosztach (~0.25%), potrzebny min 2% dla opłacalności
-# Risk/Reward ratio musi być > 2.5:1
+# 1. Net EV ensures profitability after all costs
+# 2. TP/SL ratio ensures adequate reward/risk
+# 3. Lower confidence requires higher TP/SL ratio (2.5:1 vs 2.0:1)
 ```
 
 ### 7. Position Limit Filter
@@ -846,15 +894,15 @@ max_positions = {
 }
 
 # Reasoning:
-# Unikaj over-exposure
-# Zachowaj kapitał na nowe okazje
+# Avoid over-exposure
+# Keep capital for new opportunities
 ```
 
 ---
 
-## 9. Koszty i Opłaty
+## 9. Costs and Fees
 
-System uwzględnia **4 typy kosztów**:
+The system accounts for **4 types of costs**:
 
 ### 1. Trading Fees
 
@@ -876,7 +924,7 @@ exit_fee_tp3 = tp3_size × (taker_fee_bps / 10000) × 0.30
 total_fees = entry_fee + exit_fee_tp1 + exit_fee_tp2 + exit_fee_tp3
 ```
 
-**Przykład:**
+**Example:**
 ```python
 position_size = $10,000
 entry_fee = $10,000 × 0.0005 = $5.00
@@ -906,7 +954,7 @@ entry_slippage = position_size_usd × (slippage_bps / 10000)
 total_slippage = entry_slippage + exit_slippage
 ```
 
-**Przykład:**
+**Example:**
 ```python
 position = $10,000
 
@@ -922,13 +970,13 @@ slippage_pct = 0.06%
 ```python
 funding_rate_hourly_bps = 1.0  # 0.01% per hour (average)
 
-# Assumując średni hold time 12 godzin
+# Assuming average hold time 12 hours
 funding_periods = 12
 
 funding_cost = position_size_usd × (funding_rate_hourly_bps / 10000) × funding_periods
 ```
 
-**Przykład:**
+**Example:**
 ```python
 position = $10,000
 hold_time = 12 hours
@@ -945,7 +993,7 @@ total_costs_usd = fees + slippage + funding
 total_costs_pct = total_costs_usd / position_size_usd
 ```
 
-**Przykład Kompletny:**
+**Complete Example:**
 ```python
 position_size = $10,000
 
@@ -967,21 +1015,21 @@ def calculate_expected_net_profit(
     costs_pct
 ):
     """
-    Oblicza oczekiwany zysk netto po wszystkich kosztach
+    Calculates expected net profit after all costs
     """
     # Gross profit (weighted average)
     gross_profit_pct = sum(
         abs(tp - entry_price) / entry_price × allocation
         for tp, allocation in zip(tp_levels, tp_allocations)
     )
-    
+
     # Net profit
     net_profit_pct = gross_profit_pct - costs_pct
-    
+
     return net_profit_pct
 ```
 
-**Przykład:**
+**Example:**
 ```python
 entry = $62,450
 tp1 = $64,575  (+3.40%, 30%)
@@ -1002,7 +1050,7 @@ net_profit = 6.33% - 0.28% = 6.05%
 
 ---
 
-## 10. Przykład Pełnego Sygnału
+## 10. Complete Signal Example
 
 ### Input Data
 
@@ -1136,12 +1184,12 @@ net_profit = 6.33% - 0.28% = 6.05%
   "timeframe": "15m",
   "side": "LONG",
   "confidence": 0.73,
-  
+
   "entry": {
     "price": 62450.00,
     "timestamp": "2025-10-07T16:30:45Z"
   },
-  
+
   "take_profit": [
     {
       "level": "TP1",
@@ -1165,13 +1213,13 @@ net_profit = 6.33% - 0.28% = 6.05%
       "description": "Aggressive target"
     }
   ],
-  
+
   "stop_loss": {
     "price": 61600.00,
     "distance_pct": 1.36,
     "reason": "ATR-based (1.0x)"
   },
-  
+
   "position": {
     "leverage": 3.7,
     "size_usd": 37000.00,
@@ -1179,21 +1227,21 @@ net_profit = 6.33% - 0.28% = 6.05%
     "risk_usd": 503.20,
     "risk_pct": 5.03
   },
-  
+
   "metrics": {
     "risk_reward_ratio": 4.65,
     "expected_gross_profit_pct": 6.33,
     "expected_net_profit_pct": 6.05,
     "total_costs_pct": 0.28
   },
-  
+
   "costs": {
     "trading_fees": 37.00,
     "slippage": 22.20,
     "funding": 44.40,
     "total": 103.60
   },
-  
+
   "risk_filters": {
     "confidence": true,
     "atr": true,
@@ -1203,14 +1251,14 @@ net_profit = 6.33% - 0.28% = 6.05%
     "profit": true,
     "position_limit": true
   },
-  
+
   "model_info": {
     "model_id": "BTC_USDT_15m_20251005_161731",
     "version": "v10",
     "accuracy": 0.56,
     "roc_auc": 0.56
   },
-  
+
   "market_conditions": {
     "atr": 850.00,
     "volatility_regime": "normal",
@@ -1222,47 +1270,64 @@ net_profit = 6.33% - 0.28% = 6.05%
 
 ---
 
-## 🎯 Podsumowanie Kluczowych Mechanizmów
+## 🎯 Summary of Key Mechanisms
 
-### 1. Adaptive TP/SL
-- **Dostosowuje się** do confidence i volatility
-- **Wyższe confidence** = większe TP (2.5-7.0x ATR)
-- **Wyższa volatility** = szerszy SL (1.5x ATR)
+### 1. Adaptive TP/SL with Volume/ATR Adjustments 🆕
+- **Adapts** to confidence, volatility, volume and ATR trends
+- **Higher confidence** = larger TP (2.5-7.0x ATR)
+- **Higher volatility** = wider SL (1.5x ATR)
+- **🆕 High volume + rising ATR** = +30% TP (trending market)
+- **🆕 Falling ATR + high confidence** = -30% TP (quick profits)
 
-### 2. Auto-Leverage
-- **Bazuje na** confidence, volatility, risk profile
-- **Chroni przed** over-leverage w trudnych warunkach
-- **Maksymalizuje** returns przy high confidence
+### 2. Auto-Leverage with Kelly Criterion 🆕
+- **Kelly Criterion**: optimal capital fraction based on probability and reward/risk ratio
+- **Quarter-Kelly (25%)**: conservative approach for safety
+- **Based on** confidence, volatility, risk profile and Kelly calculation
+- **Protects against** over-leverage in difficult conditions
+- **Maximizes** long-term growth with high confidence
 
 ### 3. Position Sizing
 - **Fixed risk %** (2%, 5%, 10%) per trade
-- **Kalkuluje** exact size dla desired risk
-- **Uwzględnia** leverage caps
+- **Calculates** exact size for desired risk
+- **Incorporates** Kelly leverage as additional constraint
+- **Accounts for** leverage caps
 
 ### 4. Multi-Level TP
-- **3 poziomy**: conserv ative (30%), main (40%), aggressive (30%)
+- **3 levels**: conservative (30%), main (40%), aggressive (30%)
 - **Secure profits** early, let winners run
 - **Weighted average** ~6% gross profit
+- **🆕 Dynamically adjusted** based on market conditions
 
-### 5. Comprehensive Cost Model
-- **4 typy kosztów**: fees, slippage, funding, impact
-- **Realistic filtering**: tylko sygnały >2% net profit
-- **Transparentne** kalkulacje dla użytkownika
+### 5. Enhanced Profit Filter 🆕
+- **Net EV calculation**: p * (tp - costs) - (1-p) * (sl + costs)
+- **🆕 TP/SL ratio check**: min 2.5:1 (low confidence) or 2.0:1 (high confidence)
+- **Both conditions** must be met to accept signal
+- **Realistic filtering**: only signals >2% net profit AND adequate reward/risk
 
-### 6. Risk Management
-- **7 filtrów**: confidence, ATR, liquidity, spread, correlation, profit, limits
-- **Wszystkie muszą pass** przed wygenerowaniem sygnału
-- **Zero compromise** na jakości
+### 6. Comprehensive Cost Model
+- **4 types of costs**: fees, slippage, funding, impact
+- **Realistic filtering**: only signals >2% net profit
+- **Transparent** calculations for the user
+
+### 7. Risk Management
+- **7 filters**: confidence, ATR, liquidity, spread, correlation, profit, limits
+- **All must pass** before generating a signal
+- **Zero compromise** on quality
+
+### 8. Advanced Features 🆕
+- **ATR trend detection**: rising/falling volatility identification
+- **Volume quantiles**: top 10% volume detection for trending markets
+- **Dynamic adjustments**: TP targets adapt to real-time market conditions
 
 ---
 
-## 📚 Dalsze Informacje
+## 📚 Further Information
 
-- **[OPTIMIZATION_CHANGES.md](OPTIMIZATION_CHANGES.md)** - Szczegóły optymalizacji systemu
-- **[QUICK_START.md](QUICK_START.md)** - Przewodnik uruchomienia
-- **[apps/ml/signal_engine.py](apps/ml/signal_engine.py)** - Kod źródłowy
+- **[OPTIMIZATION_CHANGES.md](OPTIMIZATION_CHANGES.md)** - System optimization details
+- **[QUICK_START.md](QUICK_START.md)** - Getting started guide
+- **[apps/ml/signal_engine.py](apps/ml/signal_engine.py)** - Source code
 - **[apps/ml/features.py](apps/ml/features.py)** - Feature engineering
 
 ---
 
-**System jest gotowy do generowania wysokiej jakości sygnałów tradingowych!** 🚀
+**The system is ready to generate high-quality trading signals!** 🚀
