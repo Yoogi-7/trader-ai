@@ -1,230 +1,260 @@
-# ⚡ Quick Start - Auto-Training System
+# Quick Start - Zoptymalizowany System
 
-## 🎯 Uruchom w 3 krokach
+## Status: ✅ GOTOWY DO BACKFILLU I TRENINGU
 
-### 1️⃣ Włącz Auto-Training
+---
+
+## 🚀 Szybkie Uruchomienie
+
+### Krok 1: Backfill Danych (4 lata)
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/auto-train/start \
+# Przez API
+curl -X POST http://localhost:8000/api/v1/backfill/execute \
   -H "Content-Type: application/json" \
   -d '{
-    "symbols": ["BTC/USDT", "ETH/USDT", "BNB/USDT"],
-    "timeframe": "15m",
-    "quick_start": true
+    "symbols": ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"],
+    "timeframes": ["15m"],
+    "lookback_days": 1460
   }'
+
+# Sprawdź status
+curl http://localhost:8000/api/v1/backfill/status
 ```
 
-**Odpowiedź:**
-```json
-{
-  "status": "started",
-  "symbols": ["BTC/USDT", "ETH/USDT", "BNB/USDT"],
-  "timeframe": "15m",
-  "quick_mode": true,
-  "message": "Auto-training started successfully. Initial training triggered."
-}
-```
+**Czas trwania:** ~2-4 godziny (zależnie od API rate limits)
 
 ---
 
-### 2️⃣ Sprawdź Status (co 30 min)
+### Krok 2: Trening Modelu
 
 ```bash
-# Status auto-training
-curl http://localhost:8000/api/v1/auto-train/status
-
-# Training jobs
-curl http://localhost:8000/api/v1/train/jobs | jq '.[:3]'
-```
-
-**Przykładowa odpowiedź:**
-```json
-{
-  "enabled": true,
-  "symbols": ["BTC/USDT", "ETH/USDT", "BNB/USDT"],
-  "timeframe": "15m",
-  "quick_mode": true,
-  "last_updated": "2025-10-07T07:30:00"
-}
-```
-
----
-
-### 3️⃣ Monitoruj Postęp w Bazie
-
-```bash
-docker-compose exec -T db psql -U traderai -d traderai << 'EOF'
-SELECT
-    symbol,
-    status,
-    ROUND(progress_pct::numeric, 1) as progress,
-    current_fold,
-    total_folds,
-    ROUND(avg_roc_auc::numeric, 3) as auc,
-    to_char(updated_at, 'HH24:MI') as time
-FROM training_jobs
-WHERE status IN ('training', 'completed')
-ORDER BY updated_at DESC
-LIMIT 5;
-EOF
-```
-
----
-
-## 📊 Co się dzieje w tle?
-
-### Timeline:
-
-**0:00** - Start auto-training
-```
-✓ Quick training triggered (BTC, ETH, BNB)
-✓ Test: 14 dni, Train: 90 dni
-```
-
-**0:30-3:00** - Quick Training
-```
-⏳ BTC/USDT: Training... (progress: 45%)
-⏳ ETH/USDT: Training... (progress: 38%)
-⏳ BNB/USDT: Training... (progress: 42%)
-```
-
-**3:00** - Quick Training Complete
-```
-✅ BTC/USDT model ready (AUC: 0.58, Accuracy: 57%)
-✅ ETH/USDT model ready (AUC: 0.61, Accuracy: 59%)
-✅ BNB/USDT model ready (AUC: 0.56, Accuracy: 55%)
-✓ Signals generation started!
-```
-
-**15:00** - First Full Retraining (12h later)
-```
-🔄 Full training started (Test: 30d, Train: 180d)
-📈 Parameters evolved based on quick training results
-```
-
----
-
-## 🎛️ Monitoring Dashboards
-
-### Panel Admin
-
-```bash
-# Odrzucone sygnały (ostatnie 24h)
-curl http://localhost:8000/api/v1/system/rejected-signals?hours=24 \
-  | jq '[.[] | {symbol, reason: .rejection_reason, time: .created_at}] | .[:5]'
-```
-
-**Output:**
-```json
-[
-  {
+# Trenuj BTC/USDT z nowymi parametrami
+curl -X POST http://localhost:8000/api/v1/train \
+  -H "Content-Type: application/json" \
+  -d '{
     "symbol": "BTC/USDT",
-    "reason": "Failed risk filters: profit",
-    "time": "2025-10-07T06:45:23"
-  },
-  ...
-]
+    "timeframe": "15m",
+    "test_period_days": 30,
+    "min_train_days": 365,
+    "use_expanding_window": true
+  }'
+
+# Monitor progress
+docker logs -f traderai-worker-training3
 ```
 
-### System Status
+**Czas trwania:** ~30-60 minut na symbol
+
+**Spodziewane metryki:**
+- Accuracy: >60% (target 70%)
+- ROC-AUC: >60%
+- Recall: 30-50% (bardziej selektywny)
+
+---
+
+### Krok 3: Generuj Sygnały Historyczne
 
 ```bash
-curl http://localhost:8000/api/v1/system/status | jq '.'
-```
+# Backtest
+curl -X POST http://localhost:8000/api/v1/signals/generate-historical \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "BTC/USDT",
+    "timeframe": "15m",
+    "lookback_days": 365
+  }'
 
-**Output:**
-```json
-{
-  "active_models": 3,
-  "total_signals": 47,
-  "win_rate": 0.58,
-  "avg_net_profit_pct": 2.3,
-  "total_net_profit_usd": 1247.65
-}
+# Sprawdź wyniki
+curl http://localhost:8000/api/v1/signals/historical/jobs
 ```
 
 ---
 
-## 🔧 Kontrola
-
-### Zatrzymaj Auto-Training
+### Krok 4: Weryfikacja Accuracy
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/auto-train/stop
+docker exec traderai-api python -c "
+from sqlalchemy import create_engine, text
+from apps.api.config import settings
+
+engine = create_engine(str(settings.DATABASE_URL).replace('+asyncpg', ''))
+
+with engine.connect() as conn:
+    result = conn.execute(text('''
+        SELECT 
+            COUNT(*) as total,
+            COUNT(CASE WHEN actual_net_pnl_usd > 0 THEN 1 END) as winners,
+            AVG(actual_net_pnl_pct) as avg_pnl,
+            AVG(confidence) as avg_conf
+        FROM historical_signal_snapshots
+        WHERE actual_net_pnl_pct IS NOT NULL
+    '''))
+    
+    row = result.fetchone()
+    win_rate = (row[1] / row[0] * 100) if row[0] > 0 else 0
+    
+    print(f'Total Signals: {row[0]}')
+    print(f'Winners: {row[1]}')
+    print(f'Win Rate: {win_rate:.2f}%')
+    print(f'Avg PnL: {row[2]:.2f}%')
+    print(f'Avg Confidence: {row[3]:.2f}')
+"
 ```
 
-### Wznów
+**Target:**
+- Win Rate: >50%
+- Avg PnL: >2%
+- Avg Confidence: >0.65
+
+---
+
+## 📊 Co Zostało Zmienione?
+
+### 1. Nowe Wskaźniki (20+)
+✅ VWAP, StochRSI, Keltner, ADX, Supertrend  
+✅ OBV, Volume Profile, OBI  
+✅ Swing Points, Dynamic Fibonacci  
+✅ EMA Slopes, Consolidation Zones, RSI Divergence  
+❌ Ichimoku (look-ahead bias removed)
+
+### 2. Adaptive TP/SL
+Dostosowują się do:
+- Confidence (0.65-0.70+)
+- Volatility regime (low/normal/high)
+
+### 3. Wyższe Standardy
+- MIN_CONFIDENCE: 0.65 (was 0.55)
+- MIN_PROFIT: 2.0% (was 0.8%)
+- MIN_ACCURACY: 70% (was 65%)
+
+### 4. Więcej Danych Treningowych
+- Quick mode: 180 dni (was 90)
+- Full mode: 365 dni (was 180)
+
+---
+
+## 🔍 Monitoring
+
+### Check System Status
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/auto-train/start \
-  -d '{"quick_start": false}'  # Skip quick mode
+curl http://localhost:8000/api/v1/system/status
 ```
 
-### Wymuś Retraining
+### Check Active Signals
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/auto-train/trigger
+curl http://localhost:8000/api/v1/signals
+```
+
+### Check Training Jobs
+
+```bash
+curl http://localhost:8000/api/v1/train/jobs
+```
+
+### Logs
+
+```bash
+# API
+docker logs -f traderai-api
+
+# Workers
+docker logs -f traderai-worker
+docker logs -f traderai-worker-training3
+
+# Beat
+docker logs -f traderai-beat
 ```
 
 ---
 
-## 📈 Oczekiwane Wyniki
+## ⚠️ Troubleshooting
 
-### Quick Training (2-3h):
-- ✅ Sygnały: 2-4/dzień na symbol
-- ✅ Accuracy: 55-60%
-- ✅ Zwrot: 1-2% netto
-
-### Po ewolucji (7 dni):
-- ✅ Sygnały: 4-8/dzień na symbol
-- ✅ Accuracy: 60-68%
-- ✅ Zwrot: 1-3% netto
-
----
-
-## 🚨 Troubleshooting
-
-### Brak sygnałów po 3h?
+### Problem: Feature calculation errors
 
 ```bash
-# 1. Sprawdź czy training się zakończył
-curl http://localhost:8000/api/v1/train/jobs | jq '.[0] | {status, progress_pct}'
+# Check if all new indicators are calculating correctly
+docker exec traderai-api python -c "
+from apps.ml.features import FeatureEngineering
+import pandas as pd
+import numpy as np
 
-# 2. Sprawdź odrzucone sygnały
-curl http://localhost:8000/api/v1/system/rejected-signals?hours=1
+# Test with dummy data
+df = pd.DataFrame({
+    'timestamp': pd.date_range('2024-01-01', periods=500, freq='15min'),
+    'open': np.random.rand(500) * 100 + 60000,
+    'high': np.random.rand(500) * 100 + 60100,
+    'low': np.random.rand(500) * 100 + 59900,
+    'close': np.random.rand(500) * 100 + 60000,
+    'volume': np.random.rand(500) * 1000000
+})
 
-# 3. Sprawdź logi
-docker-compose logs worker --tail=50 | grep -E "Signal|Training"
+fe = FeatureEngineering()
+enriched = fe.compute_all_features(df)
+
+print(f'Original columns: {len(df.columns)}')
+print(f'Enriched columns: {len(enriched.columns)}')
+print(f'New features: {len(enriched.columns) - len(df.columns)}')
+print()
+print('Sample new features:')
+for col in ['vwap', 'stochrsi', 'keltner_upper', 'obv', 'supertrend_direction']:
+    if col in enriched.columns:
+        print(f'  ✅ {col}')
+    else:
+        print(f'  ❌ {col} MISSING!')
+"
 ```
 
-### Training trwa zbyt długo?
+### Problem: Model training fails
 
-```sql
--- Sprawdź progress w bazie
-docker-compose exec db psql -U traderai -d traderai -c \
-  "SELECT symbol, current_fold, total_folds, progress_pct
-   FROM training_jobs
-   WHERE status='training';"
+Check logs for specific errors. Common issues:
+- Not enough data (need 365+ days)
+- NaN values in features
+- Memory issues (reduce batch size)
+
+### Problem: No signals generated
+
+```bash
+# Check model deployment
+docker exec traderai-api python -c "
+from apps.ml.model_registry import ModelRegistry
+
+registry = ModelRegistry()
+deployments = registry.index.get('deployments', {})
+
+print('Deployed models:')
+for key, dep in deployments.items():
+    print(f'  {key}: {dep.get(\"model_id\")} (version {dep.get(\"version\")})')
+"
 ```
-
-**Normalne czasy:**
-- Quick mode: 2-3h (14/90 dni)
-- Full mode: 12-24h (30/180 dni)
 
 ---
 
-## ✅ Checklist Deployment
+## 📚 Dokumentacja
 
-- [x] Migracja wykonana (`auto_training_config` table)
-- [x] Aplikacja zrestartowana
-- [x] Endpoint `/auto-train/start` działa
-- [x] Endpoint `/system/rejected-signals` działa
-- [x] Celery worker widzi `training.auto_train` task
-- [x] Celery beat schedule zawiera auto-train co 12h
-- [x] Performance tracking cleanup działa
+- **OPTIMIZATION_CHANGES.md** - Szczegółowy opis wszystkich zmian
+- **CHANGES_SUMMARY.md** - Podsumowanie poprzednich iteracji
+- **README.md** - Ogólna dokumentacja projektu
 
 ---
 
-**🎉 System gotowy do użycia!**
+## 🎯 Success Criteria
 
-Uruchom auto-training powyższym poleceniem i poczekaj 2-3h na pierwsze sygnały.
+### Przed Uruchomieniem Produkcji:
+- [ ] Backtest accuracy > 70%
+- [ ] Average net profit > 2%
+- [ ] Win rate > 50%
+- [ ] Max drawdown < 15%
+- [ ] At least 100 historical signals tested
+
+### Jeśli NIE spełnia kryteriów:
+1. Zwiększ MIN_CONFIDENCE do 0.70
+2. Dodaj więcej feature selection (SHAP)
+3. Rozważ ensemble z CatBoost
+4. Dodaj regression component do predykcji magnitude
+
+---
+
+**Powodzenia!** 🚀

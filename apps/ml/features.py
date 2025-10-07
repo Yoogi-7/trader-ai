@@ -45,18 +45,40 @@ class FeatureEngineering:
         """
         df = df.copy()
 
-        # Technical indicators
+        # Technical indicators - Basic
         df = self._add_emas(df)
         df = self._add_rsi(df)
         df = self._add_stochastic(df)
         df = self._add_macd(df)
         df = self._add_atr(df)
         df = self._add_bollinger_bands(df)
-        df = self._add_ichimoku(df)
 
-        # Fibonacci & Pivots
-        df = self._add_fibonacci(df)
+        # Note: Ichimoku removed due to look-ahead bias (chikou_span shifts future data)
+
+        # Advanced indicators
+        df = self._add_vwap(df)
+        df = self._add_stochrsi(df)
+        df = self._add_keltner_channels(df)
+        df = self._add_supertrend(df)
+        df = self._add_adx(df)
+
+        # Price action
+        df = self._add_swing_points(df)
+        df = self._add_fibonacci_dynamic(df)
         df = self._add_pivot_points(df)
+
+        # Volume analysis
+        df = self._add_obv(df)
+        df = self._add_volume_profile(df)
+
+        # Market structure
+        df = self._add_obi(df)
+        df = self._add_bid_ask_spread_dynamic(df)
+
+        # Derivative features
+        df = self._add_ema_slopes(df)
+        df = self._add_consolidation_zones(df)
+        df = self._add_rsi_divergence(df)
 
         # Market regime
         df = self._add_regime_detection(df)
@@ -357,3 +379,264 @@ class FeatureEngineering:
                 else:
                     logger.warning(f"Skipping non-numeric column: {col} (dtype: {df[col].dtype})")
         return feature_cols
+
+    def _add_vwap(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add Volume Weighted Average Price (VWAP)"""
+        df['vwap'] = (df['close'] * df['volume']).cumsum() / df['volume'].cumsum()
+        # Rolling VWAP (daily reset simulation using 96 periods for 15m = 24h)
+        window = 96
+        df['vwap_rolling'] = (
+            (df['close'] * df['volume']).rolling(window).sum() / 
+            df['volume'].rolling(window).sum()
+        )
+        df['vwap_distance'] = (df['close'] - df['vwap_rolling']) / df['vwap_rolling']
+        return df
+
+    def _add_stochrsi(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add Stochastic RSI - More sensitive momentum indicator"""
+        if 'rsi_14' in df.columns:
+            rsi = df['rsi_14']
+            rsi_min = rsi.rolling(14).min()
+            rsi_max = rsi.rolling(14).max()
+            df['stochrsi'] = 100 * (rsi - rsi_min) / (rsi_max - rsi_min)
+            df['stochrsi_k'] = df['stochrsi'].rolling(3).mean()
+            df['stochrsi_d'] = df['stochrsi_k'].rolling(3).mean()
+        else:
+            df['stochrsi'] = 50.0
+            df['stochrsi_k'] = 50.0
+            df['stochrsi_d'] = 50.0
+        return df
+
+    def _add_keltner_channels(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add Keltner Channels - Dynamic support/resistance based on EMA + ATR"""
+        if 'ema_20' not in df.columns:
+            df['ema_20'] = df['close'].ewm(span=20, adjust=False).mean()
+        
+        if 'atr_14' in df.columns:
+            atr = df['atr_14']
+        else:
+            # Calculate ATR if not present
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
+            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            atr = true_range.rolling(14).mean()
+        
+        multiplier = 2.0
+        df['keltner_upper'] = df['ema_20'] + multiplier * atr
+        df['keltner_lower'] = df['ema_20'] - multiplier * atr
+        df['keltner_width'] = (df['keltner_upper'] - df['keltner_lower']) / df['ema_20']
+        return df
+
+    def _add_supertrend(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add Supertrend indicator - Trend following indicator"""
+        if 'atr_14' not in df.columns:
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
+            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            atr = true_range.rolling(14).mean()
+        else:
+            atr = df['atr_14']
+        
+        hl_avg = (df['high'] + df['low']) / 2
+        multiplier = 3.0
+        
+        upper_band = hl_avg + multiplier * atr
+        lower_band = hl_avg - multiplier * atr
+        
+        # Supertrend logic
+        supertrend = pd.Series(index=df.index, dtype=float)
+        direction = pd.Series(index=df.index, dtype=int)
+        
+        for i in range(1, len(df)):
+            if df['close'].iloc[i] > upper_band.iloc[i-1]:
+                direction.iloc[i] = 1
+            elif df['close'].iloc[i] < lower_band.iloc[i-1]:
+                direction.iloc[i] = -1
+            else:
+                direction.iloc[i] = direction.iloc[i-1] if i > 0 else 0
+            
+            if direction.iloc[i] == 1:
+                supertrend.iloc[i] = lower_band.iloc[i]
+            else:
+                supertrend.iloc[i] = upper_band.iloc[i]
+        
+        df['supertrend'] = supertrend
+        df['supertrend_direction'] = direction
+        return df
+
+    def _add_adx(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add ADX (Average Directional Index) - Trend strength indicator"""
+        if TALIB_AVAILABLE:
+            df['adx'] = talib.ADX(df['high'], df['low'], df['close'], timeperiod=14)
+        else:
+            # Manual ADX calculation
+            high_diff = df['high'].diff()
+            low_diff = -df['low'].diff()
+            
+            plus_dm = high_diff.where((high_diff > low_diff) & (high_diff > 0), 0)
+            minus_dm = low_diff.where((low_diff > high_diff) & (low_diff > 0), 0)
+            
+            if 'atr_14' in df.columns:
+                tr = df['atr_14'] * 14  # Approximate
+            else:
+                high_low = df['high'] - df['low']
+                high_close = np.abs(df['high'] - df['close'].shift())
+                low_close = np.abs(df['low'] - df['close'].shift())
+                tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+            
+            plus_di = 100 * (plus_dm.rolling(14).mean() / tr.rolling(14).mean())
+            minus_di = 100 * (minus_dm.rolling(14).mean() / tr.rolling(14).mean())
+            
+            dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
+            df['adx'] = dx.rolling(14).mean()
+        
+        return df
+
+    def _add_swing_points(self, df: pd.DataFrame, window: int = 5) -> pd.DataFrame:
+        """Detect swing highs and lows using rolling windows"""
+        df['swing_high'] = (
+            (df['high'] == df['high'].rolling(window*2+1, center=True).max()).astype(int)
+        )
+        df['swing_low'] = (
+            (df['low'] == df['low'].rolling(window*2+1, center=True).min()).astype(int)
+        )
+        
+        # Distance to nearest swing points
+        df['dist_to_swing_high'] = df['close'] / df.loc[df['swing_high'] == 1, 'high'].reindex(df.index).ffill() - 1
+        df['dist_to_swing_low'] = df['close'] / df.loc[df['swing_low'] == 1, 'low'].reindex(df.index).ffill() - 1
+        
+        return df
+
+    def _add_fibonacci_dynamic(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Dynamic Fibonacci levels based on detected swings"""
+        window = 50
+        
+        # Find recent swing high/low
+        rolling_high = df['high'].rolling(window).max()
+        rolling_low = df['low'].rolling(window).min()
+        
+        diff = rolling_high - rolling_low
+        
+        # Fibonacci retracements from high to low
+        df['fib_0'] = rolling_high
+        df['fib_236'] = rolling_high - diff * 0.236
+        df['fib_382'] = rolling_high - diff * 0.382
+        df['fib_50'] = rolling_high - diff * 0.5
+        df['fib_618'] = rolling_high - diff * 0.618
+        df['fib_786'] = rolling_high - diff * 0.786
+        df['fib_100'] = rolling_low
+        
+        # Fibonacci extensions
+        df['fib_1618'] = rolling_low - diff * 0.618
+        df['fib_2618'] = rolling_low - diff * 1.618
+        
+        return df
+
+    def _add_obv(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add On-Balance Volume (OBV) - Cumulative volume indicator"""
+        obv = np.where(df['close'] > df['close'].shift(), df['volume'],
+                      np.where(df['close'] < df['close'].shift(), -df['volume'], 0))
+        df['obv'] = obv.cumsum()
+        df['obv_ema'] = df['obv'].ewm(span=20, adjust=False).mean()
+        df['obv_divergence'] = df['obv'] - df['obv_ema']
+        return df
+
+    def _add_volume_profile(self, df: pd.DataFrame, window: int = 50) -> pd.DataFrame:
+        """Add simplified Volume Profile features"""
+        # Calculate price levels and volume distribution
+        df['volume_surge'] = df['volume'] / df['volume'].rolling(20).mean()
+        
+        # High volume nodes (simplified)
+        df['high_volume_node'] = (df['volume'] > df['volume'].rolling(window).quantile(0.8)).astype(int)
+        
+        # Volume-weighted price levels
+        df['vwap_std'] = (
+            ((df['close'] - df['vwap_rolling'])**2 * df['volume']).rolling(window).sum() / 
+            df['volume'].rolling(window).sum()
+        ).pow(0.5)
+        
+        return df
+
+    def _add_obi(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add Order Book Imbalance (OBI) - Simulated from price/volume action"""
+        # Since we don't have real order book data, simulate using price momentum and volume
+        price_momentum = df['close'].pct_change()
+        volume_ratio = df['volume'] / df['volume'].rolling(20).mean()
+        
+        # Estimate buy/sell pressure
+        buy_pressure = np.where(price_momentum > 0, price_momentum * volume_ratio, 0)
+        sell_pressure = np.where(price_momentum < 0, abs(price_momentum) * volume_ratio, 0)
+        
+        df['obi'] = (buy_pressure - sell_pressure) / (buy_pressure + sell_pressure + 1e-10)
+        df['obi_ema'] = pd.Series(df['obi']).ewm(span=10, adjust=False).mean()
+        
+        return df
+
+    def _add_bid_ask_spread_dynamic(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Estimate dynamic bid-ask spread from volatility"""
+        # Estimate spread as function of volatility
+        returns = df['close'].pct_change()
+        rolling_vol = returns.rolling(20).std()
+        
+        df['estimated_spread_bps'] = rolling_vol * 10000  # Convert to basis points
+        df['spread_percentile'] = df['estimated_spread_bps'].rolling(100).apply(
+            lambda x: pd.Series(x).rank(pct=True).iloc[-1] if len(x) > 0 else 0.5
+        )
+        
+        return df
+
+    def _add_ema_slopes(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add EMA slope indicators to detect trend acceleration"""
+        for period in [20, 50]:
+            ema_col = f'ema_{period}'
+            if ema_col in df.columns:
+                # Calculate slope over 3 periods (3 hours for 15m timeframe)
+                df[f'{ema_col}_slope'] = df[ema_col].diff(3) / df[ema_col].shift(3)
+                
+                # Slope acceleration (2nd derivative)
+                df[f'{ema_col}_accel'] = df[f'{ema_col}_slope'].diff(3)
+        
+        return df
+
+    def _add_consolidation_zones(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Detect consolidation zones using Bollinger Band width"""
+        if 'bb_width' in df.columns:
+            bb_width = df['bb_width']
+        elif 'bb_upper' in df.columns and 'bb_lower' in df.columns:
+            bb_width = (df['bb_upper'] - df['bb_lower']) / df['bb_middle']
+            df['bb_width'] = bb_width
+        else:
+            bb_width = pd.Series([0.05] * len(df), index=df.index)
+        
+        # Consolidation when BB width is in lower 30th percentile
+        consolidation_threshold = bb_width.rolling(100).quantile(0.30)
+        df['is_consolidation'] = (bb_width < consolidation_threshold).astype(int)
+        
+        # Time in consolidation
+        df['consolidation_duration'] = df.groupby(
+            (df['is_consolidation'] != df['is_consolidation'].shift()).cumsum()
+        )['is_consolidation'].cumsum()
+        
+        return df
+
+    def _add_rsi_divergence(self, df: pd.DataFrame, window: int = 14) -> pd.DataFrame:
+        """Detect RSI divergences vs price"""
+        if 'rsi_14' not in df.columns:
+            return df
+        
+        rsi = df['rsi_14']
+        price = df['close']
+        
+        # Detect higher highs in price but lower highs in RSI (bearish divergence)
+        price_higher_high = (price > price.shift(window)) & (price > price.shift(1))
+        rsi_lower_high = (rsi < rsi.shift(window)) & (rsi < rsi.shift(1))
+        df['bearish_divergence'] = (price_higher_high & rsi_lower_high).astype(int)
+        
+        # Detect lower lows in price but higher lows in RSI (bullish divergence)
+        price_lower_low = (price < price.shift(window)) & (price < price.shift(1))
+        rsi_higher_low = (rsi > rsi.shift(window)) & (rsi > rsi.shift(1))
+        df['bullish_divergence'] = (price_lower_low & rsi_higher_low).astype(int)
+        
+        return df

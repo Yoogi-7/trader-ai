@@ -28,11 +28,11 @@ class Settings(BaseSettings):
     EXCHANGE_API_KEY: str = ""
     EXCHANGE_SECRET: str = ""
 
-    # ML - OPTIMIZED FOR MORE SIGNALS WITH QUALITY
-    MIN_CONFIDENCE_THRESHOLD: float = 0.55  # Increased from 0.50 for better quality signals
-    MIN_NET_PROFIT_PCT: float = 0.8  # Decreased from 1.0% to allow more signals through
-    MIN_ACCURACY_TARGET: float = 0.65  # Increased from 0.60 - higher quality target
-    MIN_HISTORICAL_WIN_RATE: float = 0.45  # Increased from 0.40 for better historical filter
+    # ML - OPTIMIZED FOR 70% ACCURACY AND >2% PROFIT
+    MIN_CONFIDENCE_THRESHOLD: float = 0.65  # High confidence for quality (was 0.55)
+    MIN_NET_PROFIT_PCT: float = 2.0  # Target >2% net profit after costs
+    MIN_ACCURACY_TARGET: float = 0.70  # Target 70% accuracy
+    MIN_HISTORICAL_WIN_RATE: float = 0.50  # Require 50%+ historical win rate
     HISTORICAL_PERFORMANCE_SAMPLE: int = 250
     DEFAULT_LOOKBACK_YEARS: int = 4
     MODEL_REGISTRY_DIR: str = "./model_registry"

@@ -50,6 +50,7 @@ class SignalGenerator:
         timestamp: datetime,
         leverage_cap: Optional[int] = None,
         enforce_risk_filters: bool = True,
+        volatility_regime: str = 'normal',
     ) -> Optional[Dict]:
         """
         Generate a complete trading signal with TP/SL, sizing, and profit validation.
@@ -64,12 +65,13 @@ class SignalGenerator:
             confidence: Model confidence score
             timestamp: Signal timestamp
             leverage_cap: Optional leverage cap
+            volatility_regime: 'low', 'normal', or 'high' volatility
 
         Returns:
             Signal dict or None if doesn't meet profit threshold
         """
-        # Calculate TP/SL using ATR
-        tp_levels, sl_price = self._calculate_tp_sl(entry_price, atr, side)
+        # Calculate TP/SL using ATR with adaptive parameters
+        tp_levels, sl_price = self._calculate_tp_sl(entry_price, atr, side, confidence, volatility_regime)
 
         # Position sizing based on risk profile
         leverage, position_size_usd, quantity = self._calculate_position_size(
@@ -152,31 +154,56 @@ class SignalGenerator:
         self,
         entry_price: float,
         atr: float,
-        side: Side
+        side: Side,
+        confidence: float = 0.7,
+        volatility_regime: str = 'normal'
     ) -> Tuple[list, float]:
         """
-        Calculate TP levels and SL using ATR-based approach.
+        Calculate adaptive TP levels and SL based on market conditions.
+
+        Args:
+            entry_price: Entry price
+            atr: Current ATR value
+            side: LONG or SHORT
+            confidence: Model confidence (0.0-1.0)
+            volatility_regime: 'low', 'normal', or 'high'
 
         Returns:
             (tp_levels, sl_price)
         """
-        # OPTIMIZED ATR multipliers for HIGHER profitability
-        # These ensure minimum 2% net profit after costs
-        atr_multiplier_sl = 1.0   # Tighter SL (was 1.2) = smaller losses
-        atr_multiplier_tp1 = 2.0  # Higher TP1 (was 1.5) = ~3-4% profit
-        atr_multiplier_tp2 = 3.5  # Higher TP2 (was 2.5) = ~5-7% profit
-        atr_multiplier_tp3 = 6.0  # Higher TP3 (was 4.0) = ~9-12% profit
+        # Adaptive SL based on volatility
+        if volatility_regime == 'high':
+            atr_multiplier_sl = 1.5  # Wider SL in high volatility
+        elif volatility_regime == 'low':
+            atr_multiplier_sl = 0.8  # Tighter SL in low volatility
+        else:
+            atr_multiplier_sl = 1.0  # Normal SL
+
+        # Adaptive TP based on confidence and volatility
+        # Higher confidence = aim for TP2/TP3, lower confidence = focus on TP1
+        if confidence >= 0.7:
+            # High confidence: aggressive targets
+            if volatility_regime == 'high':
+                tp_mult = [3.0, 5.0, 8.0]  # Higher multiples in trending volatile markets
+            else:
+                tp_mult = [2.5, 4.5, 7.0]  # Normal aggressive targets
+        elif confidence >= 0.65:
+            # Medium-high confidence: balanced targets
+            tp_mult = [2.0, 3.5, 6.0]  # Standard multipliers
+        else:
+            # Lower confidence: conservative targets
+            tp_mult = [1.5, 2.5, 4.0]  # Quick profits, lower risk
 
         if side == Side.LONG:
             sl_price = entry_price - (atr * atr_multiplier_sl)
-            tp1 = entry_price + (atr * atr_multiplier_tp1)
-            tp2 = entry_price + (atr * atr_multiplier_tp2)
-            tp3 = entry_price + (atr * atr_multiplier_tp3)
+            tp1 = entry_price + (atr * tp_mult[0])
+            tp2 = entry_price + (atr * tp_mult[1])
+            tp3 = entry_price + (atr * tp_mult[2])
         else:  # SHORT
             sl_price = entry_price + (atr * atr_multiplier_sl)
-            tp1 = entry_price - (atr * atr_multiplier_tp1)
-            tp2 = entry_price - (atr * atr_multiplier_tp2)
-            tp3 = entry_price - (atr * atr_multiplier_tp3)
+            tp1 = entry_price - (atr * tp_mult[0])
+            tp2 = entry_price - (atr * tp_mult[1])
+            tp3 = entry_price - (atr * tp_mult[2])
 
         return [tp1, tp2, tp3], sl_price
 
@@ -594,6 +621,9 @@ class SignalEngine:
                 RiskProfile.HIGH: settings.HIGH_MAX_LEV
             }[risk_profile]
 
+        # Detect volatility regime from features
+        volatility_regime = self._detect_volatility_regime(enriched)
+
         signal = self.signal_generator.generate_signal(
             symbol=symbol,
             side=side,
@@ -603,7 +633,8 @@ class SignalEngine:
             capital_usd=capital_usd,
             confidence=confidence,
             timestamp=latest_snapshot['timestamp'],
-            leverage_cap=leverage_cap
+            leverage_cap=leverage_cap,
+            volatility_regime=volatility_regime
         )
 
         if not signal:
@@ -728,6 +759,9 @@ class SignalEngine:
             entry_price = float(row['close'])
             atr_value = float(row.get('atr_14') or 0.0)
 
+            # For historical signals, use normal volatility regime (can be enhanced later)
+            volatility_regime = 'normal'
+
             signal_payload = self.signal_generator.generate_signal(
                 symbol=symbol,
                 side=side,
@@ -739,6 +773,7 @@ class SignalEngine:
                 timestamp=row['timestamp'],
                 leverage_cap=settings.MED_MAX_LEV,
                 enforce_risk_filters=False,
+                volatility_regime=volatility_regime
             )
 
             if not signal_payload:
@@ -878,31 +913,56 @@ class SignalEngine:
         self,
         entry_price: float,
         atr: float,
-        side: Side
+        side: Side,
+        confidence: float = 0.7,
+        volatility_regime: str = 'normal'
     ) -> Tuple[list, float]:
         """
-        Calculate TP levels and SL using ATR-based approach.
+        Calculate adaptive TP levels and SL based on market conditions.
+
+        Args:
+            entry_price: Entry price
+            atr: Current ATR value
+            side: LONG or SHORT
+            confidence: Model confidence (0.0-1.0)
+            volatility_regime: 'low', 'normal', or 'high'
 
         Returns:
             (tp_levels, sl_price)
         """
-        # OPTIMIZED ATR multipliers for HIGHER profitability
-        # These ensure minimum 2% net profit after costs
-        atr_multiplier_sl = 1.0   # Tighter SL (was 1.2) = smaller losses
-        atr_multiplier_tp1 = 2.0  # Higher TP1 (was 1.5) = ~3-4% profit
-        atr_multiplier_tp2 = 3.5  # Higher TP2 (was 2.5) = ~5-7% profit
-        atr_multiplier_tp3 = 6.0  # Higher TP3 (was 4.0) = ~9-12% profit
+        # Adaptive SL based on volatility
+        if volatility_regime == 'high':
+            atr_multiplier_sl = 1.5  # Wider SL in high volatility
+        elif volatility_regime == 'low':
+            atr_multiplier_sl = 0.8  # Tighter SL in low volatility
+        else:
+            atr_multiplier_sl = 1.0  # Normal SL
+
+        # Adaptive TP based on confidence and volatility
+        # Higher confidence = aim for TP2/TP3, lower confidence = focus on TP1
+        if confidence >= 0.7:
+            # High confidence: aggressive targets
+            if volatility_regime == 'high':
+                tp_mult = [3.0, 5.0, 8.0]  # Higher multiples in trending volatile markets
+            else:
+                tp_mult = [2.5, 4.5, 7.0]  # Normal aggressive targets
+        elif confidence >= 0.65:
+            # Medium-high confidence: balanced targets
+            tp_mult = [2.0, 3.5, 6.0]  # Standard multipliers
+        else:
+            # Lower confidence: conservative targets
+            tp_mult = [1.5, 2.5, 4.0]  # Quick profits, lower risk
 
         if side == Side.LONG:
             sl_price = entry_price - (atr * atr_multiplier_sl)
-            tp1 = entry_price + (atr * atr_multiplier_tp1)
-            tp2 = entry_price + (atr * atr_multiplier_tp2)
-            tp3 = entry_price + (atr * atr_multiplier_tp3)
+            tp1 = entry_price + (atr * tp_mult[0])
+            tp2 = entry_price + (atr * tp_mult[1])
+            tp3 = entry_price + (atr * tp_mult[2])
         else:  # SHORT
             sl_price = entry_price + (atr * atr_multiplier_sl)
-            tp1 = entry_price - (atr * atr_multiplier_tp1)
-            tp2 = entry_price - (atr * atr_multiplier_tp2)
-            tp3 = entry_price - (atr * atr_multiplier_tp3)
+            tp1 = entry_price - (atr * tp_mult[0])
+            tp2 = entry_price - (atr * tp_mult[1])
+            tp3 = entry_price - (atr * tp_mult[2])
 
         return [tp1, tp2, tp3], sl_price
 
@@ -1089,3 +1149,34 @@ class SignalEngine:
             new_sl = min(new_sl, current_price + atr * 1.0)
 
         return new_sl
+
+    def _detect_volatility_regime(self, df: pd.DataFrame) -> str:
+        """
+        Detect volatility regime from features.
+        
+        Returns:
+            'low', 'normal', or 'high'
+        """
+        if 'regime_volatility' in df.columns:
+            # Use existing regime detection from features
+            regime_val = df['regime_volatility'].iloc[-1]
+            if regime_val < 1:
+                return 'low'
+            elif regime_val > 2:
+                return 'high'
+            else:
+                return 'normal'
+        
+        # Fallback: use ATR percentile
+        if 'atr_14' in df.columns:
+            atr = df['atr_14'].iloc[-1]
+            atr_percentile = (df['atr_14'].tail(100) < atr).mean()
+            
+            if atr_percentile < 0.3:
+                return 'low'
+            elif atr_percentile > 0.7:
+                return 'high'
+            else:
+                return 'normal'
+        
+        return 'normal'  # Default
