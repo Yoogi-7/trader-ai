@@ -74,6 +74,19 @@ interface HistoricalSignal {
   was_profitable?: boolean
 }
 
+interface RejectedSignal {
+  id: number
+  symbol: string
+  timeframe: string
+  environment: string
+  model_id?: string
+  risk_profile: string
+  failed_filters: string[]
+  rejection_reason: string
+  created_at: string
+  inference_metadata?: any
+}
+
 interface SignalGenerationStatus {
   job_id: string
   status: string
@@ -116,6 +129,7 @@ export default function Admin() {
   const [trainingJobs, setTrainingJobs] = useState<TrainingStatus[]>([])
   const [signalGenJobs, setSignalGenJobs] = useState<SignalGenerationStatus[]>([])
   const [historicalSignals, setHistoricalSignals] = useState<HistoricalSignal[]>([])
+  const [rejectedSignals, setRejectedSignals] = useState<RejectedSignal[]>([])
   const [activeBackfillId, setActiveBackfillId] = useState<string | null>(null)
   const [activeTrainingIds, setActiveTrainingIds] = useState<string[]>([])
   const [activeSignalGenIds, setActiveSignalGenIds] = useState<string[]>([])
@@ -199,6 +213,7 @@ export default function Admin() {
     loadCandlesInfo()
     loadAnalytics()
     loadHistoricalSignals()
+    loadRejectedSignals()
   }, [])
 
   // Load system status
@@ -242,6 +257,7 @@ export default function Admin() {
     const interval = setInterval(() => {
       loadSystemStatus()
       loadCandlesInfo()
+      loadRejectedSignals()
     }, 10000)
     return () => clearInterval(interval)
   }, [])
@@ -628,6 +644,33 @@ export default function Admin() {
     }
   }
 
+  const loadRejectedSignals = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/v1/system/rejected-signals?hours=24`)
+      const normalized = (response.data as any[]).map((signal) => ({
+        ...signal,
+        failed_filters: Array.isArray(signal.failed_filters)
+          ? signal.failed_filters
+          : signal.failed_filters
+          ? [String(signal.failed_filters)]
+          : [],
+      })) as RejectedSignal[]
+      setRejectedSignals(normalized)
+    } catch (error) {
+      console.error('Error loading rejected signals:', error)
+    }
+  }
+
+  const normalizePercentageValue = (value?: number | null) => {
+    if (value === null || value === undefined) return null
+    return value > 1 ? value : value * 100
+  }
+
+  const formatPercentageValue = (value?: number | null, digits = 1): string | null => {
+    const normalized = normalizePercentageValue(value)
+    return normalized === null ? null : normalized.toFixed(digits)
+  }
+
   const formatETA = (minutes?: number) => {
     if (minutes === undefined || minutes === null) return 'N/A'
     const hours = Math.floor(minutes / 60)
@@ -640,6 +683,9 @@ export default function Admin() {
     const date = new Date(iso)
     return isNaN(date.getTime()) ? iso : date.toLocaleString()
   }
+
+  const systemHitRateDisplay = formatPercentageValue(systemStatus?.hit_rate_tp1)
+  const systemWinRateDisplay = formatPercentageValue(systemStatus?.win_rate)
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-8">
@@ -903,7 +949,9 @@ export default function Admin() {
 
           {/* Signal Generation Jobs */}
           <div className="space-y-4">
-            {signalGenJobs.map((job) => (
+            {signalGenJobs.map((job) => {
+              const winRateDisplay = formatPercentageValue(job.win_rate)
+              return (
               <div key={job.job_id} className="bg-gray-700 rounded-lg p-4">
                 <div className="flex justify-between items-center mb-2">
                   <div>
@@ -960,10 +1008,10 @@ export default function Admin() {
                       <p className="font-bold text-purple-400">{job.signals_backtested}</p>
                     </div>
                   )}
-                  {job.win_rate !== undefined && job.win_rate !== null && (
+                  {winRateDisplay !== null && (
                     <div>
                       <p className="text-gray-400">Win Rate</p>
-                      <p className="font-bold text-green-400">{(job.win_rate * 100).toFixed(1)}%</p>
+                      <p className="font-bold text-green-400">{winRateDisplay}%</p>
                     </div>
                   )}
                   {job.elapsed_seconds !== undefined && (
@@ -987,7 +1035,7 @@ export default function Admin() {
                   Job ID: {job.job_id}
                 </div>
               </div>
-            ))}
+            )})}
           </div>
 
           {/* Historical Signals Table */}
@@ -1082,6 +1130,104 @@ export default function Admin() {
           </div>
         </div>
 
+        {/* Rejected Signals */}
+        <div className="bg-gray-800 rounded-lg p-6 mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-2xl font-bold">Rejected Signals (Last 24h)</h2>
+              <p className="text-gray-400 text-sm">Signals blocked by risk filters to help with diagnostics.</p>
+            </div>
+            <button
+              onClick={loadRejectedSignals}
+              className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm"
+            >
+              Refresh
+            </button>
+          </div>
+
+          {rejectedSignals.length === 0 ? (
+            <div className="bg-gray-700 rounded-lg p-4 text-gray-300 text-sm">
+              No rejections recorded in the last 24 hours.
+            </div>
+          ) : (
+            <div className="space-y-4 max-h-96 overflow-y-auto pr-1">
+              {rejectedSignals.map((signal) => {
+                const createdAt = signal.created_at ? new Date(signal.created_at).toLocaleString() : 'Unknown'
+                const metadata = signal.inference_metadata || {}
+                const confidenceDisplay = typeof metadata.confidence === 'number'
+                  ? formatPercentageValue(metadata.confidence, 2)
+                  : null
+                const probabilityDisplay = typeof metadata.probability === 'number'
+                  ? formatPercentageValue(metadata.probability, 2)
+                  : null
+                const expectedProfitDisplay = typeof metadata.expected_net_profit_pct === 'number'
+                  ? metadata.expected_net_profit_pct.toFixed(2)
+                  : null
+                const capitalDisplay = typeof metadata.capital_usd === 'number'
+                  ? `$${metadata.capital_usd.toFixed(0)}`
+                  : null
+                const sideDisplay = metadata.side ? String(metadata.side).toUpperCase() : null
+
+                const metadataEntries = [
+                  confidenceDisplay ? { label: 'Confidence', value: `${confidenceDisplay}%` } : null,
+                  probabilityDisplay ? { label: 'Probability', value: `${probabilityDisplay}%` } : null,
+                  expectedProfitDisplay ? { label: 'Expected Net %', value: `${expectedProfitDisplay}%` } : null,
+                  capitalDisplay ? { label: 'Capital', value: capitalDisplay } : null,
+                  sideDisplay ? { label: 'Side', value: sideDisplay } : null,
+                  signal.model_id ? { label: 'Model', value: signal.model_id } : null,
+                ].filter(Boolean) as { label: string; value: string }[]
+
+                return (
+                  <div key={signal.id} className="bg-gray-700 rounded-lg p-4">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="text-sm font-semibold text-gray-200">
+                          {signal.symbol} <span className="text-gray-400">{signal.timeframe}</span>
+                        </p>
+                        <p className="text-xs text-gray-400">{createdAt}</p>
+                      </div>
+                      <span className="text-xs bg-red-700 text-red-100 px-2 py-1 rounded">
+                        {signal.rejection_reason}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 text-sm text-gray-300 space-y-1">
+                      <p>
+                        <span className="text-gray-400">Risk Profile:</span> {signal.risk_profile}
+                      </p>
+                      <p>
+                        <span className="text-gray-400">Environment:</span> {signal.environment}
+                      </p>
+                      {signal.failed_filters.length > 0 ? (
+                        <div className="flex flex-wrap gap-2 mt-2 text-xs">
+                          {signal.failed_filters.map((filter) => (
+                            <span key={filter} className="bg-gray-600 px-2 py-1 rounded-full text-gray-200">
+                              {filter}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-gray-500">No filter details provided.</p>
+                      )}
+                    </div>
+
+                    {metadataEntries.length > 0 && (
+                      <div className="mt-3 grid grid-cols-2 gap-3 text-xs text-gray-200">
+                        {metadataEntries.map((item) => (
+                          <div key={`${signal.id}-${item.label}`}>
+                            <p className="text-gray-400 uppercase tracking-wide text-[10px]">{item.label}</p>
+                            <p className="font-semibold">{item.value}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+
         <SystemAnalytics
           pnl={pnlAnalytics}
           exposure={exposureAnalytics}
@@ -1131,9 +1277,7 @@ export default function Admin() {
             <div className="bg-gray-700 p-4 rounded">
               <p className="text-gray-400 text-sm">Hit Rate (TP1)</p>
               <p className="text-3xl font-bold text-green-400">
-                {systemStatus && systemStatus.hit_rate_tp1 !== null && systemStatus.hit_rate_tp1 !== undefined
-                  ? `${(systemStatus.hit_rate_tp1 * 100).toFixed(1)}%`
-                  : 'N/A'}
+                {systemHitRateDisplay !== null ? `${systemHitRateDisplay}%` : 'N/A'}
               </p>
             </div>
             <div className="bg-gray-700 p-4 rounded">
@@ -1169,9 +1313,7 @@ export default function Admin() {
             <div className="bg-gray-700 p-4 rounded">
               <p className="text-gray-400 text-sm">Win Rate</p>
               <p className="text-2xl font-bold text-green-400">
-                {systemStatus && systemStatus.win_rate !== null && systemStatus.win_rate !== undefined
-                  ? `${(systemStatus.win_rate * 100).toFixed(1)}%`
-                  : 'N/A'}
+                {systemWinRateDisplay !== null ? `${systemWinRateDisplay}%` : 'N/A'}
               </p>
             </div>
           </div>

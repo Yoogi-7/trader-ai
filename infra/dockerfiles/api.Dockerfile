@@ -36,4 +36,9 @@ COPY .env* ./
 
 ENV PYTHONPATH=/app
 
+COPY infra/dockerfiles/api.entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+
 CMD ["uvicorn", "apps.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

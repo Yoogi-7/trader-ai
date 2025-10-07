@@ -424,7 +424,7 @@ def train_model_task(
 
 @celery_app.task(name="signals.generate")
 def generate_signals_task():
-    """Generate trading signals (runs every 5 minutes)"""
+    """Generate trading signals (runs every 15 minutes)"""
 
     from apps.api.main import manager as ws_manager
 
@@ -1648,9 +1648,9 @@ celery_app.conf.beat_schedule = {
         'task': 'backfill.update_latest',
         'schedule': 900.0,  # 15 minutes
     },
-    'generate-signals-every-5-minutes': {
+    'generate-signals-every-15-minutes': {
         'task': 'signals.generate',
-        'schedule': 300.0,  # 5 minutes
+        'schedule': 900.0,  # 15 minutes
     },
     'expire-signals-every-5-minutes': {
         'task': 'signals.expire',
