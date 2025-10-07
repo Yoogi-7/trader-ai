@@ -29,10 +29,10 @@ class Settings(BaseSettings):
     EXCHANGE_SECRET: str = ""
 
     # ML - OPTIMIZED FOR MORE SIGNALS WITH QUALITY
-    MIN_CONFIDENCE_THRESHOLD: float = 0.50  # Lowered for more signal generation
-    MIN_NET_PROFIT_PCT: float = 1.0  # OPTIMIZED: Minimum 1% net profit (more signals pass)
-    MIN_ACCURACY_TARGET: float = 0.60  # Target 60% accuracy for model training
-    MIN_HISTORICAL_WIN_RATE: float = 0.40  # More lenient historical filter
+    MIN_CONFIDENCE_THRESHOLD: float = 0.55  # Increased from 0.50 for better quality signals
+    MIN_NET_PROFIT_PCT: float = 0.8  # Decreased from 1.0% to allow more signals through
+    MIN_ACCURACY_TARGET: float = 0.65  # Increased from 0.60 - higher quality target
+    MIN_HISTORICAL_WIN_RATE: float = 0.45  # Increased from 0.40 for better historical filter
     HISTORICAL_PERFORMANCE_SAMPLE: int = 250
     DEFAULT_LOOKBACK_YEARS: int = 4
     MODEL_REGISTRY_DIR: str = "./model_registry"
@@ -40,11 +40,11 @@ class Settings(BaseSettings):
 
     # Auto-Training Configuration
     AUTO_TRAINING_ENABLED: bool = False  # Disabled by default, enable via API
-    AUTO_TRAINING_INTERVAL_DAYS: int = 7  # Retrain every 12 hours
+    AUTO_TRAINING_INTERVAL_DAYS: int = 7  # Retrain every 7 days
     QUICK_TRAINING_TEST_DAYS: int = 14  # Quick mode: 14 day test windows
-    QUICK_TRAINING_MIN_DAYS: int = 90  # Quick mode: 90 days min training
+    QUICK_TRAINING_MIN_DAYS: int = 180  # Quick mode: 180 days min training (increased from 90)
     FULL_TRAINING_TEST_DAYS: int = 30  # Full mode: 30 day test windows
-    FULL_TRAINING_MIN_DAYS: int = 180  # Full mode: 180 days min training
+    FULL_TRAINING_MIN_DAYS: int = 365  # Full mode: 365 days min training (increased from 180)
 
     # LLM / Summaries
     LLM_PROVIDER: str = "openai"

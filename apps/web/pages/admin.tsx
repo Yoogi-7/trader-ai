@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import dynamic from 'next/dynamic'
 import axios from 'axios'
 import type {
   AggregatedExposurePoint,
   AggregatedPnlPoint,
 } from '../components/SystemAnalytics'
+import { HistoricalSignalsList, type HistoricalSignal } from '../components/HistoricalSignalsList'
 
 const SystemAnalytics = dynamic(() => import('../components/SystemAnalytics'), { ssr: false })
 
@@ -128,7 +129,15 @@ export default function Admin() {
   const [backfillJobs, setBackfillJobs] = useState<BackfillStatus[]>([])
   const [trainingJobs, setTrainingJobs] = useState<TrainingStatus[]>([])
   const [signalGenJobs, setSignalGenJobs] = useState<SignalGenerationStatus[]>([])
+  const HISTORICAL_PAGE_SIZE = 5
   const [historicalSignals, setHistoricalSignals] = useState<HistoricalSignal[]>([])
+  const [historicalSymbolFilter, setHistoricalSymbolFilter] = useState<string>('ALL')
+  const [historicalStartDate, setHistoricalStartDate] = useState<string>('')
+  const [historicalEndDate, setHistoricalEndDate] = useState<string>('')
+  const [historicalNextCursor, setHistoricalNextCursor] = useState<string | null>(null)
+  const [historicalCursorStack, setHistoricalCursorStack] = useState<string[]>([])
+  const [historicalCurrentCursor, setHistoricalCurrentCursor] = useState<string | null>(null)
+  const [historicalLoading, setHistoricalLoading] = useState<boolean>(false)
   const [rejectedSignals, setRejectedSignals] = useState<RejectedSignal[]>([])
   const [activeBackfillId, setActiveBackfillId] = useState<string | null>(null)
   const [activeTrainingIds, setActiveTrainingIds] = useState<string[]>([])
@@ -138,6 +147,8 @@ export default function Admin() {
   const [pnlAnalytics, setPnlAnalytics] = useState<AggregatedPnlPoint[]>([])
   const [exposureAnalytics, setExposureAnalytics] = useState<AggregatedExposurePoint[]>([])
   const [analyticsLoading, setAnalyticsLoading] = useState(false)
+
+  const historicalSymbolOptions = useMemo(() => ['ALL', ...TRACKED_PAIRS], [])
 
   // Load existing jobs on mount
   useEffect(() => {
@@ -212,7 +223,7 @@ export default function Admin() {
     loadSystemStatus()
     loadCandlesInfo()
     loadAnalytics()
-    loadHistoricalSignals()
+    fetchHistoricalSignals({ resetStack: true })
     loadRejectedSignals()
   }, [])
 
@@ -345,7 +356,7 @@ export default function Admin() {
         if (activeIds.length === 0) {
           setActiveSignalGenIds([])
           setTimeout(() => {
-            loadHistoricalSignals()
+            fetchHistoricalSignals({ resetStack: true })
             loadSystemStatus()
           }, 2000)
         } else {
@@ -400,6 +411,7 @@ export default function Admin() {
         // Reload jobs list
         const jobsResponse = await axios.get(`${API_URL}/api/v1/backfill/jobs`)
         setBackfillJobs(jobsResponse.data)
+        fetchHistoricalSignals({ resetStack: true })
       } else {
         alert(`No backfill jobs started. All ${jobs_skipped} pairs already have data.`)
       }
@@ -627,7 +639,7 @@ export default function Admin() {
       })
 
       // Refresh existing data while jobs run
-      loadHistoricalSignals()
+      fetchHistoricalSignals({ resetStack: true })
       loadSystemStatus()
     } catch (error: any) {
       console.error('Error generating historical signals:', error)
@@ -635,12 +647,64 @@ export default function Admin() {
     }
   }
 
-  const loadHistoricalSignals = async () => {
+  const buildIsoFromDate = (value: string, endOfDay = false) => {
+    if (!value) return undefined
+    const suffix = endOfDay ? 'T23:59:59Z' : 'T00:00:00Z'
+    return new Date(`${value}${suffix}`).toISOString()
+  }
+
+  const fetchHistoricalSignals = async (
+    { cursor, resetStack = false }: { cursor?: string | null; resetStack?: boolean } = {}
+  ) => {
+    setHistoricalLoading(true)
     try {
-      const response = await axios.get(`${API_URL}/api/v1/signals/historical/results?limit=150`)
-      setHistoricalSignals(response.data)
+      const params: Record<string, string | number> = {
+        limit: HISTORICAL_PAGE_SIZE,
+        sort_order: 'desc',
+      }
+
+      if (historicalSymbolFilter !== 'ALL') {
+        params.symbol = historicalSymbolFilter
+      }
+
+      const startIso = buildIsoFromDate(historicalStartDate)
+      if (startIso) {
+        params.start_date = startIso
+      }
+
+      const endIso = buildIsoFromDate(historicalEndDate, true)
+      if (endIso) {
+        params.end_date = endIso
+      }
+
+      if (cursor) {
+        params.cursor = cursor
+      }
+
+      const response = await axios.get(`${API_URL}/api/v1/signals/historical/results`, {
+        params,
+      })
+
+      const { data, next_cursor } = response.data || { data: [], next_cursor: null }
+      setHistoricalSignals(data ?? [])
+      setHistoricalNextCursor(next_cursor ?? null)
+
+      if (resetStack) {
+        setHistoricalCursorStack([])
+        setHistoricalCurrentCursor(null)
+      } else {
+        setHistoricalCurrentCursor(cursor ?? null)
+      }
     } catch (error) {
       console.error('Error loading historical signals:', error)
+      if (resetStack) {
+        setHistoricalSignals([])
+        setHistoricalCursorStack([])
+        setHistoricalCurrentCursor(null)
+        setHistoricalNextCursor(null)
+      }
+    } finally {
+      setHistoricalLoading(false)
     }
   }
 
@@ -686,6 +750,46 @@ export default function Admin() {
 
   const systemHitRateDisplay = formatPercentageValue(systemStatus?.hit_rate_tp1)
   const systemWinRateDisplay = formatPercentageValue(systemStatus?.win_rate)
+
+  const handleApplyHistoricalFilters = () => {
+    fetchHistoricalSignals({ resetStack: true })
+  }
+
+  const handleResetHistoricalFilters = () => {
+    setHistoricalSymbolFilter('ALL')
+    setHistoricalStartDate('')
+    setHistoricalEndDate('')
+    fetchHistoricalSignals({ resetStack: true })
+  }
+
+  const handleHistoricalNext = () => {
+    if (!historicalNextCursor) return
+    setHistoricalCursorStack((prev) => [...prev, historicalCurrentCursor ?? ''])
+    fetchHistoricalSignals({ cursor: historicalNextCursor, resetStack: false })
+  }
+
+  const handleHistoricalPrev = () => {
+    if (!historicalCursorStack.length) {
+      fetchHistoricalSignals({ resetStack: true })
+      return
+    }
+
+    const newStack = [...historicalCursorStack]
+    const prevCursor = newStack.pop() || null
+    setHistoricalCursorStack(newStack)
+
+    if (prevCursor) {
+      fetchHistoricalSignals({ cursor: prevCursor, resetStack: false })
+    } else {
+      fetchHistoricalSignals({ resetStack: true })
+    }
+  }
+
+  const historicalPaginationInfo = useMemo(() => {
+    const hasPrev = historicalCursorStack.length > 0 || historicalCurrentCursor !== null
+    const hasNext = Boolean(historicalNextCursor)
+    return { hasPrev, hasNext }
+  }, [historicalCursorStack, historicalCurrentCursor, historicalNextCursor])
 
   return (
     <div className="min-h-screen bg-gray-900 text-white p-8">
@@ -1038,95 +1142,96 @@ export default function Admin() {
             )})}
           </div>
 
+          {/* Historical Signals Filters */}
+          <div className="bg-gray-700 rounded-lg p-4 mt-6">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Pair</label>
+                <select
+                  value={historicalSymbolFilter}
+                  onChange={(e) => setHistoricalSymbolFilter(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm"
+                >
+                  {historicalSymbolOptions.map((option) => (
+                    <option key={option} value={option}>{option}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Start Date</label>
+                <input
+                  type="date"
+                  value={historicalStartDate}
+                  onChange={(e) => setHistoricalStartDate(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">End Date</label>
+                <input
+                  type="date"
+                  value={historicalEndDate}
+                  onChange={(e) => setHistoricalEndDate(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm"
+                />
+              </div>
+              <div className="flex items-end gap-2">
+                <button
+                  onClick={handleApplyHistoricalFilters}
+                  className="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded text-sm"
+                  disabled={historicalLoading}
+                >
+                  Apply
+                </button>
+                <button
+                  onClick={handleResetHistoricalFilters}
+                  className="bg-gray-600 hover:bg-gray-500 px-4 py-2 rounded text-sm"
+                  disabled={historicalLoading}
+                >
+                  Reset
+                </button>
+              </div>
+            </div>
+          </div>
+
           {/* Historical Signals Table */}
           <div className="mt-6 space-y-4">
-            {historicalSignals.length === 0 ? (
+            {historicalLoading ? (
               <div className="bg-gray-700 rounded-lg p-4 text-sm text-gray-300">
-                No historical signals available yet. Generate to populate this section.
+                Loading historical signals...
               </div>
             ) : (
-              historicalSignals.map((signal) => (
-                <div key={signal.signal_id} className="bg-gray-700 rounded-lg p-4">
-                  <div className="grid grid-cols-5 gap-4 mb-3">
-                    <div>
-                      <p className="text-xs text-gray-400">Time</p>
-                      <p className="text-sm">{new Date(signal.timestamp).toLocaleString()}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-400">Symbol</p>
-                      <p className="text-sm font-bold">
-                        {signal.symbol}
-                        {signal.timeframe ? ` (${signal.timeframe})` : ''}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-400">Side</p>
-                      <span className={`px-2 py-1 rounded text-xs ${
-                        signal.side === 'LONG' ? 'bg-green-600' : 'bg-red-600'
-                      }`}>
-                        {signal.side}
-                      </span>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-400">Entry</p>
-                      <p className="text-sm">${signal.entry_price.toFixed(2)}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-400">Status</p>
-                      {signal.final_status && (
-                        <span className={`px-2 py-1 rounded text-xs ${
-                          signal.final_status.includes('tp') ? 'bg-green-600' :
-                          signal.final_status === 'sl_hit' ? 'bg-red-600' :
-                          'bg-gray-600'
-                        }`}>
-                          {signal.final_status}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-4 gap-4 mb-3 text-sm">
-                    <div>
-                      <p className="text-xs text-gray-400">Expected Profit</p>
-                      <p className="text-gray-300">{signal.expected_net_profit_pct.toFixed(2)}%</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-400">Actual %</p>
-                      <p className={`font-bold ${
-                        signal.was_profitable === true ? 'text-green-400' :
-                        signal.was_profitable === false ? 'text-red-400' : 'text-gray-400'
-                      }`}>
-                        {signal.actual_net_pnl_pct !== null && signal.actual_net_pnl_pct !== undefined
-                          ? `${signal.actual_net_pnl_pct.toFixed(2)}%`
-                          : 'N/A'}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-400">Actual $</p>
-                      <p className={`font-bold ${
-                        signal.was_profitable === true ? 'text-green-400' :
-                        signal.was_profitable === false ? 'text-red-400' : 'text-gray-400'
-                      }`}>
-                        {signal.actual_net_pnl_usd !== null && signal.actual_net_pnl_usd !== undefined
-                          ? `$${signal.actual_net_pnl_usd.toFixed(2)}`
-                          : 'N/A'}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-400">Duration</p>
-                      <p className="text-gray-300">{signal.duration_minutes ? `${signal.duration_minutes}m` : 'N/A'}</p>
-                    </div>
-                  </div>
-
-                  {signal.ai_summary && (
-                    <div className="mt-3 p-3 bg-gray-800 rounded border-l-4 border-blue-500">
-                      <p className="text-xs text-blue-400 font-semibold mb-1">🤖 AI Analysis</p>
-                      <p className="text-sm text-gray-300">{signal.ai_summary}</p>
-                    </div>
-                  )}
-                </div>
-              ))
+              <HistoricalSignalsList signals={historicalSignals} />
             )}
+          </div>
+
+          {/* Pagination */}
+          <div className="flex items-center justify-between mt-4">
+            <button
+              onClick={handleHistoricalPrev}
+              disabled={!historicalPaginationInfo.hasPrev || historicalLoading}
+              className={`px-4 py-2 rounded text-sm border border-gray-600 ${
+                !historicalPaginationInfo.hasPrev || historicalLoading
+                  ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                  : 'bg-gray-800 hover:bg-gray-700'
+              }`}
+            >
+              Previous
+            </button>
+            <span className="text-xs text-gray-400">
+              Showing {historicalSignals.length} of {HISTORICAL_PAGE_SIZE} results per page
+            </span>
+            <button
+              onClick={handleHistoricalNext}
+              disabled={!historicalPaginationInfo.hasNext || historicalLoading}
+              className={`px-4 py-2 rounded text-sm border border-gray-600 ${
+                !historicalPaginationInfo.hasNext || historicalLoading
+                  ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
+                  : 'bg-gray-800 hover:bg-gray-700'
+              }`}
+            >
+              Next
+            </button>
           </div>
         </div>
 

@@ -54,8 +54,8 @@ class WalkForwardPipeline:
             sl_pct=sl_pct,
             time_bars=time_bars,
             use_atr=use_atr_labeling,
-            tp_atr_multiplier=1.5,  # Higher TP for better signals
-            sl_atr_multiplier=1.2   # Tighter SL to match signal generation
+            tp_atr_multiplier=2.0,  # Match signal_engine TP1 multiplier
+            sl_atr_multiplier=1.0   # Match signal_engine SL multiplier
         )
         self.target_confidence = target_confidence
 

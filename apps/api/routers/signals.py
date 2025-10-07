@@ -119,7 +119,7 @@ async def get_live_signals(
 
 @router.get("/history", response_model=List[SignalResponse])
 async def get_signal_history(
-    limit: int = Query(100, le=500),
+    limit: int = Query(5, le=500),
     db: AsyncSession = Depends(get_async_db)
 ):
     """Get historical signals"""
@@ -330,24 +330,153 @@ def list_signal_generation_jobs(db: Session = Depends(get_db)):
     ]
 
 
-@router.get("/historical/results", response_model=List[HistoricalSignalResponse])
+def _fetch_snapshot_results(
+    db: Session,
+    symbol: Optional[str],
+    timeframe: Optional[str],
+    limit: int,
+    job_id: Optional[str] = None,
+    cursor: Optional[str] = None,
+    sort_order: str = "desc",
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+):
+    filters = []
+    params: dict[str, object] = {"page_size": limit}
+
+    if job_id:
+        filters.append("job_id = :job_id")
+        params["job_id"] = job_id
+
+    if symbol and symbol.upper() != "ALL":
+        filters.append("symbol = :symbol")
+        params["symbol"] = symbol
+
+    if timeframe:
+        filters.append("timeframe = :timeframe")
+        params["timeframe"] = timeframe
+
+    if start_date:
+        filters.append("timestamp >= :start_date")
+        params["start_date"] = start_date
+
+    if end_date:
+        filters.append("timestamp <= :end_date")
+        params["end_date"] = end_date
+
+    filters.append("actual_net_pnl_pct IS NOT NULL")
+
+    if cursor:
+        try:
+            cursor_ts = datetime.fromisoformat(cursor)
+            if sort_order.lower() == "asc":
+                filters.append("timestamp > :cursor_ts")
+            else:
+                filters.append("timestamp < :cursor_ts")
+            params["cursor_ts"] = cursor_ts
+        except ValueError:
+            pass
+
+    where_clause = ""
+    if filters:
+        where_clause = "WHERE " + " AND ".join(filters)
+
+    order_clause = "timestamp DESC" if sort_order.lower() != "asc" else "timestamp ASC"
+
+    snapshot_query = f"""
+        SELECT signal_id,
+               symbol,
+               timeframe,
+               side,
+               entry_price,
+               timestamp,
+               tp1_price,
+               tp2_price,
+               tp3_price,
+               sl_price,
+               expected_net_profit_pct,
+               expected_net_profit_usd,
+               confidence,
+               model_id,
+               risk_profile,
+               actual_net_pnl_pct,
+               actual_net_pnl_usd,
+               final_status,
+               duration_minutes
+        FROM historical_signal_snapshots
+        {where_clause}
+        ORDER BY {order_clause}, created_at {'DESC' if sort_order.lower() != 'asc' else 'ASC'}
+        LIMIT :page_size
+    """
+
+    rows = db.execute(text(snapshot_query), params).mappings().all()
+
+    responses = []
+    for row in rows:
+        side_value = row['side'].upper() if isinstance(row['side'], str) else row['side']
+        responses.append(HistoricalSignalResponse(
+            signal_id=row['signal_id'],
+            symbol=row['symbol'],
+            side=side_value,
+            entry_price=row['entry_price'],
+            timeframe=row['timeframe'],
+            tp1_price=row['tp1_price'] or row['entry_price'],
+            tp2_price=row['tp2_price'] or row['entry_price'],
+            tp3_price=row['tp3_price'] or row['entry_price'],
+            sl_price=row['sl_price'] or row['entry_price'],
+            timestamp=row['timestamp'],
+            status=row['final_status'] or 'time_stop',
+            confidence=row['confidence'] or 0.0,
+            expected_net_profit_pct=row['expected_net_profit_pct'] or 0.0,
+            ai_summary=None,
+            actual_net_pnl_pct=row['actual_net_pnl_pct'],
+            actual_net_pnl_usd=row['actual_net_pnl_usd'],
+            final_status=row['final_status'] or 'no_data',
+            duration_minutes=row['duration_minutes'],
+            was_profitable=(row['actual_net_pnl_usd'] > 0) if row['actual_net_pnl_usd'] is not None else None,
+        ))
+
+    next_cursor = None
+    if rows:
+        last_ts = rows[-1]['timestamp']
+        if isinstance(last_ts, datetime):
+            next_cursor = last_ts.isoformat()
+
+    return responses, next_cursor
+
+
+class HistoricalSignalPage(BaseModel):
+    data: List[HistoricalSignalResponse]
+    next_cursor: Optional[str] = None
+
+
+@router.get("/historical/results", response_model=HistoricalSignalPage)
 def get_historical_signals(
     symbol: Optional[str] = Query(None),
+    timeframe: Optional[str] = Query(None),
     limit: int = Query(100, le=500),
+    job_id: Optional[str] = Query(None),
+    cursor: Optional[str] = Query(None),
+    sort_order: str = Query("desc", pattern="^(?i)(asc|desc)$"),
+    start_date: Optional[datetime] = Query(None),
+    end_date: Optional[datetime] = Query(None),
     db: Session = Depends(get_db)
 ):
     """Get historical signals with their actual results"""
     try:
-        query = db.query(Signal).outerjoin(TradeResult, Signal.signal_id == TradeResult.signal_id)
+        signals: List[Signal] = []
+        next_cursor: Optional[str] = None
 
-        if symbol:
-            if symbol.upper() != "ALL":
+        if timeframe is None:
+            query = db.query(Signal).outerjoin(TradeResult, Signal.signal_id == TradeResult.signal_id)
+
+            if symbol and symbol.upper() != "ALL":
                 query = query.filter(Signal.symbol == symbol)
 
-        query = query.order_by(desc(Signal.timestamp)).limit(limit)
-        signals = query.all()
+            query = query.order_by(desc(Signal.timestamp)).limit(limit)
+            signals = query.all()
 
-        results = []
+        results: List[HistoricalSignalResponse] = []
         for signal in signals:
             trade_result = signal.trade_results[0] if signal.trade_results else None
 
@@ -373,63 +502,32 @@ def get_historical_signals(
                 was_profitable=trade_result.net_pnl_usd > 0 if trade_result and trade_result.net_pnl_usd is not None else None
             ))
 
-        return results
+        if results:
+            return {'data': results, 'next_cursor': None}
+
+        snapshot_results, next_cursor = _fetch_snapshot_results(
+            db,
+            symbol,
+            timeframe,
+            limit,
+            job_id=job_id,
+            cursor=cursor,
+            sort_order=sort_order,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        return {'data': snapshot_results, 'next_cursor': next_cursor}
     except ProgrammingError:
         db.rollback()
-
-        base_query = """
-            SELECT signal_id,
-                   symbol,
-                   timeframe,
-                   side,
-                   entry_price,
-                   timestamp,
-                   tp1_price,
-                   tp2_price,
-                   tp3_price,
-                   sl_price,
-                   expected_net_profit_pct,
-                   expected_net_profit_usd,
-                   confidence,
-                   model_id,
-                   risk_profile,
-                   actual_net_pnl_pct,
-                   actual_net_pnl_usd,
-                   final_status,
-                   duration_minutes
-            FROM historical_signal_snapshots
-            WHERE (:symbol IS NULL OR symbol = :symbol)
-            ORDER BY created_at DESC, timestamp DESC
-            LIMIT :limit
-        """
-
-        rows = db.execute(text(base_query), {
-            'symbol': symbol,
-            'limit': limit
-        }).mappings().all()
-
-        responses = []
-        for row in rows:
-            responses.append(HistoricalSignalResponse(
-                signal_id=row['signal_id'],
-                symbol=row['symbol'],
-                side=row['side'],
-                entry_price=row['entry_price'],
-                timeframe=row['timeframe'],
-                tp1_price=row['tp1_price'] or row['entry_price'],
-                tp2_price=row['tp2_price'] or row['entry_price'],
-                tp3_price=row['tp3_price'] or row['entry_price'],
-                sl_price=row['sl_price'] or row['entry_price'],
-                timestamp=row['timestamp'],
-                status=row['final_status'] or 'time_stop',
-                confidence=row['confidence'] or 0.0,
-                expected_net_profit_pct=row['expected_net_profit_pct'] or 0.0,
-                ai_summary=None,
-                actual_net_pnl_pct=row['actual_net_pnl_pct'],
-                actual_net_pnl_usd=row['actual_net_pnl_usd'],
-                final_status=row['final_status'],
-                duration_minutes=row['duration_minutes'],
-                was_profitable=(row['actual_net_pnl_usd'] > 0) if row['actual_net_pnl_usd'] is not None else None,
-            ))
-
-        return responses
+        snapshot_results, next_cursor = _fetch_snapshot_results(
+            db,
+            symbol,
+            timeframe,
+            limit,
+            job_id=job_id,
+            cursor=cursor,
+            sort_order=sort_order,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        return {'data': snapshot_results, 'next_cursor': next_cursor}

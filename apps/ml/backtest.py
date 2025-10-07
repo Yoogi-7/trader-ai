@@ -20,7 +20,7 @@ class Backtester:
 
     def __init__(
         self,
-        initial_capital: float = 100.0,
+        initial_capital: float = 1000.0,
         maker_fee_bps: float = None,
         taker_fee_bps: float = None,
         slippage_bps: float = None,
