@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
@@ -15,6 +15,7 @@ from apps.api.db.models import (
     RiskProfile,
     Signal,
     SignalStatus,
+    SignalRejection,
     TimeFrame,
     TradeResult,
 )
@@ -299,3 +300,59 @@ async def get_system_exposure(db: Session = Depends(get_db)) -> List[AggregatedE
     )
 
     return response
+
+
+class RejectedSignalResponse(BaseModel):
+    """Response model for rejected signal"""
+    id: int
+    symbol: str
+    timeframe: str
+    environment: str
+    model_id: Optional[str] = None
+    risk_profile: str
+    failed_filters: List[str]
+    rejection_reason: str
+    created_at: str
+    inference_metadata: Optional[dict] = None
+
+
+@router.get("/rejected-signals", response_model=List[RejectedSignalResponse])
+async def get_rejected_signals(
+    hours: int = 24,
+    db: Session = Depends(get_db)
+) -> List[RejectedSignalResponse]:
+    """
+    Get list of signals rejected in the last N hours.
+
+    This endpoint shows signals that were generated but rejected by risk filters,
+    helping to understand why signals are being filtered out.
+
+    Args:
+        hours: Number of hours to look back (default: 24)
+    """
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+    query = (
+        db.query(SignalRejection)
+        .filter(SignalRejection.created_at >= cutoff)
+        .order_by(SignalRejection.created_at.desc())
+        .limit(1000)  # Safety limit
+    )
+
+    rejections = query.all()
+
+    return [
+        RejectedSignalResponse(
+            id=rej.id,
+            symbol=rej.symbol,
+            timeframe=rej.timeframe,
+            environment=rej.environment or 'production',
+            model_id=rej.model_id,
+            risk_profile=rej.risk_profile.value if isinstance(rej.risk_profile, RiskProfile) else str(rej.risk_profile),
+            failed_filters=rej.failed_filters or [],
+            rejection_reason=rej.rejection_reason or 'Unknown',
+            created_at=rej.created_at.isoformat() if rej.created_at else None,
+            inference_metadata=rej.inference_metadata
+        )
+        for rej in rejections
+    ]

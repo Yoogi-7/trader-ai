@@ -564,3 +564,22 @@ class CircuitBreaker(Base):
     triggered_at = Column(DateTime)
     resolved_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AutoTrainingConfig(Base):
+    """Configuration for continuous auto-training system"""
+    __tablename__ = "auto_training_config"
+
+    id = Column(Integer, primary_key=True, index=True)
+    enabled = Column(Boolean, default=False, index=True)
+    symbols = Column(JSON, nullable=False)  # List of symbols to auto-train
+    timeframe = Column(Enum(TimeFrame), nullable=False)
+    quick_mode = Column(Boolean, default=False)  # Start with quick training
+
+    # Evolution tracking
+    current_generation = Column(Integer, default=1)
+    best_score = Column(Float)
+    evolution_history = Column(JSON)  # Store parameter evolution history
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

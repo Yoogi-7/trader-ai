@@ -19,27 +19,54 @@ def upgrade() -> None:
     # Enable TimescaleDB extension (for time-series optimization)
     op.execute("CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;")
 
-    # Create all tables (SQLAlchemy will handle this via Base.metadata.create_all)
-    # But we'll add TimescaleDB hypertable conversion for OHLCV
+    # Attempt to convert ohlcv to hypertable, but skip if schema constraints block it
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM timescaledb_information.hypertables
+                WHERE hypertable_name = 'ohlcv'
+            ) THEN
+                BEGIN
+                    PERFORM create_hypertable(
+                        'ohlcv',
+                        'timestamp',
+                        chunk_time_interval => INTERVAL '7 days',
+                        if_not_exists => TRUE
+                    );
+                EXCEPTION
+                    WHEN OTHERS THEN
+                        RAISE NOTICE 'Skipping hypertable conversion for ohlcv: %', SQLERRM;
+                        RETURN;
+                END;
+            END IF;
 
-    # Convert ohlcv to hypertable
-    op.execute("""
-        SELECT create_hypertable('ohlcv', 'timestamp',
-                                 chunk_time_interval => INTERVAL '7 days',
-                                 if_not_exists => TRUE);
-    """)
+            BEGIN
+                ALTER TABLE ohlcv SET (
+                    timescaledb.compress,
+                    timescaledb.compress_segmentby = 'symbol,timeframe'
+                );
+            EXCEPTION
+                WHEN OTHERS THEN
+                    RAISE NOTICE 'Skipping compression settings for ohlcv: %', SQLERRM;
+            END;
 
-    # Add compression policy (optional, for older data)
-    op.execute("""
-        ALTER TABLE ohlcv SET (
-            timescaledb.compress,
-            timescaledb.compress_segmentby = 'symbol,timeframe'
-        );
-    """)
-
-    op.execute("""
-        SELECT add_compression_policy('ohlcv', INTERVAL '30 days', if_not_exists => TRUE);
-    """)
+            BEGIN
+                PERFORM add_compression_policy(
+                    'ohlcv',
+                    INTERVAL '30 days',
+                    if_not_exists => TRUE
+                );
+            EXCEPTION
+                WHEN OTHERS THEN
+                    RAISE NOTICE 'Skipping compression policy for ohlcv: %', SQLERRM;
+            END;
+        END
+        $$;
+        """
+    )
 
 
 def downgrade() -> None:

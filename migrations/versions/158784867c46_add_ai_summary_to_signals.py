@@ -17,7 +17,22 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column('signals', sa.Column('ai_summary', sa.Text(), nullable=True))
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'signals'
+                  AND column_name = 'ai_summary'
+            ) THEN
+                ALTER TABLE signals ADD COLUMN ai_summary TEXT;
+            END IF;
+        END
+        $$;
+        """
+    )
 
 
 def downgrade() -> None:

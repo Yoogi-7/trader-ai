@@ -18,6 +18,8 @@ from apps.ml.model_registry import ModelRegistry
 from apps.ml.signal_engine import SignalEngine
 from apps.ml.summaries import generate_signal_summary
 from apps.ml.drift import DriftDetector
+from apps.ml.auto_trainer import AutoTrainer, create_auto_training_config_table
+from apps.ml.cleanup import PerformanceTrackingCleanup
 from sqlalchemy import and_, text
 from datetime import datetime, timezone
 from sqlalchemy.exc import ProgrammingError
@@ -95,10 +97,12 @@ celery_app.conf.update(
         'backfill.execute': {'queue': 'backfill', 'priority': 10},
         'backfill.update_latest': {'queue': 'backfill', 'priority': 9},
         'training.train_model': {'queue': 'training', 'priority': 5},
+        'training.auto_train': {'queue': 'training', 'priority': 4},
         'signals.generate_historical': {'queue': 'historical', 'priority': 1},
         'signals.generate': {'queue': 'default', 'priority': 7},
         'signals.expire': {'queue': 'default', 'priority': 8},
         'drift.monitor': {'queue': 'default', 'priority': 3},
+        'maintenance.cleanup': {'queue': 'default', 'priority': 2},
     },
     task_default_queue='default',
     task_default_priority=5,
@@ -1532,6 +1536,112 @@ def generate_historical_signals_task(self, symbol: str, start_date: str, end_dat
         db.close()
 
 
+@celery_app.task(name="training.auto_train")
+def auto_train_task():
+    """
+    Continuous auto-training task.
+
+    This task runs periodically to:
+    1. Check which models need retraining
+    2. Train models with optimized parameters
+    3. Evolve parameters for better performance
+    """
+    db = SessionLocal()
+
+    try:
+        # Ensure config table exists
+        create_auto_training_config_table(db)
+
+        trainer = AutoTrainer(db)
+
+        # Check if auto-training is enabled
+        if not trainer.is_training_enabled():
+            logger.info("Auto-training is disabled, skipping")
+            return {"status": "disabled"}
+
+        config = trainer.get_training_config()
+        symbols = config.symbols if config else ['BTC/USDT', 'ETH/USDT', 'BNB/USDT']
+        timeframe = config.timeframe.value if config and hasattr(config.timeframe, 'value') else '15m'
+        quick_mode = config.quick_mode if config else False
+
+        results = []
+
+        for symbol in symbols:
+            # Check if model needs retraining
+            if not trainer.should_retrain(symbol, timeframe):
+                logger.info(f"Model for {symbol} {timeframe} is up to date, skipping")
+                continue
+
+            logger.info(f"Auto-training {symbol} {timeframe}")
+
+            # Run training cycle
+            result = trainer.run_training_cycle(
+                symbol=symbol,
+                timeframe=timeframe,
+                quick_mode=quick_mode
+            )
+
+            results.append(result)
+
+            # After first quick training, switch to full mode
+            if quick_mode and result.get('status') == 'completed':
+                config.quick_mode = False
+                db.commit()
+                quick_mode = False
+
+        return {
+            "status": "completed",
+            "trained": len([r for r in results if r.get('status') == 'completed']),
+            "failed": len([r for r in results if r.get('status') == 'failed']),
+            "results": results
+        }
+
+    except Exception as e:
+        logger.error(f"Auto-training task failed: {e}", exc_info=True)
+        db.rollback()
+        return {"status": "failed", "error": str(e)}
+    finally:
+        db.close()
+
+
+@celery_app.task(name="maintenance.cleanup")
+def cleanup_performance_tracking_task():
+    """
+    Cleanup old performance tracking directories.
+
+    Runs daily to prevent disk space issues from accumulated prediction logs.
+    """
+    logger.info("Starting performance tracking cleanup...")
+
+    cleanup = PerformanceTrackingCleanup(
+        tracking_dir=settings.PERFORMANCE_TRACKING_DIR,
+        max_age_days=30,  # Delete directories older than 30 days
+        max_models_per_symbol=5  # Keep only 5 most recent models per symbol
+    )
+
+    # Get stats before cleanup
+    stats_before = cleanup.get_tracking_stats()
+    logger.info(f"Performance tracking stats before cleanup: {stats_before}")
+
+    # Run cleanup
+    result = cleanup.cleanup()
+
+    # Get stats after cleanup
+    stats_after = cleanup.get_tracking_stats()
+
+    logger.info(
+        f"Cleanup completed: {result['deleted']} directories deleted "
+        f"({result['deleted_size_mb']} MB freed), {result['kept']} kept"
+    )
+    logger.info(f"Performance tracking stats after cleanup: {stats_after}")
+
+    return {
+        **result,
+        "stats_before": stats_before,
+        "stats_after": stats_after
+    }
+
+
 # Celery beat schedule (for periodic tasks)
 celery_app.conf.beat_schedule = {
     'update-latest-candles-every-15-minutes': {
@@ -1548,6 +1658,14 @@ celery_app.conf.beat_schedule = {
     },
     'monitor-drift-daily': {
         'task': 'drift.monitor',
+        'schedule': 86400.0,  # 1 day
+    },
+    'auto-train-weekly': {
+        'task': 'training.auto_train',
+        'schedule': 604800.0,  # 7 days (1 week)
+    },
+    'cleanup-performance-tracking-daily': {
+        'task': 'maintenance.cleanup',
         'schedule': 86400.0,  # 1 day
     },
 }

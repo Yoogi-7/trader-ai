@@ -11,6 +11,7 @@ from apps.api.routers import (
     backtest,
     backfill,
     train,
+    auto_train,
     settings as settings_router,
     system,
     users,
@@ -46,6 +47,7 @@ app.include_router(signals.router, prefix=f"{settings.API_V1_PREFIX}/signals", t
 app.include_router(backtest.router, prefix=f"{settings.API_V1_PREFIX}/backtest", tags=["Backtest"])
 app.include_router(backfill.router, prefix=f"{settings.API_V1_PREFIX}/backfill", tags=["Backfill"])
 app.include_router(train.router, prefix=f"{settings.API_V1_PREFIX}/train", tags=["Training"])
+app.include_router(auto_train.router, prefix=f"{settings.API_V1_PREFIX}", tags=["Auto-Training"])
 app.include_router(settings_router.router, prefix=f"{settings.API_V1_PREFIX}/settings", tags=["Settings"])
 app.include_router(system.router, prefix=f"{settings.API_V1_PREFIX}/system", tags=["System"])
 app.include_router(users.router, prefix=f"{settings.API_V1_PREFIX}/users", tags=["Users"])

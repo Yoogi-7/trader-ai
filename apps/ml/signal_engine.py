@@ -15,6 +15,7 @@ from apps.ml.features import FeatureEngineering
 from apps.ml.model_registry import ModelRegistry
 from apps.ml.models import EnsembleModel
 from apps.ml.performance_tracker import PerformanceTracker
+from apps.ml.auto_trainer import AutoTrainer
 
 logger = logging.getLogger(__name__)
 
@@ -565,11 +566,33 @@ class SignalEngine:
                 rejection_reasons=failed_filters
             )
 
-        leverage_cap = {
-            RiskProfile.LOW: settings.LOW_MAX_LEV,
-            RiskProfile.MEDIUM: settings.MED_MAX_LEV,
-            RiskProfile.HIGH: settings.HIGH_MAX_LEV
-        }[risk_profile]
+        # Automatic leverage adjustment if enabled
+        if settings.AUTO_LEVERAGE:
+            try:
+                trainer = AutoTrainer(self.db)
+                optimal_leverage = trainer.get_optimal_leverage(
+                    symbol=symbol,
+                    atr=atr,
+                    confidence=confidence
+                )
+                leverage_cap = optimal_leverage
+                logger.info(
+                    f"Auto-leverage for {symbol}: {leverage_cap}x "
+                    f"(confidence={confidence:.3f}, atr={atr:.4f})"
+                )
+            except Exception as exc:
+                logger.warning(f"Auto-leverage calculation failed, using defaults: {exc}")
+                leverage_cap = {
+                    RiskProfile.LOW: settings.LOW_MAX_LEV,
+                    RiskProfile.MEDIUM: settings.MED_MAX_LEV,
+                    RiskProfile.HIGH: settings.HIGH_MAX_LEV
+                }[risk_profile]
+        else:
+            leverage_cap = {
+                RiskProfile.LOW: settings.LOW_MAX_LEV,
+                RiskProfile.MEDIUM: settings.MED_MAX_LEV,
+                RiskProfile.HIGH: settings.HIGH_MAX_LEV
+            }[risk_profile]
 
         signal = self.signal_generator.generate_signal(
             symbol=symbol,

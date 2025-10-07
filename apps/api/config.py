@@ -28,14 +28,23 @@ class Settings(BaseSettings):
     EXCHANGE_API_KEY: str = ""
     EXCHANGE_SECRET: str = ""
 
-    # ML
-    MIN_CONFIDENCE_THRESHOLD: float = 0.52  # Lowered slightly for more signals
-    MIN_NET_PROFIT_PCT: float = 2.0  # CRITICAL: Minimum 2% net profit after ALL costs
+    # ML - OPTIMIZED FOR MORE SIGNALS WITH QUALITY
+    MIN_CONFIDENCE_THRESHOLD: float = 0.50  # Lowered for more signal generation
+    MIN_NET_PROFIT_PCT: float = 1.0  # OPTIMIZED: Minimum 1% net profit (more signals pass)
+    MIN_ACCURACY_TARGET: float = 0.60  # Target 60% accuracy for model training
     MIN_HISTORICAL_WIN_RATE: float = 0.40  # More lenient historical filter
     HISTORICAL_PERFORMANCE_SAMPLE: int = 250
     DEFAULT_LOOKBACK_YEARS: int = 4
     MODEL_REGISTRY_DIR: str = "./model_registry"
     PERFORMANCE_TRACKING_DIR: str = "./performance_tracking"
+
+    # Auto-Training Configuration
+    AUTO_TRAINING_ENABLED: bool = False  # Disabled by default, enable via API
+    AUTO_TRAINING_INTERVAL_DAYS: int = 7  # Retrain every 12 hours
+    QUICK_TRAINING_TEST_DAYS: int = 14  # Quick mode: 14 day test windows
+    QUICK_TRAINING_MIN_DAYS: int = 90  # Quick mode: 90 days min training
+    FULL_TRAINING_TEST_DAYS: int = 30  # Full mode: 30 day test windows
+    FULL_TRAINING_MIN_DAYS: int = 180  # Full mode: 180 days min training
 
     # LLM / Summaries
     LLM_PROVIDER: str = "openai"
@@ -59,10 +68,11 @@ class Settings(BaseSettings):
     MED_RISK_PER_TRADE: float = 0.05   # 5% - Balanced (RECOMMENDED)
     HIGH_RISK_PER_TRADE: float = 0.10  # 10% - Aggressive
 
-    # Leverage limits
+    # Leverage limits - AUTO-ADJUSTED based on market conditions
     LOW_MAX_LEV: int = 8
     MED_MAX_LEV: int = 20   # Higher leverage for bigger TP
     HIGH_MAX_LEV: int = 30  # For experienced traders
+    AUTO_LEVERAGE: bool = True  # Enable automatic leverage adjustment
 
     # Max concurrent positions
     LOW_MAX_POSITIONS: int = 2
