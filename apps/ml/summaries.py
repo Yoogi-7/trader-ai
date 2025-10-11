@@ -3,7 +3,7 @@
 import logging
 from dataclasses import dataclass
 from string import Template
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from apps.api.config import settings
 
@@ -45,6 +45,16 @@ class LLMClient:
         return prompt
 
 
+def _join_reason_parts(parts: List[str]) -> str:
+    if not parts:
+        return "it satisfied the strategy's safety filters"
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return ", ".join(parts[:-1]) + f", and {parts[-1]}"
+
+
 def _build_template_context(
     signal_data: Dict[str, Any],
     model_info: Optional[Dict[str, Any]] = None,
@@ -72,6 +82,19 @@ def _build_template_context(
         except (TypeError, ValueError):
             return ""
 
+    confidence_raw = signal_data.get("confidence")
+    confidence_pct_value: Optional[float] = None
+    try:
+        if confidence_raw is not None:
+            confidence_pct_value = float(confidence_raw) * 100.0
+    except (TypeError, ValueError):
+        confidence_pct_value = None
+
+    timeframe_value = signal_data.get("timeframe") or inference_metadata.get("timeframe", "")
+    risk_profile_value = signal_data.get("risk_profile") or inference_metadata.get("risk_profile", "")
+    if hasattr(risk_profile_value, "value"):
+        risk_profile_value = risk_profile_value.value
+
     context: Dict[str, Any] = {
         "signal_id": signal_data.get("signal_id", ""),
         "symbol": signal_data.get("symbol", ""),
@@ -81,13 +104,43 @@ def _build_template_context(
         "tp2_price": _fmt_float(signal_data.get("tp2_price")),
         "tp3_price": _fmt_float(signal_data.get("tp3_price")),
         "sl_price": _fmt_float(signal_data.get("sl_price")),
-        "confidence": _fmt_pct(signal_data.get("confidence")),
+        "confidence": _fmt_pct(confidence_raw),
+        "confidence_pct": _fmt_pct(confidence_pct_value, precision=1) if confidence_pct_value is not None else "N/A",
         "expected_net_profit_pct": _fmt_pct(signal_data.get("expected_net_profit_pct")),
         "risk_reward_ratio": _fmt_float(signal_data.get("risk_reward_ratio")),
         "model_id": model_info.get("model_id", signal_data.get("model_id", "")),
         "model_version": model_info.get("version", signal_data.get("model_version", "")),
-        "timeframe": signal_data.get("timeframe") or inference_metadata.get("timeframe", ""),
+        "timeframe": timeframe_value,
+        "risk_profile": str(risk_profile_value).upper() if risk_profile_value else "",
     }
+
+    reason_parts: List[str] = []
+
+    expected_profit_str = context["expected_net_profit_pct"]
+    if expected_profit_str:
+        reason_parts.append(f"it targets a {expected_profit_str}% net move")
+
+    confidence_for_reason = context["confidence_pct"]
+    if confidence_for_reason and confidence_for_reason != "N/A":
+        reason_parts.append(f"model confidence sits at {confidence_for_reason}%")
+
+    rr_ratio_str = context["risk_reward_ratio"]
+    if rr_ratio_str:
+        reason_parts.append(f"the reward-to-risk setup is about {rr_ratio_str}:1")
+
+    if timeframe_value:
+        reason_parts.append(f"conditions align on the {timeframe_value} timeframe")
+
+    if context["risk_profile"]:
+        reason_parts.append(f"it fits the {context['risk_profile']} risk profile parameters")
+
+    context["selection_reason"] = _join_reason_parts(reason_parts)
+    if not context["expected_net_profit_pct"]:
+        context["expected_net_profit_pct"] = "N/A"
+    if not context["entry_price"]:
+        context["entry_price"] = "N/A"
+    if not context["confidence_pct"] or context["confidence_pct"] == "N/A":
+        context["confidence_pct"] = context["confidence_pct"] or "N/A"
 
     return context
 

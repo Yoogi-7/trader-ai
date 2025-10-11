@@ -9,7 +9,16 @@ import uuid
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
 
-from apps.api.db.models import RiskProfile, Side, OHLCV, MarketMetrics, Signal, SignalStatus
+from apps.api.db.models import (
+    RiskProfile,
+    Side,
+    OHLCV,
+    MarketMetrics,
+    Signal,
+    SignalStatus,
+    TimeFrame,
+    ModelRegistry as ModelRecord,
+)
 from apps.api.config import settings
 from apps.ml.features import FeatureEngineering
 from apps.ml.model_registry import ModelRegistry
@@ -578,6 +587,17 @@ class SignalEngine:
             )
             return None
 
+        timeframe_value = timeframe.value if isinstance(timeframe, Enum) else str(timeframe)
+
+        try:
+            timeframe_enum = TimeFrame(timeframe_value)
+        except ValueError:
+            logger.warning(
+                "Unable to resolve timeframe enum for %s; duplicate-signal guard will fallback to symbol-level check",
+                timeframe_value
+            )
+            timeframe_enum = None
+
         try:
             latest_snapshot = self._prepare_latest_snapshot(symbol, timeframe)
         except ValueError as exc:
@@ -623,7 +643,8 @@ class SignalEngine:
             'spread': spread_bps <= self.max_spread_bps,
             'correlation': True,
             'profit': True,
-            'position_limit': True
+            'position_limit': True,
+            'duplicate': True
         }
 
         inference_metadata = {
@@ -631,7 +652,8 @@ class SignalEngine:
             'confidence': confidence,
             'side': side.value,
             'environment': environment,
-            'timestamp': latest_snapshot['timestamp']
+            'timestamp': latest_snapshot['timestamp'],
+            'timeframe': timeframe_value
         }
 
         prediction_record = inference_df.copy()
@@ -673,6 +695,42 @@ class SignalEngine:
                 symbol,
                 timeframe,
                 {k: v for k, v in risk_filters.items() if not v}
+            )
+            return SignalInferenceResult(
+                signal=None,
+                model_info=self._build_model_info(deployment),
+                risk_filters=risk_filters,
+                inference_metadata=inference_metadata,
+                accepted=False,
+                rejection_reasons=failed_filters
+            )
+
+        duplicate_query = (
+            self.db.query(Signal)
+            .filter(
+                Signal.symbol == symbol,
+                Signal.status.in_([SignalStatus.PENDING, SignalStatus.ACTIVE]),
+                Signal.valid_until > datetime.utcnow()
+            )
+        )
+
+        if timeframe_enum is not None:
+            duplicate_query = duplicate_query.join(
+                ModelRecord,
+                Signal.model_id == ModelRecord.model_id,
+                isouter=True
+            ).filter(ModelRecord.timeframe == timeframe_enum)
+
+        existing_active_signal = duplicate_query.order_by(Signal.timestamp.desc()).first()
+
+        if existing_active_signal:
+            risk_filters['duplicate'] = False
+            failed_filters = [k for k, v in risk_filters.items() if not v]
+            logger.info(
+                "Signal for %s %s rejected due to existing active signal (%s)",
+                symbol,
+                timeframe_value,
+                existing_active_signal.signal_id
             )
             return SignalInferenceResult(
                 signal=None,
@@ -787,6 +845,7 @@ class SignalEngine:
 
         signal['model_id'] = deployment.get('model_id')
         signal['model_version'] = deployment.get('version')
+        signal['timeframe'] = timeframe_value
 
         return SignalInferenceResult(
             signal=signal,

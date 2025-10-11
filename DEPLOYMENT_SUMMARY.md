@@ -135,7 +135,7 @@ curl http://localhost:8000/api/v1/system/rejected-signals?hours=24
 ## 📈 Celery Beat Schedule (Automatyczne zadania)
 
 ```python
-'update-latest-candles-every-15-minutes':    co 15 min
+'update-latest-candles-every-5-minutes':     co 5 min
 'generate-signals-every-5-minutes':          co 5 min
 'expire-signals-every-5-minutes':            co 5 min
 'monitor-drift-daily':                        co 24h

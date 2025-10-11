@@ -11,14 +11,14 @@ TraderAI is an AI-powered cryptocurrency futures trading signal system that uses
 ### 1. **Data Management & Backfill**
 
 #### Historical Data Backfill
-- **Full History Import**: Fetch complete historical OHLCV (Open, High, Low, Close, Volume) data from Binance
-- **Incremental Updates**: Automatically update latest candles every 15 minutes
+- **Full History Import**: Fetch complete historical OHLCV (Open, High, Low, Close, Volume) data from Bitget
+- **Incremental Updates**: Automatically update latest candles every 5 minutes
 - **Multi-Timeframe Support**: 1m, 5m, 15m, 1h, 4h, 1d timeframes
 - **Progress Tracking**: Real-time backfill progress with ETA and speed metrics
 - **Gap Detection**: Automatically identify and fill data gaps
 - **Supported Pairs**:
   - BTC/USDT, ETH/USDT, BNB/USDT, XRP/USDT
-  - ADA/USDT, SOL/USDT, DOGE/USDT, MATIC/USDT
+  - ADA/USDT, SOL/USDT, DOGE/USDT, POL/USDT
   - DOT/USDT, AVAX/USDT, LINK/USDT, UNI/USDT
 
 #### Database Status
@@ -260,7 +260,7 @@ TraderAI is an AI-powered cryptocurrency futures trading signal system that uses
 
 ## Data Flow
 
-1. **Data Ingestion**: Binance API → PostgreSQL
+1. **Data Ingestion**: Bitget API → PostgreSQL
 2. **Feature Engineering**: Raw OHLCV → 100+ features
 3. **Labeling**: Triple barrier method → Binary labels
 4. **Training**: Walk-forward validation → Ensemble model

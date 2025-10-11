@@ -60,14 +60,14 @@ docker-compose exec db psql -U traderai -d traderai -c \
 ### 2. **Automatyczna aktualizacja danych** ✅
 
 ```python
-'update-latest-candles-every-15-minutes': {
+'update-latest-candles-every-5-minutes': {
     'task': 'backfill.update_latest',
-    'schedule': 900.0,  # CO 15 MINUT
+    'schedule': 300.0,  # CO 5 MINUT
 }
 ```
 
 **Co się dzieje**:
-- Co 15 minut pobiera najnowsze świece z Binance
+- Co 5 minut pobiera najnowsze świece z Bitget
 - Aktualizuje OHLCV w bazie
 - System zawsze ma świeże dane
 
@@ -133,7 +133,7 @@ System **NIE MA** automatycznego wykonywania tradów na giełdzie.
 
 **Co musisz zrobić ręcznie**:
 1. Zobaczysz sygnał w UI/API
-2. **Ręcznie** otworzysz trade na Binance
+2. **Ręcznie** otworzysz trade na Bitget
 3. **Ręcznie** ustawisz TP/SL
 4. **Ręcznie** będziesz monitorować
 
@@ -173,7 +173,7 @@ apps/ml/trading/
    ```python
    @celery_task(schedule=60.0)  # Co minutę
    def monitor_positions():
-       # 1. Pobierz open positions z Binance
+       # 1. Pobierz open positions z Bitget
        # 2. Sprawdź które TP zostały trafione
        # 3. Aktualizuj trailing SL po TP1
        # 4. Zapisz status do bazy
@@ -645,7 +645,7 @@ celery_app.conf.beat_schedule.update({
 - [ ] Dodaj Celery task `trading.execute`
 - [ ] Dodaj Celery task `trading.monitor`
 - [ ] Dodaj flag `auto_trade_enabled` do signals
-- [ ] Testy na sandbox Binance
+- [ ] Testy na sandbox Bitget
 
 ### Phase 2: Advanced (3-5 dni)
 - [ ] Implementuj trailing SL
@@ -683,7 +683,7 @@ docker-compose exec db psql -U traderai -d traderai -c \
 
 ### 4. **Lub traduj ręcznie**:
 - Obserwuj UI/API
-- Ręcznie otwieraj pozycje na Binance
+- Ręcznie otwieraj pozycje na Bitget
 - Monitoruj zyski
 
 ---

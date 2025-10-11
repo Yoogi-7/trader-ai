@@ -133,9 +133,16 @@ def train_model_task(
     timeframe: str,
     test_period_days: int = 30,
     min_train_days: int = 180,
-    use_expanding_window: bool = True
+    use_expanding_window: bool = True,
+    training_mode: str = 'full'
 ):
-    """Train ML model with walk-forward validation using expanding windows"""
+    """
+    Train ML model with walk-forward validation.
+
+    Args:
+        training_mode: 'quick' for fast validation (3-4h, ~5 folds)
+                      'full' for complete training (35-45h, ~45 folds)
+    """
     from apps.api.db.models import TrainingJob, TimeFrame, ModelRegistry as ModelRecord
     from datetime import datetime
 
@@ -351,6 +358,7 @@ def train_model_task(
             test_period_days=test_period_days,
             min_train_days=min_train_days,
             use_expanding_window=use_expanding_window,
+            training_mode=training_mode,
             progress_callback={
                 'training': update_training_progress,
                 'labeling': update_labeling_progress
@@ -863,14 +871,14 @@ def _build_signal_broadcast_payload(signal_record, signal_data, model_info, infe
 
 @celery_app.task(name="backfill.update_latest")
 def update_latest_candles_task():
-    """Update latest candles for all active symbols (runs every 15 minutes)"""
+    """Update latest candles for all active symbols (runs every 5 minutes)"""
     db = SessionLocal()
     try:
         from apps.ml.backfill import BackfillService
         from apps.api.db.models import TimeFrame
         from datetime import datetime, timedelta
 
-        # List of trading pairs to track (updated with current Binance symbols)
+        # List of trading pairs to track (Bitget USDT-margined swaps)
         TRACKED_PAIRS = [
             'BTC/USDT',
             'ETH/USDT',
@@ -1655,9 +1663,9 @@ def cleanup_performance_tracking_task():
 
 # Celery beat schedule (for periodic tasks)
 celery_app.conf.beat_schedule = {
-    'update-latest-candles-every-15-minutes': {
+    'update-latest-candles-every-5-minutes': {
         'task': 'backfill.update_latest',
-        'schedule': 900.0,  # 15 minutes
+        'schedule': 300.0,  # 5 minutes
     },
     'generate-signals-every-15-minutes': {
         'task': 'signals.generate',

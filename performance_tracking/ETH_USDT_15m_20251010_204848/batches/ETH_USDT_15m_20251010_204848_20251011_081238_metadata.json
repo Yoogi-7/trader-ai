@@ -1,0 +1,20 @@
+{
+  "batch_id": "ETH_USDT_15m_20251010_204848_20251011_081238",
+  "model_id": "ETH_USDT_15m_20251010_204848",
+  "symbol": "ETH/USDT",
+  "timeframe": "15m",
+  "timestamp": "2025-10-11T08:12:38.708634",
+  "num_predictions": 1,
+  "metadata": {
+    "probability": 0.09414597394048184,
+    "confidence": 0.9058540260595181,
+    "side": "short",
+    "environment": "production",
+    "timestamp": "2025-10-11 08:00:00",
+    "timeframe": "15m",
+    "risk_profile": "medium",
+    "capital_usd": 1000.0,
+    "model_version": "v1"
+  },
+  "predictions_path": "performance_tracking/ETH_USDT_15m_20251010_204848/batches/ETH_USDT_15m_20251010_204848_20251011_081238_predictions.csv"
+}

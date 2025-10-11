@@ -90,6 +90,9 @@ class FeatureEngineering:
         if 'sentiment_score' not in df.columns:
             df['sentiment_score'] = 0.0
 
+        # Rolling statistics for better trend detection
+        df = self._add_rolling_stats(df)
+
         return df
 
     def _add_emas(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -637,18 +640,49 @@ class FeatureEngineering:
         """Detect RSI divergences vs price"""
         if 'rsi_14' not in df.columns:
             return df
-        
+
         rsi = df['rsi_14']
         price = df['close']
-        
+
         # Detect higher highs in price but lower highs in RSI (bearish divergence)
         price_higher_high = (price > price.shift(window)) & (price > price.shift(1))
         rsi_lower_high = (rsi < rsi.shift(window)) & (rsi < rsi.shift(1))
         df['bearish_divergence'] = (price_higher_high & rsi_lower_high).astype(int)
-        
+
         # Detect lower lows in price but higher lows in RSI (bullish divergence)
         price_lower_low = (price < price.shift(window)) & (price < price.shift(1))
         rsi_higher_low = (rsi > rsi.shift(window)) & (rsi > rsi.shift(1))
         df['bullish_divergence'] = (price_lower_low & rsi_higher_low).astype(int)
-        
+
+        return df
+
+    def _add_rolling_stats(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add rolling statistics for better trend detection"""
+        # Price rolling stats
+        df['close_rolling_mean_20'] = df['close'].rolling(20).mean()
+        df['close_rolling_std_20'] = df['close'].rolling(20).std()
+        df['close_zscore'] = (df['close'] - df['close_rolling_mean_20']) / (df['close_rolling_std_20'] + 1e-10)
+
+        # Volume rolling stats
+        df['volume_rolling_mean_20'] = df['volume'].rolling(20).mean()
+        df['volume_rolling_std_20'] = df['volume'].rolling(20).std()
+        df['volume_zscore'] = (df['volume'] - df['volume_rolling_mean_20']) / (df['volume_rolling_std_20'] + 1e-10)
+
+        # Price momentum features
+        df['price_momentum_5'] = df['close'].pct_change(5)
+        df['price_momentum_10'] = df['close'].pct_change(10)
+        df['price_momentum_20'] = df['close'].pct_change(20)
+
+        # Volume momentum features
+        df['volume_momentum_5'] = df['volume'].pct_change(5)
+        df['volume_momentum_10'] = df['volume'].pct_change(10)
+
+        # Price/Volume correlation
+        df['price_volume_corr'] = df['close'].rolling(20).corr(df['volume'])
+
+        # High-Low range statistics
+        df['hl_range'] = (df['high'] - df['low']) / df['close']
+        df['hl_range_ma'] = df['hl_range'].rolling(20).mean()
+        df['hl_range_std'] = df['hl_range'].rolling(20).std()
+
         return df

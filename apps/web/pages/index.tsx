@@ -160,23 +160,37 @@ function useLiveSignals(riskProfile: string) {
           if (isMountedRef.current) {
             setSignals(payload)
           }
-        } else if (payload && typeof payload === 'object' && 'signal_id' in payload) {
+        } else if (payload && typeof payload === 'object') {
+          const signalPayload =
+            'signal_id' in payload
+              ? (payload as Signal)
+              : ('data' in payload &&
+                  payload.data &&
+                  typeof payload.data === 'object' &&
+                  'signal_id' in payload.data
+                ? (payload.data as Signal)
+                : null)
+
+          if (!signalPayload) {
+            return
+          }
+
           setSignals((prevSignals) => {
             if (!isMountedRef.current) {
               return prevSignals
             }
 
             const existingIndex = prevSignals.findIndex(
-              (signal) => signal.signal_id === (payload as Signal).signal_id
+              (signal) => signal.signal_id === signalPayload.signal_id
             )
 
             if (existingIndex >= 0) {
               const updatedSignals = [...prevSignals]
-              updatedSignals[existingIndex] = payload as Signal
+              updatedSignals[existingIndex] = signalPayload
               return updatedSignals
             }
 
-            return [payload as Signal, ...prevSignals]
+            return [signalPayload, ...prevSignals]
           })
         }
       } catch (error) {

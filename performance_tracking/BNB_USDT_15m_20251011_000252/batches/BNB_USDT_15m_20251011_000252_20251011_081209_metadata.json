@@ -1,0 +1,20 @@
+{
+  "batch_id": "BNB_USDT_15m_20251011_000252_20251011_081209",
+  "model_id": "BNB_USDT_15m_20251011_000252",
+  "symbol": "BNB/USDT",
+  "timeframe": "15m",
+  "timestamp": "2025-10-11T08:12:09.858872",
+  "num_predictions": 1,
+  "metadata": {
+    "probability": 0.06936018047181411,
+    "confidence": 0.9306398195281859,
+    "side": "short",
+    "environment": "production",
+    "timestamp": "2025-10-11 08:00:00",
+    "timeframe": "15m",
+    "risk_profile": "medium",
+    "capital_usd": 1000.0,
+    "model_version": "v1"
+  },
+  "predictions_path": "performance_tracking/BNB_USDT_15m_20251011_000252/batches/BNB_USDT_15m_20251011_000252_20251011_081209_predictions.csv"
+}

@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080
 
     # Exchange
-    EXCHANGE_ID: str = "binance"
+    EXCHANGE_ID: str = "bitget"
     EXCHANGE_SANDBOX: bool = False
     EXCHANGE_API_KEY: str = ""
     EXCHANGE_SECRET: str = ""
@@ -52,8 +52,9 @@ class Settings(BaseSettings):
     LLM_API_KEY: str = ""
     LLM_MAX_TOKENS: int = 512
     LLM_SUMMARY_TEMPLATE: str = (
-        "Signal $signal_id on $symbol recommends a $side position at $entry_price "
-        "with expected profit of $expected_net_profit_pct% and confidence $confidence%."
+        "$symbol signal recommends a $side position at $entry_price "
+        "with expected profit of $expected_net_profit_pct% and model confidence of $confidence_pct%. "
+        "Selected because $selection_reason."
     )
 
     # Costs

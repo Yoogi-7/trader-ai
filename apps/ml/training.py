@@ -24,8 +24,8 @@ class WalkForwardPipeline:
     def __init__(
         self,
         model_dir: str = "./models",
-        test_period_days: int = 30,
-        min_train_days: int = 180,
+        test_period_days: int = 21,  # Reduced from 30 for faster training
+        min_train_days: int = 120,  # Reduced from 180 (4 months minimum)
         purge_days: int = 2,
         embargo_days: int = 1,
         use_expanding_window: bool = True,
@@ -35,10 +35,31 @@ class WalkForwardPipeline:
         use_atr_labeling: bool = True,
         tp_atr_multiplier: float = 1.0,
         sl_atr_multiplier: float = 1.5,
-        target_confidence: float = 0.55
+        target_confidence: float = 0.55,
+        training_mode: str = 'full'  # 'quick' or 'full'
     ):
+        """
+        Initialize walk-forward training pipeline.
+
+        Args:
+            training_mode: 'quick' for fast validation (3-4h, ~5 folds),
+                          'full' for complete training (35-45h, ~45 folds)
+        """
         self.model_dir = Path(model_dir)
         self.model_dir.mkdir(parents=True, exist_ok=True)
+        self.training_mode = training_mode
+
+        # Adjust parameters based on training mode
+        if training_mode == 'quick':
+            # Quick validation: 3-4 hours, ~5 folds
+            # Use last 6 months of data only, larger test periods
+            test_period_days = 60  # 2 months per fold
+            min_train_days = 180  # Start with 6 months
+            use_expanding_window = False  # Fixed window for speed
+            logger.info("🚀 QUICK TRAINING MODE: ~5 folds, 3-4 hours, validation only")
+        else:
+            # Full training: use provided parameters (35-45h, ~45 folds)
+            logger.info("📊 FULL TRAINING MODE: ~45 folds, 35-45 hours, production model")
 
         self.validator = WalkForwardValidator(
             test_period_days=test_period_days,
@@ -54,7 +75,7 @@ class WalkForwardPipeline:
             sl_pct=sl_pct,
             time_bars=time_bars,
             use_atr=use_atr_labeling,
-            tp_atr_multiplier=2.0,  # Match signal_engine TP1 multiplier
+            tp_atr_multiplier=3.5,  # Increased from 2.0 to 3.5 (match TP2 in signal_engine)
             sl_atr_multiplier=1.0   # Match signal_engine SL multiplier
         )
         self.target_confidence = target_confidence
@@ -523,15 +544,17 @@ def train_model_pipeline(
     test_period_days: int = 30,
     min_train_days: int = 180,
     use_expanding_window: bool = True,
+    training_mode: str = 'full',
     start_date: datetime = None,
     end_date: datetime = None,
     progress_callback=None
 ) -> dict:
     """
-    Complete training pipeline with walk-forward validation using expanding windows.
+    Complete training pipeline with walk-forward validation.
 
     Args:
         db: Database session
+        training_mode: 'quick' for fast validation (3-4h), 'full' for production (35-45h)
         symbol: Trading pair
         timeframe: Timeframe
         test_period_days: OOS test window size (default: 30 days)
@@ -570,7 +593,8 @@ def train_model_pipeline(
     pipeline = WalkForwardPipeline(
         test_period_days=test_period_days,
         min_train_days=min_train_days,
-        use_expanding_window=use_expanding_window
+        use_expanding_window=use_expanding_window,
+        training_mode=training_mode
     )
 
     results = pipeline.run_walk_forward_validation(

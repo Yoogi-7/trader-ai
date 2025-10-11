@@ -22,10 +22,15 @@ class CCXTClient:
         """Initialize CCXT exchange instance"""
         exchange_class = getattr(ccxt, self.exchange_id)
 
-        config = {
-            'enableRateLimit': True,
-            'options': {'defaultType': 'future'}
-        }
+        config = {'enableRateLimit': True}
+
+        if self.exchange_id == 'bitget':
+            config['options'] = {
+                'defaultType': 'swap',
+                'defaultSubType': 'linear'
+            }
+        else:
+            config['options'] = {'defaultType': 'future'}
 
         if settings.EXCHANGE_API_KEY and settings.EXCHANGE_SECRET:
             config['apiKey'] = settings.EXCHANGE_API_KEY
@@ -39,6 +44,15 @@ class CCXTClient:
 
         logger.info(f"Initialized {self.exchange_id} exchange (sandbox={settings.EXCHANGE_SANDBOX})")
         return exchange
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        """Translate canonical symbol notation to exchange-specific format."""
+        if self.exchange_id == 'bitget':
+            if ':' in symbol:
+                return symbol
+            if symbol.endswith('/USDT'):
+                return f"{symbol}:USDT"
+        return symbol
 
     def fetch_ohlcv(
         self,
@@ -59,17 +73,19 @@ class CCXTClient:
         Returns:
             List of [timestamp, open, high, low, close, volume]
         """
+        original_symbol = symbol
+        symbol = self._normalize_symbol(symbol)
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit)
             return ohlcv
         except ccxt.NetworkError as e:
-            logger.error(f"Network error fetching {symbol} {timeframe}: {e}")
+            logger.error(f"Network error fetching {original_symbol} ({symbol}) {timeframe}: {e}")
             raise
         except ccxt.ExchangeError as e:
-            logger.error(f"Exchange error fetching {symbol} {timeframe}: {e}")
+            logger.error(f"Exchange error fetching {original_symbol} ({symbol}) {timeframe}: {e}")
             raise
         except Exception as e:
-            logger.error(f"Unexpected error fetching {symbol} {timeframe}: {e}")
+            logger.error(f"Unexpected error fetching {original_symbol} ({symbol}) {timeframe}: {e}")
             raise
 
     def fetch_ohlcv_range(
@@ -129,7 +145,7 @@ class CCXTClient:
     def fetch_funding_rate(self, symbol: str) -> Optional[float]:
         """Fetch current funding rate for a futures symbol"""
         try:
-            funding = self.exchange.fetch_funding_rate(symbol)
+            funding = self.exchange.fetch_funding_rate(self._normalize_symbol(symbol))
             return funding.get('fundingRate', 0.0)
         except Exception as e:
             logger.warning(f"Could not fetch funding rate for {symbol}: {e}")
@@ -138,7 +154,7 @@ class CCXTClient:
     def fetch_open_interest(self, symbol: str) -> Optional[float]:
         """Fetch current open interest for a futures symbol"""
         try:
-            oi = self.exchange.fetch_open_interest(symbol)
+            oi = self.exchange.fetch_open_interest(self._normalize_symbol(symbol))
             return oi.get('openInterest', 0.0)
         except Exception as e:
             logger.warning(f"Could not fetch open interest for {symbol}: {e}")
@@ -147,7 +163,7 @@ class CCXTClient:
     def fetch_order_book(self, symbol: str, limit: int = 20) -> Optional[dict]:
         """Fetch order book (depth)"""
         try:
-            orderbook = self.exchange.fetch_order_book(symbol, limit=limit)
+            orderbook = self.exchange.fetch_order_book(self._normalize_symbol(symbol), limit=limit)
             return orderbook
         except Exception as e:
             logger.warning(f"Could not fetch order book for {symbol}: {e}")
@@ -200,15 +216,27 @@ class CCXTClient:
     def get_available_pairs(self, quote: str = 'USDT', contract_type: str = 'future') -> List[str]:
         """Get list of available trading pairs"""
         markets = self.exchange.markets
+        target_type = contract_type
+
+        if self.exchange_id == 'bitget':
+            # Bitget uses 'swap' type for USDT-margined perpetuals
+            target_type = 'swap' if contract_type == 'future' else contract_type
 
         pairs = [
             symbol for symbol, market in markets.items()
             if market.get('quote') == quote
-            and market.get('type') == contract_type
+            and market.get('type') == target_type
             and market.get('active', False)
         ]
 
-        return sorted(pairs)
+        normalized_pairs = []
+        for symbol in pairs:
+            if self.exchange_id == 'bitget' and ':USDT' in symbol:
+                normalized_pairs.append(symbol.split(':')[0])
+            else:
+                normalized_pairs.append(symbol)
+
+        return sorted(set(normalized_pairs))
 
     def get_earliest_timestamp(self, symbol: str, timeframe: str) -> Optional[datetime]:
         """

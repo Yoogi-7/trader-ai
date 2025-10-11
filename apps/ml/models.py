@@ -27,29 +27,33 @@ class EnsembleModel:
             'objective': 'binary',
             'metric': 'auc',
             'boosting_type': 'gbdt',
-            'num_leaves': 63,
-            'learning_rate': 0.03,
-            'feature_fraction': 0.8,
-            'bagging_fraction': 0.8,
+            'num_leaves': 127,  # Increased from 63 for more complex patterns
+            'learning_rate': 0.02,  # Lower for more stable training
+            'feature_fraction': 0.85,  # Increased from 0.8
+            'bagging_fraction': 0.85,  # Increased from 0.8
             'bagging_freq': 5,
-            'min_child_samples': 20,
-            'reg_alpha': 0.1,
-            'reg_lambda': 0.1,
-            'max_depth': -1,
+            'min_child_samples': 15,  # Lower from 20 for more flexibility
+            'reg_alpha': 0.05,  # Lower regularization
+            'reg_lambda': 0.05,  # Lower regularization
+            'max_depth': 10,  # Add depth limit for better generalization
+            'is_unbalance': True,  # Handle class imbalance
+            'scale_pos_weight': 2.0,  # Give more weight to positive class
             'verbose': -1
         }
 
         self.xgb_params = xgb_params or {
             'objective': 'binary:logistic',
             'eval_metric': 'auc',
-            'max_depth': 8,
-            'learning_rate': 0.03,
-            'subsample': 0.8,
-            'colsample_bytree': 0.8,
-            'min_child_weight': 3,
-            'gamma': 0.1,
-            'reg_alpha': 0.1,
-            'reg_lambda': 1.0,
+            'max_depth': 10,  # Increased from 8
+            'learning_rate': 0.02,  # Lower from 0.03
+            'subsample': 0.85,  # Increased from 0.8
+            'colsample_bytree': 0.85,  # Increased from 0.8
+            'min_child_weight': 2,  # Lower from 3 for more flexibility
+            'gamma': 0.05,  # Lower from 0.1
+            'reg_alpha': 0.05,  # Lower from 0.1
+            'reg_lambda': 0.5,  # Lower from 1.0
+            'scale_pos_weight': 2.0,  # Balance classes
+            'tree_method': 'hist',  # Faster training
             'verbosity': 0
         }
 
@@ -62,34 +66,39 @@ class EnsembleModel:
         X_train: pd.DataFrame,
         y_train: pd.Series,
         X_val: pd.DataFrame,
-        y_val: pd.Series
+        y_val: pd.Series,
+        sample_weights: Optional[np.ndarray] = None
     ):
-        """Train both models"""
+        """Train both models with optional sample weights for recency bias"""
         self.feature_names = list(X_train.columns)
 
+        # Apply recency weights if not provided (recent data gets higher weight)
+        if sample_weights is None:
+            sample_weights = np.linspace(0.5, 1.0, len(X_train))
+
         logger.info("Training LightGBM model...")
-        train_data = lgb.Dataset(X_train, label=y_train)
+        train_data = lgb.Dataset(X_train, label=y_train, weight=sample_weights)
         val_data = lgb.Dataset(X_val, label=y_val, reference=train_data)
 
         self.lgbm_model = lgb.train(
             self.lgbm_params,
             train_data,
-            num_boost_round=15000,
+            num_boost_round=20000,  # Increased from 15000
             valid_sets=[val_data],
-            callbacks=[lgb.early_stopping(stopping_rounds=500), lgb.log_evaluation(period=1500)]
+            callbacks=[lgb.early_stopping(stopping_rounds=800), lgb.log_evaluation(period=2000)]  # More patience
         )
 
         logger.info("Training XGBoost model...")
-        dtrain = xgb.DMatrix(X_train, label=y_train)
+        dtrain = xgb.DMatrix(X_train, label=y_train, weight=sample_weights)
         dval = xgb.DMatrix(X_val, label=y_val)
 
         self.xgb_model = xgb.train(
             self.xgb_params,
             dtrain,
-            num_boost_round=15000,
+            num_boost_round=20000,  # Increased from 15000
             evals=[(dval, 'val')],
-            early_stopping_rounds=500,
-            verbose_eval=1500
+            early_stopping_rounds=800,  # More patience
+            verbose_eval=2000
         )
 
         logger.info("Ensemble training completed")
@@ -108,15 +117,15 @@ class EnsembleModel:
         ensemble_proba = (0.6 * lgbm_proba + 0.4 * xgb_proba)
         return ensemble_proba
 
-    def predict(self, X: pd.DataFrame, threshold: float = 0.5) -> np.ndarray:
-        """Predict binary labels"""
+    def predict(self, X: pd.DataFrame, threshold: float = 0.35) -> np.ndarray:
+        """Predict binary labels with optimized threshold for better recall"""
         proba = self.predict_proba(X)
         return (proba >= threshold).astype(int)
 
-    def evaluate(self, X: pd.DataFrame, y: pd.Series) -> Dict[str, float]:
-        """Evaluate model performance"""
+    def evaluate(self, X: pd.DataFrame, y: pd.Series, threshold: float = 0.35) -> Dict[str, float]:
+        """Evaluate model performance with optimized threshold"""
         y_proba = self.predict_proba(X)
-        y_pred = (y_proba >= 0.5).astype(int)
+        y_pred = (y_proba >= threshold).astype(int)
 
         metrics = {
             'accuracy': accuracy_score(y, y_pred),
@@ -127,6 +136,23 @@ class EnsembleModel:
         }
 
         return metrics
+
+    def find_optimal_threshold(self, X: pd.DataFrame, y: pd.Series) -> float:
+        """Find threshold that maximizes F1 score"""
+        y_proba = self.predict_proba(X)
+
+        best_f1 = 0
+        best_threshold = 0.35
+
+        for threshold in np.arange(0.25, 0.65, 0.05):
+            y_pred = (y_proba >= threshold).astype(int)
+            f1 = f1_score(y, y_pred, zero_division=0)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_threshold = threshold
+
+        logger.info(f"Optimal threshold: {best_threshold:.2f} (F1: {best_f1:.4f})")
+        return best_threshold
 
     def get_feature_importance(self) -> pd.DataFrame:
         """Get combined feature importance from both models"""

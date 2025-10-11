@@ -63,7 +63,7 @@ TraderAI is designed as a modular, production-ready trading signal system with c
 ### 1. Data Pipeline
 
 **CCXT Client** ([apps/ml/ccxt_client.py](apps/ml/ccxt_client.py))
-- Fetches OHLCV data from exchanges (Binance futures)
+- Fetches OHLCV data from exchanges (Bitget USDT-margined swaps)
 - Handles rate limiting, retries, error handling
 - Supports multiple timeframes (1m → 1d)
 

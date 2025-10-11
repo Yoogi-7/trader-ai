@@ -231,6 +231,89 @@ def test_signal_engine_pipeline_respects_position_limit():
     engine.dispose()
 
 
+def test_signal_engine_prevents_duplicate_active_signal():
+    SessionLocal, engine = create_sqlite_session()
+    session = SessionLocal()
+    insert_mock_ohlcv(session)
+
+    registry_record = ModelRegistryRecord(
+        model_id='model123',
+        symbol='BTC/USDT',
+        timeframe=TimeFrame.M15,
+        model_type='ensemble',
+        version='v1',
+        train_start=datetime.utcnow() - timedelta(days=200),
+        train_end=datetime.utcnow() - timedelta(days=60),
+        oos_start=datetime.utcnow() - timedelta(days=60),
+        oos_end=datetime.utcnow() - timedelta(days=1),
+        hyperparameters={}
+    )
+    session.add(registry_record)
+
+    session.add(
+        Signal(
+            signal_id="existing_active",
+            symbol="BTC/USDT",
+            side=Side.LONG,
+            entry_price=52000.0,
+            timestamp=datetime.utcnow() - timedelta(minutes=5),
+            tp1_price=53000.0,
+            tp1_pct=30.0,
+            tp2_price=54000.0,
+            tp2_pct=40.0,
+            tp3_price=55000.0,
+            tp3_pct=30.0,
+            sl_price=51000.0,
+            leverage=5.0,
+            margin_mode="ISOLATED",
+            position_size_usd=100.0,
+            quantity=0.01,
+            risk_reward_ratio=2.0,
+            estimated_liquidation=45000.0,
+            max_loss_usd=50.0,
+            model_id='model123',
+            confidence=0.7,
+            expected_net_profit_pct=3.0,
+            expected_net_profit_usd=30.0,
+            valid_until=datetime.utcnow() + timedelta(hours=1),
+            status=SignalStatus.ACTIVE,
+            risk_profile=RiskProfile.MEDIUM
+        )
+    )
+    session.commit()
+
+    deployment = {
+        'model_id': 'model123',
+        'version': 'v1',
+        'path': 'unused',
+        'symbol': 'BTC/USDT',
+        'timeframe': '15m'
+    }
+
+    engine_service = SignalEngine(
+        db=session,
+        registry=DummyRegistry(deployment),
+        model_factory=lambda: DummyModel(0.8),
+        lookback_bars=90
+    )
+
+    result = engine_service.generate_for_deployment(
+        symbol='BTC/USDT',
+        timeframe='15m',
+        risk_profile=RiskProfile.MEDIUM,
+        capital_usd=1000.0
+    )
+
+    assert result is not None
+    assert result.accepted is False
+    assert result.signal is None
+    assert result.risk_filters['duplicate'] is False
+    assert result.risk_filters['position_limit'] is True
+
+    session.close()
+    engine.dispose()
+
+
 def test_generate_signals_task_returns_statistics(monkeypatch):
     SessionLocal, engine = create_sqlite_session()
     session = SessionLocal()

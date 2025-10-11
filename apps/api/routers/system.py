@@ -167,7 +167,7 @@ async def get_system_status(db: Session = Depends(get_db)):
 async def get_candles_info(db: Session = Depends(get_db)):
     """Get candle database info for all tracked trading pairs"""
 
-    # List of tracked pairs (same as in worker.py)
+    # List of tracked pairs (same as in worker.py, Bitget swaps)
     TRACKED_PAIRS = [
         'BTC/USDT', 'ETH/USDT', 'BNB/USDT', 'XRP/USDT',
         'ADA/USDT', 'SOL/USDT', 'DOGE/USDT', 'POL/USDT',
